@@ -75,6 +75,8 @@ python -m app.cli run --business salon --text "Yarın öğleden sonra boşluklar
 python -m pytest -q                                           # offline tests
 ```
 
+For the browser demo run `python -m app.channels.web` and open http://127.0.0.1:8000: a WhatsApp-style chat with Çırak that uses the same `core.handle` flow as WhatsApp, with photo attach, hold-to-talk voice notes, quick demo prompts, and inline campaign visuals.
+
 Outputs land in `out/`: `crops/`, `proposal.json`, `tool_log.json`, `approval_card.txt`, `campaign_visual.png`,
 `report.json`, `summary.txt`.
 
