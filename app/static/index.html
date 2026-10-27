@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Çırak</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="page">
+  <div class="phone">
+    <header class="header">
+      <div class="avatar">Ç</div>
+      <div class="titles">
+        <div class="name">Çırak</div>
+        <div class="business" id="business">{{BUSINESS}}</div>
+      </div>
+      <button id="resetBtn" class="icon-btn" title="Sıfırla">↺</button>
+    </header>
+    <main id="chat" class="chat" aria-live="polite"></main>
+    <div id="preview" class="preview" hidden></div>
+    <footer class="footer">
+      <div class="composer">
+        <input id="fileInput" type="file" accept="image/jpeg,image/png" multiple hidden>
+        <button id="attachBtn" class="icon-btn" title="Fotoğraf ekle">📎</button>
+        <button id="micBtn" class="icon-btn" title="Basılı tut, konuş, bırak">🎙️</button>
+        <input id="textInput" class="text" type="text" placeholder="Mesaj yaz…" autocomplete="off">
+        <button id="sendBtn" class="icon-btn send" title="Gönder">➤</button>
+      </div>
+      <div class="quick">
+        <button data-fill="Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver">Butik demosu</button>
+        <button data-fill="Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.">Salon demosu</button>
+        <button data-fill="/salon">/salon</button>
+      </div>
+    </footer>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
