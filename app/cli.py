@@ -33,9 +33,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # 2) plan (Spark + tools) → validated proposal
     run = agent.plan(ctx, backend)
-    (out_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
     (out_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     print(f"[agent] {run.turns} turn(s), tokens in/out: {run.usage['input_tokens']}/{run.usage['output_tokens']}")
+    if run.answer:
+        print("\n" + "─" * 60 + "\n" + run.answer + "\n" + "─" * 60 + "\n[done] answered, nothing to execute")
+        return 0
+    (out_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
 
     # 3) human approval
     seg_counts = {}

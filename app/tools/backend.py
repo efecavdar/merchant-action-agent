@@ -151,6 +151,7 @@ class Backend(Protocol):
     def find_customers(self, inactive_days: int | None = None, min_visits: int = 1,
                        tags: list[str] | None = None) -> dict[str, Any]: ...
     def get_schedule(self, day: str) -> dict[str, Any]: ...
+    def find_customer(self, name: str) -> list[dict[str, Any]]: ...
     def daily_summary(self, day: str) -> dict[str, Any]: ...
     def find_appointments(self, customer_name: str | None = None,
                           day: str | None = None) -> list[dict[str, Any]]: ...
@@ -463,6 +464,14 @@ class MockBackend:
                         "loyalty": c.loyalty_status(self.today)} for c in hits[:5]],
         }
 
+    def find_customer(self, name: str) -> list[dict[str, Any]]:
+        """Resolve a spoken name to customer ids (accent-insensitive, partial). No phone numbers."""
+        q = _fold_name(name or "")
+        if not q:
+            return []
+        return [{"id": c.id, "name": c.name, "last_visit": c.last_visit, "visit_count": c.visit_count}
+                for c in self.customers if q in _fold_name(c.name)][:10]
+
     def get_schedule(self, day: str) -> dict[str, Any]:
         """Appointments and free slots for one day (per staff member)."""
         d = date.fromisoformat(day)
@@ -694,6 +703,7 @@ class KeddBackend:
         return self._post("/agent/segments", {"inactive_days": inactive_days,
                                               "min_visits": min_visits, "tags": tags})
     def get_schedule(self, day): return self._get("/agent/schedule", day=day)
+    def find_customer(self, name): return self._get("/agent/customers", name=name)
     def daily_summary(self, day): return self._get("/agent/daily-summary", day=day)
     def find_appointments(self, customer_name=None, day=None):
         return self._get("/agent/appointments", customer_name=customer_name or "", day=day or "")

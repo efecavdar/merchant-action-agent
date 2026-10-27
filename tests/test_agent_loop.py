@@ -50,6 +50,32 @@ class FakeResponses:
         raise AssertionError("too many steps")
 
 
+class FakeAnswering:
+    """Scripted model: reads the daily summary, then answers with reply_only (no plan)."""
+
+    def __init__(self):
+        self.step = 0
+
+    def create(self, **kw):
+        self.step += 1
+        fc = FakeResponses._fc
+        resp = lambda out: SimpleNamespace(id=f"r{self.step}", output=out, output_text="",  # noqa: E731
+                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        if self.step == 1:
+            return resp([fc("get_daily_summary", {"day": "2026-10-27"}, "c1")])
+        if self.step == 2:
+            summary = json.loads(kw["input"][0]["output"])
+            assert summary["revenue"]["total"] > 0
+            return resp([fc("reply_only", {"text": f"Bugün ciro {summary['revenue']['total']:.0f} TL 👍"}, "c2")])
+        raise AssertionError("too many steps")
+
+
+def test_agent_loop_reply_only(monkeypatch):
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeAnswering()))
+    run = agent.plan(MediaContext("Bugün ne oldu?", "voice"), MockBackend("salon", today=date(2026, 10, 27)))
+    assert run.proposal is None and run.answer.startswith("Bugün ciro") and run.turns == 2
+
+
 def test_agent_loop_revises_invalid_proposal(monkeypatch):
     fake = FakeResponses()
     monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=fake))

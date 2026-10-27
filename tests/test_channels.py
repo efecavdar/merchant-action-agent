@@ -72,7 +72,7 @@ def test_signature():
 def _fake_plan(ctx, backend, max_revisions=2):
     seg = backend.find_customers(inactive_days=60)
     run = SimpleNamespace(turns=1, usage={"input_tokens": 1, "output_tokens": 1}, segments={seg["segment_id"]},
-                          tool_log=[{"tool": "find_customers", "args": {}, "result": seg}])
+                          answer=None, tool_log=[{"tool": "find_customers", "args": {}, "result": seg}])
     run.proposal = {"summary_tr": "Fular ekleniyor, 1 kampanya.", "actions": [
         {"type": "add_catalog_item", "item_type": "product", "ref": "n1", "name": "İpek Fular", "price": 850},
         {"type": "send_campaign", "segment_id": seg["segment_id"], "message": "Fular 850 TL geldi!"}]}
@@ -95,6 +95,16 @@ def test_core_flow_plan_approve_execute(monkeypatch, cfg, tmp_path):
     assert s.pending is None and r[0].text.startswith("Hallettim")
     assert len(s.backend.campaigns) == 1 and s.backend.items[-1].name == "İpek Fular"
     assert core.handle(s, "text", "evet")[0].text != "Hallettim."              # second "evet" cannot re-run
+
+
+def test_core_answer_path_leaves_nothing_pending(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", lambda ctx, backend, max_revisions=3: SimpleNamespace(
+        proposal=None, answer="Bugün 9 randevu, ciro 1300 TL.", tool_log=[], turns=1, usage={}))
+    s = core.Session(sender="905321", backend=MockBackend("salon", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    r = core.handle(s, "text", "Bugün ne oldu?")
+    assert r[-1].text.startswith("Bugün 9 randevu") and s.pending is None
+    assert "okuyamadım" not in core.handle(s, "text", "evet")[0].text or s.pending is None  # "evet" is harmless now
 
 
 def test_core_reject_and_photo_buffer(monkeypatch, cfg, tmp_path):

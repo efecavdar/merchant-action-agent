@@ -78,6 +78,21 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                 )
                 record(a, "ok", {"campaign_id": res["id"], "recipients": res["recipients"],
                                  "note": res.get("note", "")})
+
+            elif t == "create_appointment":
+                res = backend.create_appointment(
+                    customer_id=a["customer_id"], item_id=id_map.get(a["item_ref"], a["item_ref"]),
+                    staff=a["staff"], starts=a["starts"],
+                )
+                record(a, "ok", {"appointment_id": res["id"], "starts": res["starts"], "label": a.get("label")})
+
+            elif t == "reschedule_appointment":
+                res = backend.reschedule_appointment(a["appointment_id"], a["starts"], a.get("staff"))
+                record(a, "ok", {"appointment_id": res["id"], "starts": res["starts"], "label": a.get("label")})
+
+            elif t == "cancel_appointment":
+                res = backend.cancel_appointment(a["appointment_id"], a.get("reason") or "")
+                record(a, "ok", {"appointment_id": res["id"], "status": res["status"], "label": a.get("label")})
         except Exception as e:
             record(a, "failed", f"{type(e).__name__}: {e}")
             # Fail closed: do not continue sending things after an error.

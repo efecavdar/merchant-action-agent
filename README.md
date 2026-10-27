@@ -44,6 +44,16 @@ voice note ─► Muse Voice Transcribe ─┐
 photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘                                          └─► Muse Image (campaign visual)
 ```
 
+## What the owner can ask
+
+| Owner says (voice or text) | What happens |
+|---|---|
+| *"Bunları ekle, tanesi 850, hafta sonu %15, uzun süredir gelmeyenlere haber ver"* + photos | SAM crops → catalog cards → discount → campaign visual → WhatsApp campaign (after approval) |
+| *"Keratin bakımı ekle, 90 dakika, 2500 lira"* | a service is added from words alone (after approval) |
+| *"Yarın boşluklarım var, saç boyamada %20 indirim, sadık müşterilere yaz"* | schedule is read, discount + campaign proposed (after approval) |
+| *"Ayşe'nin yarınki randevusunu bir saat sonraya al"* | customer and appointment resolved, slot checked; if it clashes the agent **asks** instead of forcing |
+| *"Bugün ne oldu?"* | read-only: appointments, revenue, new customers, unanswered messages, free slots — no approval needed |
+
 ## Design choices
 
 - **The model proposes, code executes.** The LLM only has read-only tools plus `propose_actions`. Writes

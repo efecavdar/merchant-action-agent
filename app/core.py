@@ -137,11 +137,14 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         notify(f"🎙️ Anladığım: “{ctx.instruction}”")
 
     run = agent.plan(ctx, backend)
+    (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
+    if run.answer:                       # a question, not a job: answer and keep nothing pending
+        log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
+        return replies + [Reply(run.answer)]
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
     card = approval.render_card(run.proposal, ctx, seg_counts)
     (run_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
-    (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     (run_dir / "approval_card.txt").write_text(card)
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
                        "run_dir": str(run_dir), "at": now, "usage": run.usage}

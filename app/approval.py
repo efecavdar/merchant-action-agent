@@ -6,7 +6,10 @@ from typing import Any, Callable
 
 from .pipeline import MediaContext
 
-_ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣"}
+_ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
+         "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌"}
+_APPT_VERB = {"create_appointment": "Randevu", "reschedule_appointment": "Randevu taşınıyor",
+              "cancel_appointment": "Randevu iptal"}
 
 
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int]) -> str:
@@ -30,6 +33,8 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             n = segment_counts.get(a.get("segment_id"), "?")
             lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj")
             lines.append(f"   “{a.get('message')}”")
+        elif t in _APPT_VERB:
+            lines.append(f"{ic} {_APPT_VERB[t]}: {a.get('label') or a.get('appointment_id') or ''}")
     lines += ["", "Onaylıyor musun? (evet / hayır)"]
     return "\n".join(lines)
 

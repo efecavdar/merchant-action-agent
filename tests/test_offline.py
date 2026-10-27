@@ -128,6 +128,25 @@ def test_validate_message_must_match_plan():
     assert any("%30" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"}))
 
 
+def test_validate_appointment_actions_need_ids_from_tools():
+    cat = {"i001": {"id": "i001", "price": 450.0, "type": "service"}, "i009": {"id": "i009", "price": 1, "type": "product"}}
+    prop = {"summary_tr": "Randevu.", "actions": [
+        {"type": "create_appointment", "customer_id": "c001", "item_ref": "i001", "staff": "Elif",
+         "starts": "2026-10-31T15:00", "label": "Ayşe — Saç Kesimi, Elif, Cuma 15:00"},
+        {"type": "reschedule_appointment", "appointment_id": "a007", "starts": "2026-10-31T16:00", "label": "x"},
+        {"type": "cancel_appointment", "appointment_id": "a008", "label": "y"},
+    ]}
+    assert validate_proposal(prop, set(), cat, set(), {"a007", "a008"}, {"c001"}) == []
+    errs = validate_proposal(prop, set(), cat, set(), set(), set())          # ids not resolved via tools
+    assert sum("customer_id" in e for e in errs) == 1 and sum("appointment_id" in e for e in errs) == 2
+    prop["actions"][0]["item_ref"] = "i009"
+    prop["actions"][0]["starts"] = "cuma 15"
+    del prop["actions"][2]["label"]
+    errs = validate_proposal(prop, set(), cat, set(), {"a007", "a008"}, {"c001"})
+    assert any("not a service" in e for e in errs) and any("ISO datetime" in e for e in errs)
+    assert any("label" in e for e in errs)
+
+
 def test_validate_coerces_numeric_strings_and_requires_promised_campaign():
     # seen live: percent / price arrive as strings; summary promises a campaign the plan does not contain
     prop = {"summary_tr": "Hafta sonu indirim, 28 kişiye kampanya hazırladım.", "actions": [

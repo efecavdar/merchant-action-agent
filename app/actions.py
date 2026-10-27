@@ -7,12 +7,14 @@ these checks and (b) a human approves it. Business rules live here, in code.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from .config import settings
 
-ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign"}
+ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
+                "create_appointment", "reschedule_appointment", "cancel_appointment"}
+APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment"}
 
 # JSON schema handed to the model (Responses API flat tool format)
 PROPOSAL_SCHEMA: dict[str, Any] = {
@@ -50,6 +52,15 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "segment_id": {"type": "string", "description": "from find_customers"},
                     "message": {"type": "string", "description": "WhatsApp message, Turkish, personal, <= 350 chars"},
                     "attach_visual": {"type": "boolean"},
+                    # appointments
+                    "customer_id": {"type": "string", "description": "from find_customer (create_appointment)"},
+                    "item_ref": {"type": "string", "description": "service id from list_catalog (create_appointment)"},
+                    "staff": {"type": "string", "description": "staff member name (create/reschedule)"},
+                    "appointment_id": {"type": "string", "description": "from find_appointments (reschedule/cancel)"},
+                    "reason": {"type": "string", "description": "cancel_appointment, optional"},
+                    "label": {"type": "string",
+                              "description": "one Turkish line the owner will see on the approval card, e.g. "
+                                             "'Ayşe Y. — Saç Kesimi, Elif, 31 Ekim Cuma 15:00'"},
                 },
                 "required": ["type"],
             },
@@ -102,11 +113,23 @@ _NEGATED_CAMPAIGN_RE = re.compile(
     r"hazırlamadım|oluşturmadım|yok|atlıyorum|atladım)", re.I)
 
 
+def _iso_dt(s: str) -> datetime:
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        raise ValueError("naive local datetime expected")
+    return dt
+
+
 def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
-                      catalog: dict[str, dict[str, Any]], known_segments: set[str]) -> list[str]:
+                      catalog: dict[str, dict[str, Any]], known_segments: set[str],
+                      known_appointments: set[str] | None = None,
+                      known_customers: set[str] | None = None) -> list[str]:
     """Return a list of problems (empty = valid).
 
-    `catalog` maps existing item id -> item dict (needs at least "price")."""
+    `catalog` maps existing item id -> item dict (needs at least "price", "type").
+    Ids for appointments / customers must come from a tool call in the same run (like segments)."""
+    known_appointments = known_appointments or set()
+    known_customers = known_customers or set()
     errors: list[str] = []
     if not isinstance(proposal, dict):
         return ["proposal must be an object"]
@@ -204,6 +227,30 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             for p in sorted(prices - plan_prices):
                 errors.append(f"{where}: message mentions {p:g} TL but no action in this plan sets that price "
                               f"(add the item or drop the number)")
+
+        elif t in APPOINTMENT_TYPES:
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            if t == "create_appointment":
+                if a.get("customer_id") not in known_customers:
+                    errors.append(f"{where}: customer_id must come from a find_customer call "
+                                  f"(known: {sorted(known_customers)})")
+                svc = catalog.get(a.get("item_ref") or "")
+                if not svc:
+                    errors.append(f"{where}: item_ref must be an existing catalog id (see list_catalog)")
+                elif svc.get("type") != "service":
+                    errors.append(f"{where}: {a.get('item_ref')} is not a service")
+                if not a.get("staff"):
+                    errors.append(f"{where}: staff is required (see get_store_profile)")
+            else:
+                if a.get("appointment_id") not in known_appointments:
+                    errors.append(f"{where}: appointment_id must come from a find_appointments call "
+                                  f"(known: {sorted(known_appointments)})")
+            if t != "cancel_appointment":
+                try:
+                    _iso_dt(a.get("starts") or "")
+                except (ValueError, TypeError):
+                    errors.append(f"{where}: starts must be an ISO datetime like 2026-10-31T15:00")
 
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}
