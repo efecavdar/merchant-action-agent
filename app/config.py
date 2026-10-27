@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     # Meta Model API
-    api_key: str = os.environ.get("MODEL_API_KEY", "")
+    api_key: str = field(default=os.environ.get("MODEL_API_KEY", ""), repr=False)
     base_url: str = os.environ.get("META_BASE_URL", "https://api.meta.ai/v1")
 
     # Model IDs (from https://dev.meta.ai/docs/models). Standard mode only:
@@ -31,12 +31,21 @@ class Settings:
     backend: str = os.environ.get("BACKEND", "mock")
     mock_business: str = os.environ.get("MOCK_BUSINESS", "butik")   # butik | salon
     kedd_api_url: str = os.environ.get("KEDD_API_URL", "")
-    kedd_agent_secret: str = os.environ.get("KEDD_AGENT_SECRET", "")
+    kedd_agent_secret: str = field(default=os.environ.get("KEDD_AGENT_SECRET", ""), repr=False)
     merchant_phone: str = os.environ.get("MERCHANT_PHONE", "")      # E.164, identifies the merchant to KEDD
 
-    # Paths
-    data_dir: Path = field(default_factory=lambda: ROOT / "data")
-    out_dir: Path = field(default_factory=lambda: ROOT / "out")
+    # Paths (overridable so the Modal deployment can point them at a persistent volume)
+    data_dir: Path = field(default_factory=lambda: Path(os.environ.get("DATA_DIR", ROOT / "data")))
+    out_dir: Path = field(default_factory=lambda: Path(os.environ.get("OUT_DIR", ROOT / "out")))
+
+    # WhatsApp Cloud API (dedicated Meta dev app + test number; KEDD's own app is not touched)
+    graph_api: str = os.environ.get("GRAPH_API", "https://graph.facebook.com/v24.0")
+    meta_app_secret: str = field(default=os.environ.get("META_APP_SECRET", ""), repr=False)
+    wa_phone_number_id: str = os.environ.get("WA_PHONE_NUMBER_ID", "")
+    wa_access_token: str = field(default=os.environ.get("WA_ACCESS_TOKEN", ""), repr=False)
+    wa_verify_token: str = field(default=os.environ.get("WA_VERIFY_TOKEN", ""), repr=False)
+    wa_allowed_senders: frozenset[str] = field(default_factory=lambda: frozenset(
+        s.strip().lstrip("+") for s in os.environ.get("WA_ALLOWED_SENDERS", "").split(",") if s.strip()))
 
     # Guard-rails for the executor (business rules, enforced in code, not by the model)
     max_discount_pct: int = int(os.environ.get("MAX_DISCOUNT_PCT", "70"))

@@ -5,3 +5,8 @@ python-dotenv>=1.0
 pytest>=8.0
 # optional: full SAM mask decoding (boxes are parsed without it)
 # meta-sam-parser>=0.1.0
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+# deployment (local CLI only)
+modal>=1.0
