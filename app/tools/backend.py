@@ -23,6 +23,7 @@ import hmac
 import json
 import random
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time as dtime, timedelta
@@ -54,6 +55,7 @@ class CatalogItem:
     sale_starts: str | None = None
     sale_ends: str | None = None
     active: bool = True
+    added: str = ""                     # ISO date the item was added ("" = pre-existing seed)
 
 
 @dataclass
@@ -66,6 +68,7 @@ class Customer:
     total_spent: float
     tags: list[str] = field(default_factory=list)
     marketing_consent: bool = True
+    created: str = ""                   # ISO date the customer signed up ("" = old customer)
 
     def loyalty_status(self, today: date) -> str:
         days = (today - date.fromisoformat(self.last_visit)).days
@@ -105,6 +108,34 @@ class Campaign:
     # Engagement is SIMULATED in mock mode and clearly labelled as such in reports.
     replies: int = 0
     conversions: int = 0
+    day: str = ""                       # ISO date the campaign was sent
+
+
+@dataclass
+class RevenueEntry:
+    id: str
+    day: str                        # ISO date of the sale
+    category: str
+    amount: float
+    item_name: str = ""
+
+
+@dataclass
+class Lead:
+    id: str
+    name: str                       # display name only, no contact details on purpose
+    day: str                        # ISO date the lead came in
+    source: str = ""
+    interest: str = ""
+
+
+@dataclass
+class InboxMessage:
+    id: str
+    day: str                        # ISO date received
+    customer: str                   # display name only, never a phone number
+    preview: str                    # synthetic snippet
+    age_minutes: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +151,9 @@ class Backend(Protocol):
     def find_customers(self, inactive_days: int | None = None, min_visits: int = 1,
                        tags: list[str] | None = None) -> dict[str, Any]: ...
     def get_schedule(self, day: str) -> dict[str, Any]: ...
+    def daily_summary(self, day: str) -> dict[str, Any]: ...
+    def find_appointments(self, customer_name: str | None = None,
+                          day: str | None = None) -> list[dict[str, Any]]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -129,6 +163,11 @@ class Backend(Protocol):
                         starts: str, ends: str) -> dict[str, Any]: ...
     def send_campaign(self, name: str, segment_id: str, message: str,
                       visual_path: str) -> dict[str, Any]: ...
+    def create_appointment(self, customer_id: str, item_id: str, staff: str,
+                           starts: str) -> dict[str, Any]: ...
+    def reschedule_appointment(self, appointment_id: str, starts: str,
+                               staff: str | None = None) -> dict[str, Any]: ...
+    def cancel_appointment(self, appointment_id: str, reason: str = "") -> dict[str, Any]: ...
     def report(self) -> dict[str, Any]: ...
 
 
@@ -224,6 +263,53 @@ def _seed_appointments(rng: random.Random, today: date, customers: list[Customer
     return out
 
 
+_TR_FOLD = str.maketrans({"ı": "i", "I": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
+                          "ü": "u", "Ü": "u", "ö": "o", "Ö": "o", "ç": "c", "Ç": "c"})
+
+
+def _fold_name(s: str) -> str:
+    """Lowercase + accent-stripped, so 'ayşe' matches 'Ayşe Y.' (dotless ı mapped before NFKD)."""
+    ascii_only = unicodedata.normalize("NFKD", s.translate(_TR_FOLD)).encode("ascii", "ignore").decode()
+    return ascii_only.lower()
+
+
+_MESSAGE_PREVIEWS = (
+    "Merhaba, cumartesi için yer var mı?",
+    "Fiyat ne kadar?",
+    "Kargo kaç günde gelir?",
+    "Randevumu değiştirebilir miyim?",
+    "İndirim ne zaman bitiyor?",
+    "Bu ürün stokta var mı?",
+    "Yarın uğrayabilir miyim?",
+    "Ödeme nasıl oluyor?",
+)
+_LEAD_SOURCES = ("Instagram", "WhatsApp", "Tavsiye", "Google")
+_SUMMARY_WINDOW_DAYS = 7
+
+
+def _seed_summary(rng: random.Random, items_cfg: list, customers: list[Customer],
+                  today: date, tags: list[str]) -> tuple[list[RevenueEntry], list[Lead], list[InboxMessage]]:
+    """Seeded revenue / signup / lead / inbox data behind daily_summary (both businesses)."""
+    revenue: list[RevenueEntry] = []
+    leads: list[Lead] = []
+    messages: list[InboxMessage] = []
+    for back in range(_SUMMARY_WINDOW_DAYS - 1, -1, -1):
+        day = (today - timedelta(days=back)).isoformat()
+        for _ in range(rng.randint(2, 5)):
+            _t, name, price, cat, _d, _dur = rng.choice(items_cfg)
+            revenue.append(RevenueEntry(f"r{len(revenue) + 1:04d}", day, cat, float(price), name))
+        for _ in range(rng.randint(0, 2)):
+            leads.append(Lead(f"l{len(leads) + 1:03d}", f"{rng.choice(_FIRST)} {rng.choice(_LAST)}", day,
+                              rng.choice(_LEAD_SOURCES), rng.choice(tags)))
+        if back <= 1:
+            for _ in range(rng.randint(1, 3)):
+                messages.append(InboxMessage(f"m{len(messages) + 1:03d}", day, rng.choice(customers).name,
+                                             rng.choice(_MESSAGE_PREVIEWS), rng.randint(5, 480)))
+    for c in rng.sample(customers, k=min(5, len(customers))):
+        c.created = (today - timedelta(days=rng.randint(0, 2))).isoformat()
+    return revenue, leads, messages
+
+
 class MockBackend:
     """In-memory KEDD-shaped backend. State can be persisted to data/store.json for the demo."""
 
@@ -253,6 +339,10 @@ class MockBackend:
         self.discounts: list[Discount] = []
         self.campaigns: list[Campaign] = []
         self.segments: dict[str, list[str]] = {}
+        s_rng = random.Random(seed + 7)   # own stream: summary seeds must not shift the existing ones
+        self.revenue_entries, self.leads, self.messages = _seed_summary(
+            s_rng, cfg["items"], self.customers, self.today, cfg["tags"])
+        self.appointment_changes: list[dict[str, Any]] = []
         self._rng = random.Random(seed + 1)
         self._counter = 100
         self._items_at_start = len(self.items)
@@ -268,6 +358,50 @@ class MockBackend:
                 return i
         raise ValueError(f"unknown catalog item {item_id}")
 
+    def _customer(self, customer_id: str) -> Customer:
+        for c in self.customers:
+            if c.id == customer_id:
+                return c
+        raise ValueError(f"Müşteri bulunamadı: {customer_id}")
+
+    def _appointment(self, appointment_id: str) -> Appointment:
+        for a in self.appointments:
+            if a.id == appointment_id:
+                return a
+        raise ValueError(f"Randevu bulunamadı: {appointment_id}")
+
+    @staticmethod
+    def _parse_starts(starts: str) -> datetime:
+        try:
+            return datetime.fromisoformat(starts)
+        except ValueError:
+            raise ValueError(f"Tarih anlaşılmadı: {starts} (örn. 2026-10-28T15:00)") from None
+
+    def _check_hours(self, start: datetime, end: datetime) -> None:
+        hours = self.profile["business_hours"]
+        open_t = datetime.combine(start.date(), dtime.fromisoformat(hours["open"]))
+        close_t = datetime.combine(start.date(), dtime.fromisoformat(hours["close"]))
+        if not (open_t <= start and end <= close_t):
+            span = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+            raise ValueError(f"{span} çalışma saatleri dışında ({hours['open']}–{hours['close']})")
+
+    def _check_free(self, staff: str, start: datetime, end: datetime, ignore_id: str | None = None) -> None:
+        names = {c.id: c.name for c in self.customers}
+        items = {i.id: i for i in self.items}
+        for a in self.appointments:
+            if a.staff != staff or a.status != "confirmed" or a.id == ignore_id:
+                continue
+            s, e = datetime.fromisoformat(a.starts), datetime.fromisoformat(a.ends)
+            if start < e and s < end:   # same overlap rule get_schedule's gaps are built on
+                raise ValueError(f"{staff} o saatte dolu ({s.strftime('%H:%M')}–{e.strftime('%H:%M')} "
+                                 f"{items[a.item_id].name}, {names.get(a.customer_id, '?')})")
+
+    def _record_change(self, change: str, a: Appointment, reason: str = "") -> None:
+        entry: dict[str, Any] = {"change": change, **asdict(a)}
+        if reason:
+            entry["reason"] = reason
+        self.appointment_changes.append(entry)
+
     def save(self) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -278,6 +412,10 @@ class MockBackend:
             "appointments": [asdict(a) for a in self.appointments],
             "discounts": [asdict(d) for d in self.discounts],
             "campaigns": [asdict(c) for c in self.campaigns],
+            "revenue_entries": [asdict(e) for e in self.revenue_entries],
+            "leads": [asdict(l) for l in self.leads],
+            "messages": [asdict(m) for m in self.messages],
+            "appointment_changes": self.appointment_changes,
         }
         self.store_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -355,6 +493,60 @@ class MockBackend:
             "free_slots": free,
         }
 
+    def daily_summary(self, day: str) -> dict[str, Any]:
+        """Everything a "Bugün ne oldu?" answer needs, derived from seeded data plus today's changes."""
+        d = date.fromisoformat(day)   # raises ValueError on a bad date, like get_schedule
+        day_appts = [a for a in self.appointments if a.starts[:10] == day and a.status == "confirmed"]
+        cancelled = sum(1 for a in self.appointments if a.starts[:10] == day and a.status == "cancelled")
+        if d < self.today:
+            # No clock in the backend: past days are done; a stable id-based slice counts as no-shows.
+            no_shows = [a for a in day_appts if int("".join(ch for ch in a.id if ch.isdigit()) or 0) % 7 == 0]
+            completed, upcoming = len(day_appts) - len(no_shows), 0
+        else:
+            no_shows, completed, upcoming = [], 0, len(day_appts)
+        entries = [e for e in self.revenue_entries if e.day == day]
+        by_cat: dict[str, float] = {}
+        for e in entries:
+            by_cat[e.category] = round(by_cat.get(e.category, 0.0) + e.amount, 2)
+        inbox = [m for m in self.messages if m.day == day]
+        sent = [c for c in self.campaigns if c.day == day]
+        added = [i for i in self.items if i.added == day]
+        return {
+            "day": day,
+            "business": self.profile["business_name"],
+            "appointments": {"count": len(day_appts), "completed": completed, "upcoming": upcoming,
+                             "no_shows": len(no_shows), "cancelled": cancelled},
+            "revenue": {"total": round(sum(e.amount for e in entries), 2), "by_category": by_cat,
+                        "currency": "TRY"},
+            "new_customers": sum(1 for c in self.customers if c.created == day),
+            "new_leads": sum(1 for l in self.leads if l.day == day),
+            "unanswered_messages": {
+                "count": len(inbox),
+                "messages": [{"customer": m.customer, "preview": m.preview, "age_minutes": m.age_minutes}
+                             for m in inbox[:3]],
+            },
+            "campaigns_sent": {"count": len(sent), "recipients": sum(c.recipients for c in sent)},
+            "catalog_changes": {"count": len(added), "items": [i.name for i in added]},
+        }
+
+    def find_appointments(self, customer_name: str | None = None,
+                          day: str | None = None) -> list[dict[str, Any]]:
+        """Accent-insensitive partial name search; several customers may match. No phone numbers."""
+        q = _fold_name(customer_name or "")
+        names = {c.id: c.name for c in self.customers}
+        items = {i.id: i for i in self.items}
+        out = []
+        for a in sorted(self.appointments, key=lambda x: x.starts):
+            if day and not a.starts.startswith(day):
+                continue
+            if q and q not in _fold_name(names.get(a.customer_id, "")):
+                continue
+            svc = items.get(a.item_id)
+            out.append({"id": a.id, "customer": names.get(a.customer_id, "?"),
+                        "service": svc.name if svc else "?", "staff": a.staff,
+                        "starts": a.starts, "ends": a.ends, "status": a.status})
+        return out
+
     # -- write tools (only called by the executor AFTER human approval) ------ #
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
                          description: str, image_path: str = "",
@@ -362,7 +554,8 @@ class MockBackend:
         if item_type not in ITEM_TYPES:
             raise ValueError(f"item_type must be one of {ITEM_TYPES}")
         it = CatalogItem(self._next_id("i"), item_type, name, float(price), "TRY", category,
-                         description, image_path, duration_minutes=duration_minutes)
+                         description, image_path, duration_minutes=duration_minutes,
+                         added=self.today.isoformat())
         self.items.append(it)
         return asdict(it)
 
@@ -383,12 +576,61 @@ class MockBackend:
         n = len(self.segments[segment_id])
         if n > settings.max_campaign_recipients:
             raise ValueError(f"segment too large ({n} > {settings.max_campaign_recipients})")
-        c = Campaign(self._next_id("cmp"), name, segment_id, message, visual_path, n, status="sent")
+        c = Campaign(self._next_id("cmp"), name, segment_id, message, visual_path, n, status="sent",
+                     day=self.today.isoformat())
         # Simulated engagement so the report has numbers to show. Labelled "simulated".
         c.replies = int(n * self._rng.uniform(0.18, 0.32))
         c.conversions = int(c.replies * self._rng.uniform(0.25, 0.45))
         self.campaigns.append(c)
         return {**asdict(c), "note": "mock backend: messages are NOT sent; engagement is simulated"}
+
+    def create_appointment(self, customer_id: str, item_id: str, staff: str,
+                           starts: str) -> dict[str, Any]:
+        """Book a service. Raises ValueError with a Turkish reason when the slot does not work."""
+        customer = self._customer(customer_id)
+        try:
+            service = self._item(item_id)
+        except ValueError:
+            raise ValueError(f"Hizmet bulunamadı: {item_id}") from None
+        if service.type != "service":
+            raise ValueError(f"{service.name} bir hizmet değil, randevu açılamaz")
+        if staff not in self.profile["staff"]:
+            raise ValueError(f"Çalışan bulunamadı: {staff or '—'}")
+        start = self._parse_starts(starts)
+        end = start + timedelta(minutes=service.duration_minutes or 30)
+        self._check_hours(start, end)
+        self._check_free(staff, start, end)
+        a = Appointment(self._next_id("a"), customer.id, service.id, staff,
+                        start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes"))
+        self.appointments.append(a)
+        self._record_change("created", a)
+        return asdict(a)
+
+    def reschedule_appointment(self, appointment_id: str, starts: str,
+                               staff: str | None = None) -> dict[str, Any]:
+        """Move an appointment; service and customer stay the same."""
+        a = self._appointment(appointment_id)
+        if a.status == "cancelled":
+            raise ValueError("İptal edilmiş bir randevu taşınamaz")
+        service = self._item(a.item_id)
+        who = staff or a.staff
+        if who not in self.profile["staff"]:
+            raise ValueError(f"Çalışan bulunamadı: {who}")
+        start = self._parse_starts(starts)
+        end = start + timedelta(minutes=service.duration_minutes or 30)
+        self._check_hours(start, end)
+        self._check_free(who, start, end, ignore_id=a.id)
+        a.starts, a.ends, a.staff = (start.isoformat(timespec="minutes"),
+                                     end.isoformat(timespec="minutes"), who)
+        self._record_change("rescheduled", a)
+        return asdict(a)
+
+    def cancel_appointment(self, appointment_id: str, reason: str = "") -> dict[str, Any]:
+        a = self._appointment(appointment_id)
+        if a.status != "cancelled":
+            a.status = "cancelled"
+            self._record_change("cancelled", a, reason)
+        return asdict(a)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -397,6 +639,7 @@ class MockBackend:
             "items_added": [asdict(i) for i in self.items[self._items_at_start:]],
             "active_discounts": [asdict(d) for d in self.discounts],
             "campaigns": [asdict(c) for c in self.campaigns],
+            "appointments_changed": self.appointment_changes,
             "engagement_note": "simulated (mock backend)",
         }
 
@@ -451,6 +694,9 @@ class KeddBackend:
         return self._post("/agent/segments", {"inactive_days": inactive_days,
                                               "min_visits": min_visits, "tags": tags})
     def get_schedule(self, day): return self._get("/agent/schedule", day=day)
+    def daily_summary(self, day): return self._get("/agent/daily-summary", day=day)
+    def find_appointments(self, customer_name=None, day=None):
+        return self._get("/agent/appointments", customer_name=customer_name or "", day=day or "")
     def add_catalog_item(self, item_type, name, price, category, description, image_path="",
                          duration_minutes=None):
         return self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
@@ -462,6 +708,14 @@ class KeddBackend:
     def send_campaign(self, name, segment_id, message, visual_path):
         return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
                                                "message": message, "visual_path": visual_path})
+    def create_appointment(self, customer_id, item_id, staff, starts):
+        return self._post("/agent/appointments", {"customer_id": customer_id, "item_id": item_id,
+                                                  "staff": staff, "starts": starts})
+    def reschedule_appointment(self, appointment_id, starts, staff=None):
+        return self._post("/agent/appointments/reschedule", {"appointment_id": appointment_id,
+                                                              "starts": starts, "staff": staff})
+    def cancel_appointment(self, appointment_id, reason=""):
+        return self._post("/agent/appointments/cancel", {"appointment_id": appointment_id, "reason": reason})
     def report(self): return self._get("/agent/report")
 
 
