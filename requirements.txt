@@ -1,0 +1,7 @@
+openai>=2.0
+requests>=2.31
+pillow>=10.0
+python-dotenv>=1.0
+pytest>=8.0
+# optional: full SAM mask decoding (boxes are parsed without it)
+# meta-sam-parser>=0.1.0
