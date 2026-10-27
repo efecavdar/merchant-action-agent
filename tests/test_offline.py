@@ -139,6 +139,8 @@ def test_validate_coerces_numeric_strings_and_requires_promised_campaign():
     assert prop["actions"][1]["percent"] == 20
     prop["summary_tr"] = "Keratin eklendi, %20 indirim tanımlandı."
     assert validate_proposal(prop, set(), CATALOG, {"seg1"}) == []
+    prop["summary_tr"] = "Keratin eklendi. Fiyat belirsiz olduğu için müşterilere mesaj göndermedim."
+    assert validate_proposal(prop, set(), CATALOG, {"seg1"}) == []          # negated → no campaign expected
     assert validate_proposal(prop, set(), CATALOG, set()) == []          # no segment built → no campaign expected
 
 

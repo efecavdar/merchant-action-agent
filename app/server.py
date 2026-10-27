@@ -12,6 +12,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from .channels import whatsapp as wa
 from .config import settings
@@ -50,10 +51,11 @@ def create_app(dispatch: Dispatch, first_time: SeenCheck) -> FastAPI:
             if not wa.is_allowed(msg.sender):
                 log.warning("ignored message from non-allowed sender …%s", msg.sender[-4:])
                 continue
-            if not first_time(msg.id):
+            # dispatch / first_time may be blocking (Modal Dict + spawn) → keep them off the event loop
+            if not await run_in_threadpool(first_time, msg.id):
                 log.info("duplicate delivery %s ignored", msg.id)
                 continue
-            dispatch(msg.to_dict())
+            await run_in_threadpool(dispatch, msg.to_dict())
         return {"ok": True}
 
     return api

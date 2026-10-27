@@ -16,7 +16,12 @@ log = logging.getLogger(__name__)
 def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
                     save: Callable[[str, core.Session], None]) -> None:
     m = wa.Inbound(**msg)
-    session = load(m.sender) or core.Session(sender=m.sender)
+    try:
+        session = load(m.sender)
+    except Exception:  # noqa: BLE001 — a stale pickle after a deploy must not take the channel down
+        log.warning("could not load session for …%s; starting fresh", m.sender[-4:])
+        session = None
+    session = session or core.Session(sender=m.sender)
     wa.mark_read(m.id)
     try:
         media_path = ""

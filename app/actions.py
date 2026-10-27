@@ -95,6 +95,11 @@ def _coerce_numbers(a: dict[str, Any]) -> None:
 
 # summary talks about messaging customers → the plan must contain a send_campaign
 _CAMPAIGN_WORDS_RE = re.compile(r"kampanya|mesaj|haber ver|bildir|duyur", re.I)
+# ...unless the summary says that no message is being sent ("mesaj göndermedim", "kampanya yapmadım")
+_NEGATED_CAMPAIGN_RE = re.compile(
+    r"(kampanya|mesaj|haber|bildirim|duyuru)[^.!\n]{0,60}"
+    r"(göndermedim|göndermeyeceğim|gönderilmeyecek|gönderilmedi|atmadım|atmayacağım|yapmadım|yapmayacağım|"
+    r"hazırlamadım|oluşturmadım|yok|atlıyorum|atladım)", re.I)
 
 
 def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
@@ -203,7 +208,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}
     summary = proposal.get("summary_tr") or ""
-    if known_segments and "send_campaign" not in types and _CAMPAIGN_WORDS_RE.search(summary):
+    if (known_segments and "send_campaign" not in types and _CAMPAIGN_WORDS_RE.search(summary)
+            and not _NEGATED_CAMPAIGN_RE.search(summary)):
         errors.append("summary_tr talks about a campaign/message and a customer segment was built, but there is "
                       "no send_campaign action — add it (with the segment_id) or rewrite summary_tr to say "
                       "clearly that no message will be sent")

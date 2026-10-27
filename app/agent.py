@@ -107,7 +107,7 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
     raise KeyError(name)
 
 
-def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 2) -> AgentRun:
+def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRun:
     """Phase 1: run the tool loop until a valid proposal is produced."""
     run = AgentRun()
     client = meta.client()
@@ -157,10 +157,14 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 2) -> AgentRu
                     run.proposal = args
                     return run
                 revisions += 1
+                log.warning("proposal rejected (%d/%d): %s\n  proposal=%s", revisions, max_revisions, errors,
+                            json.dumps(args, ensure_ascii=False)[:1500])
                 if revisions > max_revisions:
                     raise RuntimeError(f"proposal still invalid after {max_revisions} revisions: {errors}")
                 result = {"accepted": False, "errors": errors,
-                          "hint": "Fix every error and call propose_actions again."}
+                          "hint": "Fix every error and call propose_actions again with the COMPLETE plan "
+                                  "(all actions, in order). Keep everything that was already valid.",
+                          "known_segment_ids": sorted(run.segments)}
             else:
                 try:
                     result = _run_tool(call.name, args, backend, run)
