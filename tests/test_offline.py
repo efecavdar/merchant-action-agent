@@ -1,6 +1,8 @@
 """Offline tests: everything that does not need an API key."""
 
-from datetime import date
+import json
+import unicodedata
+from datetime import date, timedelta
 
 import pytest
 from PIL import Image
@@ -178,3 +180,148 @@ def test_executor_fails_closed(tmp_path):
     ]}
     steps = executor.execute(prop, ctx, b, out_dir=tmp_path)
     assert [s["status"] for s in steps] == ["failed"] and b.campaigns == []
+
+
+# --------------------------------------------------------------------------- #
+# daily summary + appointments
+# --------------------------------------------------------------------------- #
+
+def _salon(tmp_path, name="s.json"):
+    return MockBackend("salon", today=TODAY, store_path=tmp_path / name)
+
+
+def _strip_tr(s: str) -> str:
+    """Fold a name to plain ASCII the way a merchant would type it."""
+    nfd = unicodedata.normalize("NFD", s.lower())
+    no_marks = "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+    return no_marks.translate(str.maketrans("çğıöşü", "cgiosu"))
+
+
+def test_daily_summary_deterministic_both_seeds(tmp_path):
+    for business in ("butik", "salon"):
+        a = MockBackend(business, today=TODAY, store_path=tmp_path / f"{business}-a.json")
+        b = MockBackend(business, today=TODAY, store_path=tmp_path / f"{business}-b.json")
+        assert a.daily_summary("2026-10-27") == b.daily_summary("2026-10-27")
+    s = _salon(tmp_path).daily_summary("2026-10-27")
+    assert s["appointments"]["upcoming"] == s["appointments"]["count"] > 0
+    assert s["revenue"]["total"] > 0
+    assert round(sum(s["revenue"]["by_category"].values()), 2) == s["revenue"]["total"]
+    assert len(s["unanswered_messages"]["messages"]) <= 3
+    assert s["unanswered_messages"]["count"] >= len(s["unanswered_messages"]["messages"])
+    assert set(s["campaigns_sent"]) == {"count", "recipients"}
+    shop = MockBackend("butik", today=TODAY, store_path=tmp_path / "b.json").daily_summary("2026-10-27")
+    assert shop["appointments"]["count"] == 0 and shop["revenue"]["total"] > 0
+    assert shop["unanswered_messages"]["count"] > 0
+    with pytest.raises(ValueError):
+        _salon(tmp_path).daily_summary("not-a-day")
+
+
+def test_find_appointments_turkish_name_match(tmp_path):
+    b = _salon(tmp_path)
+    cust = b.customers[0]
+    svc = next(i for i in b.items if i.type == "service")
+    day = (TODAY + timedelta(days=5)).isoformat()
+    appt = b.create_appointment(cust.id, svc.id, "Elif", f"{day}T11:00")
+    query = _strip_tr(cust.name.split()[0])
+    hits = b.find_appointments(query)
+    assert appt["id"] in [h["id"] for h in hits]
+    assert b.find_appointments(query.upper()) and b.find_appointments(query[:3])
+    assert set(hits[0]) == {"id", "customer", "service", "staff", "starts", "ends", "status"}
+    assert all(h["id"] != appt["id"] or h["starts"].startswith(day) for h in b.find_appointments(day=day))
+    assert appt["id"] not in [h["id"] for h in b.find_appointments(day="2026-10-28")]
+    assert b.find_appointments("zzz-kayıt-dışı") == []
+
+
+def test_create_appointment_hours_and_conflicts(tmp_path):
+    b = _salon(tmp_path)
+    cust = b.customers[0].id
+    fon = next(i for i in b.items if i.name == "Fön")   # 30 dk
+    day = (TODAY + timedelta(days=5)).isoformat()
+    ok = b.create_appointment(cust, fon.id, "Elif", f"{day}T11:00")
+    assert (ok["starts"], ok["ends"], ok["status"]) == (f"{day}T11:00", f"{day}T11:30", "confirmed")
+    edge = b.create_appointment(cust, fon.id, "Elif", f"{day}T18:30")  # ends exactly at closing
+    assert edge["ends"] == f"{day}T19:00"
+    other = b.create_appointment(cust, fon.id, "Deniz", f"{day}T11:15")  # same slot, other staff
+    assert other["staff"] == "Deniz"
+    with pytest.raises(ValueError, match="dolu"):
+        b.create_appointment(cust, fon.id, "Elif", f"{day}T11:15")
+    with pytest.raises(ValueError, match="çalışma saatleri"):
+        b.create_appointment(cust, fon.id, "Elif", f"{day}T08:00")
+    with pytest.raises(ValueError, match="çalışma saatleri"):
+        b.create_appointment(cust, fon.id, "Elif", f"{day}T18:45")
+    with pytest.raises(ValueError, match="Hizmet bulunamadı"):
+        b.create_appointment(cust, "nope", "Elif", f"{day}T12:00")
+    with pytest.raises(ValueError, match="Müşteri bulunamadı"):
+        b.create_appointment("cx", fon.id, "Elif", f"{day}T12:00")
+    with pytest.raises(ValueError, match="Çalışan bulunamadı"):
+        b.create_appointment(cust, fon.id, "Hayalet", f"{day}T12:00")
+    with pytest.raises(ValueError, match="anlaşılmadı"):
+        b.create_appointment(cust, fon.id, "Elif", "yarın öğlen")
+    shop = MockBackend("butik", today=TODAY, store_path=tmp_path / "b.json")
+    with pytest.raises(ValueError, match="bir hizmet değil"):
+        shop.create_appointment(shop.customers[0].id, shop.items[0].id, "Elif", f"{day}T12:00")
+
+
+def test_reschedule_frees_old_slot(tmp_path):
+    b = _salon(tmp_path)
+    cust = b.customers[0].id
+    fon = next(i for i in b.items if i.name == "Fön")
+    day = (TODAY + timedelta(days=5)).isoformat()
+    appt = b.create_appointment(cust, fon.id, "Elif", f"{day}T11:00")
+    b.create_appointment(cust, fon.id, "Elif", f"{day}T15:00")
+
+    def covers(gaps, frm, to):
+        return any(g["from"] <= frm and to <= g["to"] for g in gaps)
+
+    assert not covers(b.get_schedule(day)["free_slots"]["Elif"], "11:00", "11:30")
+    moved = b.reschedule_appointment(appt["id"], f"{day}T14:00")
+    assert moved["starts"] == f"{day}T14:00" and moved["item_id"] == fon.id
+    assert moved["customer_id"] == cust and moved["staff"] == "Elif"
+    free = b.get_schedule(day)["free_slots"]["Elif"]
+    assert covers(free, "11:00", "11:30") and not covers(free, "14:00", "14:30")
+    with pytest.raises(ValueError, match="dolu"):
+        b.reschedule_appointment(appt["id"], f"{day}T15:15")
+    with pytest.raises(ValueError, match="Randevu bulunamadı"):
+        b.reschedule_appointment("ax", f"{day}T12:00")
+
+
+def test_cancel_reflected_in_schedule_and_report(tmp_path):
+    b = _salon(tmp_path)
+    kesim = next(i for i in b.items if i.name == "Saç Kesimi")
+    day = (TODAY + timedelta(days=6)).isoformat()
+    appt = b.create_appointment(b.customers[1].id, kesim.id, "Deniz", f"{day}T10:00")
+    b.cancel_appointment(appt["id"], reason="müşteri iptal etti")
+    sched = b.get_schedule(day)
+    assert all(a["staff"] != "Deniz" or "10:00" not in a["time"] for a in sched["appointments"])
+    assert any(g["from"] == "10:00" for g in sched["free_slots"]["Deniz"])
+    found = b.find_appointments(day=day)
+    assert len(found) == 1 and found[0]["status"] == "cancelled"
+    changes = [c for c in b.report()["appointments_changed"] if c["id"] == appt["id"]]
+    assert [c["change"] for c in changes] == ["created", "cancelled"]
+    assert changes[1]["reason"] == "müşteri iptal etti"
+    b.cancel_appointment(appt["id"])   # idempotent: no duplicate event
+    assert sum(1 for c in b.report()["appointments_changed"] if c["id"] == appt["id"]) == 2
+
+
+def test_save_persists_summary_and_appointment_data(tmp_path):
+    b = _salon(tmp_path)
+    day = (TODAY + timedelta(days=5)).isoformat()
+    appt = b.create_appointment(b.customers[0].id, b.items[0].id, "Elif", f"{day}T11:00")
+    b.cancel_appointment(appt["id"])
+    b.save()
+    data = json.loads((tmp_path / "s.json").read_text())
+    assert data["revenue_entries"] and data["leads"] and data["messages"]
+    assert [c["change"] for c in data["appointment_changes"]] == ["created", "cancelled"]
+    assert any(a["id"] == appt["id"] and a["status"] == "cancelled" for a in data["appointments"])
+    assert any(c["created"] for c in data["customers"])
+
+
+def test_no_phone_numbers_in_new_methods(tmp_path):
+    b = _salon(tmp_path)
+    day = (TODAY + timedelta(days=5)).isoformat()
+    a = b.create_appointment(b.customers[0].id, b.items[0].id, "Elif", f"{day}T11:00")
+    m = b.reschedule_appointment(a["id"], f"{day}T12:00")
+    c = b.cancel_appointment(a["id"], reason="test")
+    blob = json.dumps([b.daily_summary(day), b.daily_summary("2026-10-27"), b.find_appointments(),
+                       b.find_appointments("ay"), a, m, c, b.report()])
+    assert "phone" not in blob and "+90" not in blob and "5XX" not in blob
