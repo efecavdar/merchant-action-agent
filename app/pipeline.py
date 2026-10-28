@@ -75,12 +75,20 @@ def infer_concept(instruction: str) -> str:
     return concept[:40]
 
 
+_DESCRIBE_CATEGORIES = ("çanta", "ayakkabı", "aksesuar", "elbise", "üst giyim", "alt giyim", "diğer")
+
 _DESCRIBE_PROMPT = (
     "You are cataloguing products for a small Turkish boutique. Look at the image and return ONLY a JSON "
-    "object with keys: name (short Turkish product name, max 5 words), category (one of: çanta, ayakkabı, "
-    "aksesuar, elbise, üst giyim, alt giyim, diğer), color (Turkish), material (Turkish, or 'belirsiz'), "
+    "object with keys: name (short Turkish product name, max 5 words), category "
+    f"(one of: {', '.join(_DESCRIBE_CATEGORIES)}), color (Turkish), material (Turkish, or 'belirsiz'), "
     "description (one friendly Turkish sentence for a WhatsApp catalog, no price). No markdown."
 )
+
+
+def _clamp_category(value: Any) -> str:
+    """Canonical allow-list entry (case-insensitive), or "diğer" for anything else."""
+    want = str(value or "").strip().lower()
+    return next((c for c in _DESCRIBE_CATEGORIES if c == want), "diğer")
 
 
 def describe_crop(crop: Image.Image) -> dict[str, str]:
@@ -90,9 +98,10 @@ def describe_crop(crop: Image.Image) -> dict[str, str]:
     except ValueError:
         log.warning("vision reply was not JSON, using fallback: %s", raw[:120])
         data = {}
+    name = " ".join(str(data.get("name") or "Yeni Ürün").split()[:5])
     return {
-        "name": str(data.get("name") or "Yeni Ürün"),
-        "category": str(data.get("category") or "diğer"),
+        "name": name or "Yeni Ürün",
+        "category": _clamp_category(data.get("category")),
         "color": str(data.get("color") or ""),
         "material": str(data.get("material") or "belirsiz"),
         "description": str(data.get("description") or ""),
@@ -126,11 +135,22 @@ def understand_media(text: str | None, audio: str | None, images: list[str],
     # 3) segment + describe
     n = 0
     for img_path in images:
-        img = meta.load_image(img_path)
-        boxes = meta.segment(img, ctx.concept)
+        name = Path(img_path).name
+        try:
+            img = meta.load_image(img_path)
+        except Exception:  # noqa: BLE001 — one bad photo must not kill the turn
+            log.warning("could not open photo %s; skipping it", img_path)
+            ctx.notes.append(f"photo {name} could not be opened; skipped")
+            continue
+        try:
+            boxes = meta.segment(img, ctx.concept)
+        except Exception:  # noqa: BLE001 — a SAM outage degrades to the whole image
+            log.warning("segmentation failed for %s; using whole image", img_path)
+            ctx.notes.append(f"segmentation failed for {name}; using whole image")
+            boxes = []
         pairs = meta.crop_boxes(img, boxes)
         if not pairs:
-            ctx.notes.append(f"SAM found no '{ctx.concept}' in {Path(img_path).name}; using whole image")
+            ctx.notes.append(f"SAM found no '{ctx.concept}' in {name}; using whole image")
             pairs = [(None, img)]
         for box, crop in pairs:
             n += 1

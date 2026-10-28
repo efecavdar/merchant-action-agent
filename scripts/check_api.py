@@ -24,33 +24,44 @@ def step(title: str):
     return time.time()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio")
     ap.add_argument("--image")
     ap.add_argument("--concept", default="product")
     ap.add_argument("--image-gen", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
-    t = step("1. list models")
-    models = sorted(m.id for m in meta.client().models.list().data)
-    print(", ".join(models))
-    for need in (settings.orchestrator_model, settings.image_model, settings.sam_model):
-        print(f"  {'✓' if need in models else '✗ MISSING'} {need}")
-    print(f"  ({time.time()-t:.1f}s)")
+    failures: list[str] = []
 
-    t = step("2. Muse Spark — Turkish hello")
-    print(meta.chat("Bursa'daki bir butik sahibine tek cümlelik samimi bir hoş geldin mesajı yaz.", effort="minimal"))
-    print(f"  ({time.time()-t:.1f}s)")
+    def run(title: str, fn) -> None:
+        """Run one check: print PASS/FAIL with the exception text, never stop early."""
+        t = step(title)
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 — a smoke test reports every step
+            print(f"  FAIL: {type(e).__name__}: {e}")
+            failures.append(title)
+        else:
+            print("  PASS")
+        print(f"  ({time.time()-t:.1f}s)")
 
-    if a.audio:
-        t = step("3. Muse Voice Transcribe")
+    def list_models() -> None:
+        models = sorted(m.id for m in meta.client().models.list().data)
+        print(", ".join(models))
+        for need in (settings.orchestrator_model, settings.image_model, settings.sam_model):
+            print(f"  {'✓' if need in models else '✗ MISSING'} {need}")
+
+    def spark_hello() -> None:
+        print(meta.chat("Bursa'daki bir butik sahibine tek cümlelik samimi bir hoş geldin mesajı yaz.",
+                        effort="minimal"))
+
+    def transcribe_audio() -> None:
         res = meta.transcribe(a.audio, language_bias=("Turkish", "English"))
         print(res["transcript"])
-        print(f"  duration {res.get('audioDurationMs',0)/1000:.1f}s  ({time.time()-t:.1f}s)")
+        print(f"  duration {res.get('audioDurationMs',0)/1000:.1f}s")
 
-    if a.image:
-        t = step(f"4. SAM 3.1 — '{a.concept}'")
+    def sam_segment() -> None:
         img = meta.load_image(a.image)
         boxes = meta.segment(img, a.concept)
         for b in boxes:
@@ -59,18 +70,31 @@ def main() -> int:
         out = Path("out/smoke"); out.mkdir(parents=True, exist_ok=True)
         for i, (_, c) in enumerate(crops):
             c.save(out / f"crop_{i}.png")
-        print(f"  {len(crops)} crop(s) saved to {out}/  ({time.time()-t:.1f}s)")
+        print(f"  {len(crops)} crop(s) saved to {out}/")
+        run("5. Muse Spark vision — describe first crop", lambda: describe_first(crops))
 
-        t = step("5. Muse Spark vision — describe first crop")
+    def describe_first(crops) -> None:
         if crops:
             print(meta.describe_image(crops[0][1], "Bu ürünü Türkçe tek cümleyle tanımla."))
-        print(f"  ({time.time()-t:.1f}s)")
 
+    def image_gen() -> None:
+        out = Path("out/smoke"); out.mkdir(parents=True, exist_ok=True)
+        p = meta.generate_campaign_visual([], "minimal boutique flat lay, beige tones, square",
+                                          out / "test_visual.png")
+        print(f"  saved {p}")
+
+    run("1. list models", list_models)
+    run("2. Muse Spark — Turkish hello", spark_hello)
+    if a.audio:
+        run("3. Muse Voice Transcribe", transcribe_audio)
+    if a.image:
+        run(f"4. SAM 3.1 — '{a.concept}'", sam_segment)
     if a.image_gen:
-        t = step("6. Muse Image — one test image")
-        p = meta.generate_campaign_visual([], "minimal boutique flat lay, beige tones, square", "out/smoke/test_visual.png")
-        print(f"  saved {p}  ({time.time()-t:.1f}s)")
+        run("6. Muse Image — one test image", image_gen)
 
+    if failures:
+        print(f"\n{len(failures)} check(s) FAILED: {', '.join(failures)}")
+        return 1
     print("\nAll requested checks passed.")
     return 0
 
