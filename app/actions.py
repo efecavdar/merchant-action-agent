@@ -13,8 +13,10 @@ from typing import Any
 from .config import settings
 
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
-                "create_appointment", "reschedule_appointment", "cancel_appointment"}
+                "create_appointment", "reschedule_appointment", "cancel_appointment",
+                "apply_bulk_price", "adjust_loyalty", "ads_action"}
 APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment"}
+ADS_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
 
 # JSON schema handed to the model (Responses API flat tool format)
 PROPOSAL_SCHEMA: dict[str, Any] = {
@@ -57,7 +59,16 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "item_ref": {"type": "string", "description": "service id from list_catalog (create_appointment)"},
                     "staff": {"type": "string", "description": "staff member name (create/reschedule)"},
                     "appointment_id": {"type": "string", "description": "from find_appointments (reschedule/cancel)"},
-                    "reason": {"type": "string", "description": "cancel_appointment, optional"},
+                    "reason": {"type": "string", "description": "cancel (optional) / loyalty reason"},
+                    # bulk price / loyalty / ads
+                    "preview_id": {"type": "string",
+                                   "description": "from preview_bulk_price (apply_bulk_price)"},
+                    "points": {"type": "integer",
+                               "description": "points to add (negative subtracts), 1..1000 by magnitude"},
+                    "campaign_id": {"type": "string", "description": "from get_ads_performance (ads_action)"},
+                    "action": {"type": "string", "enum": sorted(ADS_ACTIONS)},
+                    "delta_pct": {"type": "integer",
+                                  "description": "budget change 1..20, for increase/decrease_budget"},
                     "label": {"type": "string",
                               "description": "one Turkish line the owner will see on the approval card, e.g. "
                                              "'Ayşe Y. — Saç Kesimi, Elif, 31 Ekim Cuma 15:00'"},
@@ -88,7 +99,8 @@ def _promised_numbers(message: str) -> tuple[set[int], set[float]]:
 def _coerce_numbers(a: dict[str, Any]) -> None:
     """Tool-call arguments sometimes arrive as strings ("20") or floats (20.0). Normalise in place
     so the validator and the executor see plain numbers."""
-    for key, want_int in (("percent", True), ("duration_minutes", True), ("price", False)):
+    for key, want_int in (("percent", True), ("duration_minutes", True), ("price", False),
+                             ("points", True), ("delta_pct", True)):
         v = a.get(key)
         if isinstance(v, str):
             v = v.strip().replace(",", ".")
@@ -123,13 +135,18 @@ def _iso_dt(s: str) -> datetime:
 def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       catalog: dict[str, dict[str, Any]], known_segments: set[str],
                       known_appointments: set[str] | None = None,
-                      known_customers: set[str] | None = None) -> list[str]:
+                      known_customers: set[str] | None = None,
+                      known_previews: dict[str, dict[str, Any]] | None = None,
+                      known_campaigns: set[str] | None = None) -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
-    Ids for appointments / customers must come from a tool call in the same run (like segments)."""
+    Ids for appointments / customers / campaigns / previews must come from a tool call
+    in the same run (like segments); `known_previews` maps preview_id -> preview result."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
+    known_previews = known_previews or {}
+    known_campaigns = known_campaigns or set()
     errors: list[str] = []
     if not isinstance(proposal, dict):
         return ["proposal must be an object"]
@@ -251,6 +268,56 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     _iso_dt(a.get("starts") or "")
                 except (ValueError, TypeError):
                     errors.append(f"{where}: starts must be an ISO datetime like 2026-10-31T15:00")
+
+        elif t == "apply_bulk_price":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            pv = known_previews.get(a.get("preview_id") or "")
+            if pv is None:
+                errors.append(f"{where}: preview_id must come from a preview_bulk_price call "
+                              f"(known: {sorted(known_previews)})")
+            else:
+                rows = pv.get("items") or []
+                if not 1 <= len(rows) <= 200:
+                    errors.append(f"{where}: preview has {len(rows)} items, need 1..200")
+                for row in rows:
+                    old, new = row.get("old_price"), row.get("new_price")
+                    if not isinstance(new, (int, float)) or new <= 0:
+                        errors.append(f"{where}: {row.get('id')}: new price must be positive")
+                    elif not isinstance(old, (int, float)) or old <= 0:
+                        errors.append(f"{where}: {row.get('id')}: old price is invalid")
+                    elif not -0.5 <= (new - old) / old <= 0.5:
+                        errors.append(f"{where}: {row.get('id')}: change {old:g}→{new:g} exceeds ±50%")
+
+        elif t == "adjust_loyalty":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            if a.get("customer_id") not in known_customers:
+                errors.append(f"{where}: customer_id must come from a find_customer call "
+                              f"(known: {sorted(known_customers)})")
+            pts = a.get("points")
+            if isinstance(pts, bool) or not isinstance(pts, int):
+                errors.append(f"{where}: points must be an integer")
+            elif not 1 <= abs(pts) <= 1000:
+                errors.append(f"{where}: points must be 1..1000 by magnitude (negative subtracts)")
+            if not a.get("reason"):
+                errors.append(f"{where}: reason is required (why the points change)")
+
+        elif t == "ads_action":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            if a.get("campaign_id") not in known_campaigns:
+                errors.append(f"{where}: campaign_id must come from a get_ads_performance call "
+                              f"(known: {sorted(known_campaigns)})")
+            act = a.get("action")
+            if act not in ADS_ACTIONS:
+                errors.append(f"{where}: action must be one of {sorted(ADS_ACTIONS)}")
+            elif act in ("increase_budget", "decrease_budget"):
+                delta = a.get("delta_pct")
+                if isinstance(delta, bool) or not isinstance(delta, int):
+                    errors.append(f"{where}: delta_pct must be an integer for budget actions")
+                elif not 1 <= delta <= 20:
+                    errors.append(f"{where}: delta_pct must be 1..20")
 
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}

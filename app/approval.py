@@ -35,6 +35,12 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             lines.append(f"   “{a.get('message')}”")
         elif t in _APPT_VERB:
             lines.append(f"{ic} {_APPT_VERB[t]}: {a.get('label') or a.get('appointment_id') or ''}")
+        elif t == "apply_bulk_price":
+            lines.append(f"💸 Toplu fiyat: {a.get('label') or a.get('preview_id')}")
+        elif t == "adjust_loyalty":
+            lines.append(f"⭐ Puan: {a.get('label') or a.get('customer_id')}")
+        elif t == "ads_action":
+            lines.append(f"📢 Reklam: {a.get('label') or a.get('campaign_id')}")
     lines += ["", "Onaylıyor musun? (evet / hayır)"]
     return "\n".join(lines)
 

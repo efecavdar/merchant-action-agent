@@ -69,6 +69,7 @@ class Customer:
     tags: list[str] = field(default_factory=list)
     marketing_consent: bool = True
     created: str = ""                   # ISO date the customer signed up ("" = old customer)
+    loyalty_points: int = 0
 
     def loyalty_status(self, today: date) -> str:
         days = (today - date.fromisoformat(self.last_visit)).days
@@ -138,6 +139,19 @@ class InboxMessage:
     age_minutes: int = 0
 
 
+@dataclass
+class AdCampaign:
+    id: str
+    name: str
+    platform: str                   # "Instagram" | "Meta"
+    status: str                     # "active" | "paused"
+    daily_budget: float
+    spend: float                    # last 7 days, TRY (mock base figures; scaled by `days`)
+    impressions: int                # last 7 days
+    clicks: int                     # last 7 days
+    results: int                    # last 7 days (messages, bookings…)
+
+
 # --------------------------------------------------------------------------- #
 # Interface
 # --------------------------------------------------------------------------- #
@@ -155,6 +169,11 @@ class Backend(Protocol):
     def daily_summary(self, day: str) -> dict[str, Any]: ...
     def find_appointments(self, customer_name: str | None = None,
                           day: str | None = None) -> list[dict[str, Any]]: ...
+    def preview_bulk_price(self, item_type: str | None = None, category: str | None = None,
+                           item_ids: list[str] | None = None, mode: str | None = None,
+                           value: float | None = None) -> dict[str, Any]: ...
+    def ads_performance(self, days: int = 7) -> dict[str, Any]: ...
+    def ads_suggestions(self) -> dict[str, Any]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -169,6 +188,10 @@ class Backend(Protocol):
     def reschedule_appointment(self, appointment_id: str, starts: str,
                                staff: str | None = None) -> dict[str, Any]: ...
     def cancel_appointment(self, appointment_id: str, reason: str = "") -> dict[str, Any]: ...
+    def apply_bulk_price(self, preview_id: str) -> dict[str, Any]: ...
+    def adjust_loyalty(self, customer_id: str, points: int, reason: str) -> dict[str, Any]: ...
+    def ads_action(self, campaign_id: str, action: str,
+                   delta_pct: int | None = None) -> dict[str, Any]: ...
     def report(self) -> dict[str, Any]: ...
 
 
@@ -199,6 +222,18 @@ _SEEDS: dict[str, dict[str, Any]] = {
         ],
         "tags": ["çanta", "ayakkabı", "aksesuar", "elbise"],
         "customers": 42,
+        # (name, platform, status, daily_budget, spend, impressions, clicks, results) — 7-day figures
+        "ads": [
+            ("Yaz Elbiseleri", "Instagram", "active", 500, 3150, 42000, 1150, 88),
+            ("Deri Çanta", "Instagram", "active", 400, 2650, 18000, 290, 9),
+            ("Mağaza Bilinirliği", "Meta", "paused", 250, 900, 12000, 210, 14),
+        ],
+        "suggestions": [
+            {"campaign_id": "ad2", "kind": "pause",
+             "text": "Deri Çanta ~294 ₺/sonuç harcıyor; duraklat, bütçeyi Elbiseler'e kaydır."},
+            {"campaign_id": "ad1", "kind": "increase_budget",
+             "text": "Yaz Elbiseleri ~36 ₺/sonuç ile iyi; bütçeyi %15 artır."},
+        ],
     },
     "salon": {
         "profile": {
@@ -220,6 +255,18 @@ _SEEDS: dict[str, dict[str, Any]] = {
         ],
         "tags": ["boya", "kesim", "bakım", "manikür"],
         "customers": 38,
+        # (name, platform, status, daily_budget, spend, impressions, clicks, results) — 7-day figures
+        "ads": [
+            ("Saç Boyama", "Instagram", "active", 600, 3900, 38000, 980, 64),
+            ("Keratin Bakımı", "Instagram", "active", 350, 2200, 15000, 240, 6),
+            ("Gelin Sezonu", "Meta", "active", 300, 1500, 16000, 410, 31),
+        ],
+        "suggestions": [
+            {"campaign_id": "ad2", "kind": "pause",
+             "text": "Keratin Bakımı sonuç başına ~367 ₺ harcıyor; duraklatmayı düşün."},
+            {"campaign_id": "ad3", "kind": "increase_budget",
+             "text": "Gelin Sezonu sonuç başına ~48 ₺ ile verimli; bütçeyi %10 artır."},
+        ],
     },
 }
 
@@ -316,7 +363,9 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 2
+    SCHEMA = 3
+
+    PREVIEW_TTL_S = 15 * 60
 
     def __init__(self, business: str | None = None, store_path: Path | None = None,
                  seed: int = 16, today: date | None = None):
@@ -334,6 +383,17 @@ class MockBackend:
             for k, (t, n, p, c, d, dur) in enumerate(cfg["items"])
         ]
         self.customers: list[Customer] = _seed_customers(rng, cfg["customers"], self.today, cfg["tags"])
+        p_rng = random.Random(seed + 21)   # own stream: must not shift the customer/appointment seeds
+        for c in self.customers:
+            c.loyalty_points = p_rng.choice([0, 0, 0, 50, 100, 150, 200, 300, 500])
+        self.ads: list[AdCampaign] = [
+            AdCampaign(f"ad{k+1}", name, platform, status, float(budget), float(spend),
+                       impressions, clicks, results)
+            for k, (name, platform, status, budget, spend, impressions, clicks, results)
+            in enumerate(cfg["ads"])
+        ]
+        self.ad_suggestions: list[dict[str, Any]] = [dict(s) for s in cfg["suggestions"]]
+        self.previews: dict[str, dict[str, Any]] = {}
         services = [i for i in self.items if i.type == "service"]
         self.appointments: list[Appointment] = (
             _seed_appointments(rng, self.today, self.customers, services, self.profile["staff"])
@@ -373,6 +433,12 @@ class MockBackend:
             if a.id == appointment_id:
                 return a
         raise ValueError(f"Randevu bulunamadı: {appointment_id}")
+
+    def _ad(self, campaign_id: str) -> AdCampaign:
+        for c in self.ads:
+            if c.id == campaign_id:
+                return c
+        raise ValueError(f"Reklam bulunamadı: {campaign_id}")
 
     @staticmethod
     def _parse_starts(starts: str) -> datetime:
@@ -559,6 +625,66 @@ class MockBackend:
                         "starts": a.starts, "ends": a.ends, "status": a.status})
         return out
 
+    def preview_bulk_price(self, item_type: str | None = None, category: str | None = None,
+                           item_ids: list[str] | None = None, mode: str | None = None,
+                           value: float | None = None) -> dict[str, Any]:
+        """Show what a bulk price change would do, without changing anything.
+
+        mode `percent` (e.g. 10) or `amount` in TRY (e.g. 50); value may be negative.
+        Registers the preview so `apply_bulk_price` can apply it by id (15 min validity)."""
+        if mode not in ("percent", "amount"):
+            raise ValueError("mode 'percent' ya da 'amount' olmalı")
+        try:
+            delta = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(f"değer sayı olmalı: {value!r}") from None
+        if item_type not in (None, "", *ITEM_TYPES):
+            raise ValueError(f"item_type {item_type!r} anlaşılmadı (product | service)")
+        if item_ids is not None:
+            wanted = {i.id: i for i in (self._item(i) for i in item_ids)}   # raises on unknown ids
+            items = [i for i in self.items if i.active and i.id in wanted]
+        else:
+            items = [i for i in self.items if i.active and (not item_type or i.type == item_type)
+                     and (not category or i.category == category)]
+        rows = [{"id": i.id, "name": i.name, "old_price": i.price,
+                 "new_price": round(i.price * (1 + delta / 100), 2) if mode == "percent"
+                 else round(i.price + delta, 2)} for i in items]
+        pid = self._next_id("pv")
+        self.previews[pid] = {"items": rows, "at": time.time()}
+        return {"preview_id": pid, "items": rows, "count": len(rows)}
+
+    def ads_performance(self, days: int = 7) -> dict[str, Any]:
+        """Ad campaigns with spend / impressions / clicks / results / cost per result + totals."""
+        if days is None:
+            days = 7
+        try:
+            days = int(days)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(f"gün sayısı anlaşılmadı: {days!r}") from None
+        if not 1 <= days <= 365:
+            raise ValueError("days 1..365 olmalı")
+        factor = days / 7
+        campaigns = []
+        for c in self.ads:
+            spend = round(c.spend * factor, 2)
+            impr, clicks, results = (int(round(v * factor)) for v in (c.impressions, c.clicks, c.results))
+            campaigns.append({"id": c.id, "name": c.name, "platform": c.platform, "status": c.status,
+                              "daily_budget": c.daily_budget, "spend": spend, "impressions": impr,
+                              "clicks": clicks, "results": results,
+                              "cost_per_result": round(spend / results, 2) if results else None})
+        totals: dict[str, Any] = {
+            "spend": round(sum(x["spend"] for x in campaigns), 2),
+            "impressions": sum(x["impressions"] for x in campaigns),
+            "clicks": sum(x["clicks"] for x in campaigns),
+            "results": sum(x["results"] for x in campaigns),
+        }
+        totals["cost_per_result"] = (round(totals["spend"] / totals["results"], 2)
+                                     if totals["results"] else None)
+        return {"campaigns": campaigns, "totals": totals}
+
+    def ads_suggestions(self) -> dict[str, Any]:
+        return {"suggestions": [dict(s) for s in self.ad_suggestions]}
+
     # -- write tools (only called by the executor AFTER human approval) ------ #
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
                          description: str, image_path: str = "",
@@ -644,6 +770,53 @@ class MockBackend:
             self._record_change("cancelled", a, reason)
         return asdict(a)
 
+    def apply_bulk_price(self, preview_id: str) -> dict[str, Any]:
+        """Apply a previewed bulk price change. Unknown or expired previews fail like the gateway."""
+        pv = self.previews.get(preview_id)
+        if pv is None:
+            raise ValueError(f"Fiyat önizlemesi bulunamadı: {preview_id}")
+        if time.time() - pv["at"] > self.PREVIEW_TTL_S:
+            raise ValueError("Fiyat önizlemesinin süresi doldu (15 dk), yeniden önizleme iste")
+        rows = []
+        for row in pv["items"]:
+            item = self._item(row["id"])
+            old = item.price
+            item.price = float(row["new_price"])
+            rows.append({"id": item.id, "old_price": old, "new_price": item.price})
+        return {"preview_id": preview_id, "items": rows, "count": len(rows)}
+
+    def adjust_loyalty(self, customer_id: str, points: int, reason: str) -> dict[str, Any]:
+        """Add (or, when negative, subtract) loyalty points. A balance below zero clamps to 0."""
+        customer = self._customer(customer_id)
+        try:
+            delta = int(points)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(f"puan sayı olmalı: {points!r}") from None
+        old = customer.loyalty_points
+        customer.loyalty_points = max(0, old + delta)
+        return {"customer_id": customer.id, "name": customer.name, "old_points": old,
+                "points": customer.loyalty_points, "delta": delta, "reason": reason}
+
+    def ads_action(self, campaign_id: str, action: str,
+                   delta_pct: int | None = None) -> dict[str, Any]:
+        """Pause / resume a campaign or change its daily budget by delta_pct (1..20)."""
+        campaign = self._ad(campaign_id)
+        if action == "pause":
+            campaign.status = "paused"
+        elif action == "resume":
+            campaign.status = "active"
+        elif action in ("increase_budget", "decrease_budget"):
+            if campaign.status != "active":
+                raise ValueError(f"Duraklatılmış kampanyanın bütçesi değiştirilemez: {campaign.name}")
+            if delta_pct is None:
+                raise ValueError("bütçe değişimi için delta_pct gerekli (1..20)")
+            sign = 1 if action == "increase_budget" else -1
+            campaign.daily_budget = round(campaign.daily_budget * (1 + sign * int(delta_pct) / 100), 2)
+        else:
+            raise ValueError(f"reklam işlemi anlaşılmadı: {action!r} "
+                             "(pause | resume | increase_budget | decrease_budget)")
+        return asdict(campaign)
+
     def report(self) -> dict[str, Any]:
         return {
             "backend": self.name,
@@ -714,6 +887,14 @@ class KeddBackend:
     def daily_summary(self, day): return self._get("/agent/daily-summary", day=day)
     def find_appointments(self, customer_name=None, day=None):
         return self._get("/agent/appointments", customer_name=customer_name or "", day=day or "")
+    def preview_bulk_price(self, item_type=None, category=None, item_ids=None, mode=None, value=None):
+        return self._post("/agent/catalog/bulk-price/preview",
+                          {"item_type": item_type, "category": category, "item_ids": item_ids,
+                           "mode": mode, "value": value})
+    def ads_performance(self, days=7):
+        return self._get("/agent/ads/performance", days=days)
+    def ads_suggestions(self):
+        return self._get("/agent/ads/suggestions")
     def add_catalog_item(self, item_type, name, price, category, description, image_path="",
                          duration_minutes=None):
         return self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
@@ -733,6 +914,14 @@ class KeddBackend:
                                                               "starts": starts, "staff": staff})
     def cancel_appointment(self, appointment_id, reason=""):
         return self._post("/agent/appointments/cancel", {"appointment_id": appointment_id, "reason": reason})
+    def apply_bulk_price(self, preview_id):
+        return self._post("/agent/catalog/bulk-price", {"preview_id": preview_id})
+    def adjust_loyalty(self, customer_id, points, reason):
+        return self._post("/agent/loyalty/adjust", {"customer_id": customer_id,
+                                                    "points": points, "reason": reason})
+    def ads_action(self, campaign_id, action, delta_pct=None):
+        return self._post("/agent/ads/action", {"campaign_id": campaign_id, "action": action,
+                                                "delta_pct": delta_pct})
     def report(self): return self._get("/agent/report")
 
 
