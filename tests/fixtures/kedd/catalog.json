@@ -1,0 +1,8 @@
+{"items": [
+  {"id": "item-1", "type": "service", "name": "Saç Kesimi", "price": 450.0, "salePrice": null,
+   "durationMinutes": 45, "category": "kesim", "stock": null},
+  {"id": "item-2", "type": "product", "name": "Şampuan", "price": 320, "salePrice": 270.0,
+   "durationMinutes": null, "category": "bakım", "stock": 12},
+  {"id": "item-3", "type": "service", "name": "Fiyat Sorunuz", "price": null, "salePrice": null,
+   "durationMinutes": 30, "category": null, "stock": null}
+], "truncated": false}

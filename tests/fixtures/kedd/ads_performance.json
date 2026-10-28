@@ -1,0 +1,6 @@
+{"days": 7, "campaigns": [
+  {"id": "ad-1", "name": "Yaz Elbiseleri", "status": "active", "spend": 3150.0,
+   "impressions": 42000, "clicks": 1150, "results": 88, "stale": false},
+  {"id": "ad-2", "name": "Deri Çanta", "status": "active", "spend": 2650.0,
+   "impressions": 18000, "clicks": 290, "results": null, "stale": true}
+]}

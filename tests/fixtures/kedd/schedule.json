@@ -1,0 +1,11 @@
+{"day": "2026-10-29",
+ "appointments": [
+   {"id": "appt-1", "customer": "Ayşe Y.", "service": "Saç Kesimi", "staff": "Elif",
+    "starts": "2026-10-29T07:00:00Z", "ends": "2026-10-29T07:45:00Z", "status": "pending"},
+   {"id": "appt-2", "customer": "Elif K.", "service": "Fön", "staff": "Deniz",
+    "starts": "2026-10-29T08:00:00Z", "ends": "2026-10-29T08:30:00Z", "status": "cancelled"}
+ ],
+ "slots": [{"time": "09:00", "available": false}, {"time": "09:30", "available": true},
+           {"time": "10:00", "available": true}, {"time": "10:30", "available": false},
+           {"time": "11:00", "available": true}],
+ "configuredHours": true}

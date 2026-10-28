@@ -1,0 +1,10 @@
+{"templates": [
+  {"name": "marketing_reengagement_promo_tr", "body": "Merhaba {{1}}! {{3}} seni bekliyor, kodun: {{2}}.",
+   "variables": [{"number": 1, "name": "customer_name"}, {"number": 2, "name": "code"},
+                 {"number": 3, "name": "advantage"}]},
+  {"name": "marketing_engagement_thankyou_promo_tr", "body": "Teşekkürler {{1}}! {{3}} hediyen, kodun: {{2}}.",
+   "variables": [{"number": 1, "name": "customer_name"}, {"number": 2, "name": "code"},
+                 {"number": 3, "name": "discount"}]},
+  {"name": "marketing_welcome_offer_friendly_tr", "body": "Aramıza hoş geldin {{1}}!",
+   "variables": [{"number": 1, "name": "customer_name"}]}
+]}

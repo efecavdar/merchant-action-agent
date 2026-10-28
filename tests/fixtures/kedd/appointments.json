@@ -1,0 +1,6 @@
+{"appointments": [
+   {"id": "appt-1", "customer": "Ayşe Y.", "service": "Saç Kesimi", "staff": "Elif",
+    "starts": "2026-10-29T07:00:00Z", "ends": "2026-10-29T07:45:00Z", "status": "pending"},
+   {"id": "appt-2", "customer": "", "service": null, "staff": null,
+    "starts": null, "ends": null, "status": "completed"}
+ ], "truncated": false}

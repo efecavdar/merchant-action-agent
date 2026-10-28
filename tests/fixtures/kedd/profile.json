@@ -1,0 +1,18 @@
+{
+  "business": {
+    "name": "Örnek Kuaför", "city": "İzmir", "sector": "hair salon",
+    "hours": {"timezone": "Europe/Istanbul", "hours": [
+      {"dayOfWeek": "monday", "isOpen": true, "openTime": "09:00", "closeTime": "18:00"},
+      {"dayOfWeek": "tuesday", "isOpen": true, "openTime": "09:00", "closeTime": "18:00"},
+      {"dayOfWeek": "wednesday", "isOpen": true, "openTime": "09:00", "closeTime": "18:00"},
+      {"dayOfWeek": "thursday", "isOpen": true, "openTime": "09:00", "closeTime": "18:00"},
+      {"dayOfWeek": "friday", "isOpen": true, "openTime": "09:00", "closeTime": "18:00"},
+      {"dayOfWeek": "saturday", "isOpen": true, "openTime": "10:00", "closeTime": "17:00"},
+      {"dayOfWeek": "sunday", "isOpen": false, "openTime": "09:00", "closeTime": "18:00"}
+    ]}
+  },
+  "staff": [{"id": "st-1", "name": "Elif"}, {"id": "st-2", "name": "Deniz"}],
+  "today": "2026-10-28",
+  "counts": {"staff": 2, "catalogItems": 3, "catalogTruncated": false,
+             "upcomingAppointments": 4, "upcomingTruncated": false}
+}
