@@ -38,7 +38,7 @@ HISTORY_REPLY_CHARS = 600
 HELP = ("Merhaba, ben Çırak 👋 Sesli not ya da yazıyla ne istediğini söyle, istersen önce ürün fotoğrafı at.\n"
         "Örn: \"Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver.\"\n"
         "Hiçbir şey senin *evet*'in olmadan yapılmaz.\n"
-        "Demo: /butik veya /salon ile işletme değiştir, /sifirla ile baştan başla.")
+        "Demo: /butik, /salon veya /kedd ile işletme değiştir, /sifirla ile baştan başla.")
 
 
 @dataclass
@@ -76,7 +76,7 @@ class Session:
             log.warning("stale backend in session (schema changed); re-seeding demo data")
             self.backend = None
         if self.backend is None:
-            self.backend = get_backend(self.business)
+            self.backend = get_backend(self.business, sender=self.sender)
         return self.backend
 
 
@@ -131,6 +131,20 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         session.history = []
         name = session.get_backend().store_profile().get("business_name", t[1:])
         return [Reply(f"Tamam, artık *{name}* (demo) için çalışıyorum.")]
+    if kind == "text" and t == "/kedd":
+        try:
+            backend = get_backend("kedd", sender=session.sender)
+        except RuntimeError:
+            return [Reply("KEDD bağlantısı bu ortamda kapalı.")]
+        session.business, session.backend, session.pending, session.images = "kedd", backend, None, []
+        session.history = []
+        try:
+            name = backend.store_profile().get("business_name", "")
+        except Exception:  # noqa: BLE001 — gateway unreachable; still switched, name stays unknown
+            name = ""
+        if name:
+            return [Reply(f"Tamam, artık KEDD'deki işletmen (*{name}*) için çalışıyorum.")]
+        return [Reply("Tamam, artık KEDD'deki işletmen için çalışıyorum.")]
     if kind == "text" and t in {"/sifirla", "/reset"}:
         session.backend, session.pending, session.images = None, None, []
         session.history = []

@@ -105,6 +105,15 @@ fictional businesses: `--business butik` (default) or `--business salon`. Campai
 simulated and labelled as such. With `BACKEND=kedd` the same interface talks to our platform through a small signed
 gateway (adapter only; the platform is not included).
 
+### KEDD integration
+
+In this repo: the `KeddBackend` adapter (`app/tools/backend.py`) and the public contract it speaks,
+[docs/kedd-gateway-contract.md](docs/kedd-gateway-contract.md) — signed requests, per-merchant tenant resolution,
+idempotent writes. Built during the hackathon inside the closed-source KEDD codebase: the gateway itself (~3k lines),
+which implements that contract. In the chat, `/kedd` switches the conversation to the real KEDD demo business
+(`/butik` and `/salon` switch back to the mock). Judges can run everything against the mock, which follows the
+same contract.
+
 ## Repository layout
 
 ```
