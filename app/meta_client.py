@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import requests
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 from PIL import Image
 
 from .config import require_api_key, settings
@@ -74,16 +74,50 @@ def image_to_data_url(img: Image.Image, fmt: str = "JPEG", quality: int = 90) ->
 # Muse Voice Transcribe — speech to text
 # --------------------------------------------------------------------------- #
 
+MAX_VOICE_S = 3 * 60  # longer voice notes are rejected before transcription
+_TOO_LONG_TR = "Sesli not 3 dakikadan uzun, kısaltıp tekrar dener misin?"
+
+
+def _audio_duration_s(path: Path) -> float | None:
+    """Media duration in seconds via ffprobe, or None when ffprobe is unavailable."""
+    if shutil.which("ffprobe") is None:
+        return None
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        check=True, capture_output=True, text=True)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _wav_duration_s(path: Path) -> float:
+    import wave  # stdlib: no ffprobe needed to measure the WAV we just wrote
+    with wave.open(str(path), "rb") as w:
+        return w.getnframes() / w.getframerate()
+
+
 def to_wav_24k_mono(src: str | Path) -> Path:
-    """Convert any audio (ogg/opus from WhatsApp, m4a, mp3...) to the WAV the endpoint accepts:
-    RIFF/WAVE, mono, 16-bit PCM, 24 kHz. Requires ffmpeg on PATH."""
+    """Convert any audio (ogg/opus from WhatsApp, m4a, mp3, webm...) to the WAV the endpoint
+    accepts: RIFF/WAVE, mono, 16-bit PCM, 24 kHz. Requires ffmpeg on PATH. Rejects
+    recordings longer than 3 minutes and files ffmpeg cannot decode."""
     src = Path(src)
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg not found on PATH; install it or pass a 24 kHz mono 16-bit WAV.")
+    duration = _audio_duration_s(src)
+    if duration is not None and duration > MAX_VOICE_S:
+        raise ValueError(_TOO_LONG_TR)
     out = Path(tempfile.mkdtemp()) / (src.stem + ".wav")
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
            "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", "-map_metadata", "-1", str(out)]
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        raise ValueError("Sesli not açılamadı, başka bir kayıt dener misin?") from None
+    if duration is None and _wav_duration_s(out) > MAX_VOICE_S:
+        out.unlink(missing_ok=True)
+        raise ValueError(_TOO_LONG_TR)
     return out
 
 
@@ -113,6 +147,8 @@ def transcribe(audio_path: str | Path, language_bias: Iterable[str] = ("Turkish"
         )
     resp.raise_for_status()
     data = resp.json()
+    if not (data.get("transcript") or "").strip():
+        raise ValueError("Sesli notu anlayamadım, tekrar dener misin ya da yazar mısın?")
     log.info("transcribed %.1fs of audio", data.get("audioDurationMs", 0) / 1000)
     return data
 
@@ -156,40 +192,76 @@ def parse_sam_boxes(output_text: str) -> list[Box]:
     return boxes
 
 
-def segment(img: Image.Image, concept: str, include_confidence: bool = True) -> list[Box]:
-    """Find every instance of `concept` (a short noun phrase, e.g. "handbag") in the image."""
-    extra: dict[str, Any] = {"metadata": {"mask_encoding": "one_bit"}}
-    if include_confidence:
-        extra["metadata"]["include_confidence"] = "true"
+def _segment_request(payload: list[dict[str, Any]], extra: dict[str, Any]) -> list[Box]:
     text = ""
-    with client().responses.stream(
-        model=settings.sam_model,
-        input=[{
-            "type": "message",
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": concept},
-                {"type": "input_image", "image_url": image_to_data_url(img)},
-            ],
-        }],
-        **extra,
-    ) as stream:
+    with client().responses.stream(model=settings.sam_model, input=payload, **extra) as stream:
         for event in stream:
             if event.type == "response.output_text.delta":
                 text += event.delta
-    boxes = parse_sam_boxes(text)
+    return parse_sam_boxes(text)
+
+
+def segment(img: Image.Image, concept: str, include_confidence: bool = True) -> list[Box]:
+    """Find every instance of `concept` (a short noun phrase, e.g. "handbag") in the image.
+
+    The `metadata` extras were written from the docs and may not exist server-side: a 400
+    is retried once with no extras at all. Anything else propagates to the pipeline, which
+    falls back to the whole image."""
+    payload = [{
+        "type": "message",
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": concept},
+            {"type": "input_image", "image_url": image_to_data_url(img)},
+        ],
+    }]
+    extra: dict[str, Any] = {"metadata": {"mask_encoding": "one_bit"}}
+    if include_confidence:
+        extra["metadata"]["include_confidence"] = "true"
+    try:
+        boxes = _segment_request(payload, extra)
+    except BadRequestError as e:
+        if e.status_code != 400:
+            raise
+        log.warning("SAM rejected the metadata params (400); retrying without them")
+        boxes = _segment_request(payload, {})
     log.info("SAM found %d '%s'", len(boxes), concept)
     return boxes
 
 
+MAX_CROPS_PER_PHOTO = 8
+
+
+def _iou(a: Box, b: Box) -> float:
+    inter = max(0, min(a.x2, b.x2) - max(a.x1, b.x1)) * max(0, min(a.y2, b.y2) - max(a.y1, b.y1))
+    union = a.area + b.area - inter
+    return inter / union if union else 0.0
+
+
+def _deduplicate(boxes: list[Box], iou_threshold: float = 0.6) -> list[Box]:
+    """Drop near-duplicate detections, keeping the most confident of each cluster."""
+    kept: list[Box] = []
+    for b in sorted(boxes, key=lambda b: (-(b.confidence or 0.0), -b.area, b.x1)):
+        if all(_iou(b, k) <= iou_threshold for k in kept):
+            kept.append(b)
+    return kept
+
+
 def crop_boxes(img: Image.Image, boxes: list[Box], pad: float = 0.04,
                min_area_ratio: float = 0.01) -> list[tuple[Box, Image.Image]]:
-    """Crop each box (with a small margin), dropping tiny detections. Sorted left-to-right."""
+    """Crop each box (with a small margin). Drops tiny detections, near-full-frame boxes when
+    several detections exist (background false positives), and IoU > 0.6 duplicates; caps at
+    MAX_CROPS_PER_PHOTO crops. Sorted left-to-right."""
     w, h = img.size
+    area = w * h
+    survivors = [b for b in boxes if b.area / area >= min_area_ratio]
+    if len(survivors) > 1:
+        survivors = [b for b in survivors if b.area / area <= 0.9]
+    survivors = _deduplicate(survivors)
+    if len(survivors) > MAX_CROPS_PER_PHOTO:
+        log.info("capping %d detections to %d crops", len(survivors), MAX_CROPS_PER_PHOTO)
     out = []
-    for b in sorted(boxes, key=lambda b: b.x1):
-        if b.area / (w * h) < min_area_ratio:
-            continue
+    for b in sorted(survivors, key=lambda b: b.x1)[:MAX_CROPS_PER_PHOTO]:
         px, py = int((b.x2 - b.x1) * pad), int((b.y2 - b.y1) * pad)
         crop = img.crop((max(0, b.x1 - px), max(0, b.y1 - py), min(w, b.x2 + px), min(h, b.y2 + py)))
         out.append((b, crop))
@@ -250,6 +322,19 @@ def chat(instruction: str, system: str | None = None, model: str | None = None,
 # Muse Image — campaign visuals
 # --------------------------------------------------------------------------- #
 
+def _images_call(call, **kwargs):
+    """Call images.edit/generate, retrying once with only `size` when the API rejects the
+    extra fields with a 400 (they were written from the docs, untested against the live API)."""
+    try:
+        return call(**kwargs)
+    except BadRequestError as e:
+        if e.status_code != 400:
+            raise
+        log.warning("Muse Image rejected the extra fields (400); retrying with size only")
+        kwargs["extra_body"] = {"size": kwargs["extra_body"]["size"]}
+        return call(**kwargs)
+
+
 def generate_campaign_visual(product_crops: list[Image.Image], prompt: str,
                              out_path: str | Path, size: str = "1024x1024") -> Path:
     """Compose the (real) product crops into one promotional visual with Muse Image.
@@ -267,13 +352,15 @@ def generate_campaign_visual(product_crops: list[Image.Image], prompt: str,
         buf.name = f"product_{i}.png"
         files.append(buf)
     if files:
-        resp = client().images.edit(
+        resp = _images_call(
+            client().images.edit,
             model=settings.image_model, prompt=prompt, image=files, n=1,
             extra_body={"size": size, "output_format": "png",
                         "tool_enablement": {"enable_web_search": False, "enable_shell": False}},
         )
     else:
-        resp = client().images.generate(
+        resp = _images_call(
+            client().images.generate,
             model=settings.image_model, prompt=prompt, n=1,
             extra_body={"size": size, "output_format": "png"},
         )
