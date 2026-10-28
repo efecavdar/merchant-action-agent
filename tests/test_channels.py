@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app import agent, core, report, server
 from app.channels import whatsapp as wa
 from app.config import settings
-from app.tools.backend import MockBackend
+from app.tools.backend import KeddBackend, MockBackend
 
 OURS = "897760253429206"
 SECRET = "s3cret"
@@ -251,6 +251,68 @@ def test_core_old_session_pickle_loads_with_empty_history():
 
     s = core.Session(sender="905321", history=[{"role": "owner", "text": "x", "at": 1.0}])
     assert pickle.loads(pickle.dumps(s)).history == s.history
+
+
+# --------------------------------------------------------------------------- #
+# /kedd mode (task 09)
+# --------------------------------------------------------------------------- #
+
+def test_kedd_command_switches_to_session_phone_backend(monkeypatch, cfg, tmp_path):
+    cfg("kedd_api_url", "https://kedd.example")
+    cfg("kedd_agent_secret", "s3cret")
+    monkeypatch.setattr(KeddBackend, "store_profile", lambda self: {"business_name": "Demo Kuaför"})
+    s = core.Session(sender="905321234567",
+                     backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    s.pending, s.images = {"at": time.time()}, ["a.jpg"]
+    s.history = [{"role": "owner", "text": "x", "at": time.time()}]
+    r = core.handle(s, "text", "/kedd")
+    assert s.business == "kedd" and isinstance(s.backend, KeddBackend)
+    assert s.backend._phone == "+905321234567"        # merchant comes from the chat, not the model
+    assert s.pending is None and s.images == [] and s.history == []
+    assert "KEDD'deki işletmen" in r[0].text and "Demo Kuaför" in r[0].text
+    core.handle(s, "text", "/butik")                  # and back to the mock
+    assert s.business == "butik" and isinstance(s.backend, MockBackend)
+
+
+def test_kedd_command_unconfigured_stays_on_mock(cfg, tmp_path):
+    cfg("kedd_api_url", "")
+    cfg("kedd_agent_secret", "")
+    s = _salon(tmp_path)
+    before = (s.business, s.backend)
+    r = core.handle(s, "text", "/kedd")
+    assert r[0].text == "KEDD bağlantısı bu ortamda kapalı."
+    assert (s.business, s.backend) == before and isinstance(s.backend, MockBackend)
+
+
+def test_kedd_command_unreachable_gateway_still_switches(monkeypatch, cfg, tmp_path):
+    cfg("kedd_api_url", "https://kedd.example")
+    cfg("kedd_agent_secret", "s3cret")
+
+    def boom(self):
+        raise ValueError("KEDD'ye ulaşılamadı.")
+    monkeypatch.setattr(KeddBackend, "store_profile", boom)
+    s = _salon(tmp_path)
+    r = core.handle(s, "text", "/kedd")
+    assert s.business == "kedd" and isinstance(s.backend, KeddBackend)
+    assert r[0].text == "Tamam, artık KEDD'deki işletmen için çalışıyorum."
+
+
+def test_kedd_stale_backend_is_reseeded_with_session_phone(cfg):
+    cfg("kedd_api_url", "https://kedd.example")
+    cfg("kedd_agent_secret", "s3cret")
+    old = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    del old._schema                                   # shape of a pre-SCHEMA pickle
+    s = core.Session(sender="905321", business="kedd", backend=old)
+    assert s.get_backend() is not old and s.backend._phone == "+905321"
+    assert s.backend._schema == KeddBackend.SCHEMA
+
+
+def test_session_holding_kedd_backend_pickles():
+    s = core.Session(sender="905321", business="kedd",
+                     backend=KeddBackend("https://kedd.example", "s3cret", "+905321"))
+    s2 = pickle.loads(pickle.dumps(s))
+    assert isinstance(s2.backend, KeddBackend) and s2.backend._phone == "+905321"
+    assert s2.get_backend() is s2.backend             # schema matches: no reseed
 
 
 def test_core_evet_without_pending_plans_instead_of_executing(monkeypatch, cfg, tmp_path):

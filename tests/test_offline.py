@@ -1,6 +1,7 @@
 """Offline tests: everything that does not need an API key."""
 
 import json
+import pickle
 import unicodedata
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -586,19 +587,22 @@ def test_executor_new_actions_and_card(tmp_path):
 class _FakeSession:
     """Captures KEDD adapter traffic without any network."""
 
-    def __init__(self):
+    def __init__(self, payload=None, status=200):
         self.calls: list[tuple] = []
+        self.payload = {"ok": True} if payload is None else payload
+        self.status = status
 
-    def _resp(self, payload):
-        return SimpleNamespace(json=lambda: payload, raise_for_status=lambda: None)
+    def _resp(self):
+        return SimpleNamespace(json=lambda: self.payload, status_code=self.status,
+                               raise_for_status=lambda: None)
 
     def get(self, url, headers=None, timeout=None):
         self.calls.append(("GET", url, headers, None))
-        return self._resp({"ok": True})
+        return self._resp()
 
     def post(self, url, data=None, headers=None, timeout=None):
         self.calls.append(("POST", url, headers, json.loads(data)))
-        return self._resp({"ok": True})
+        return self._resp()
 
 
 def test_kedd_paths_and_bodies():
@@ -833,3 +837,70 @@ def test_appointment_card_lines_come_from_tool_facts():
     assert "🔁 Randevu taşınıyor: Ayşe A. — Saç Boyama, 29.10 10:00 → 29.10 11:00" in card
     assert "❌ Randevu iptal: Ayşe A. — Saç Boyama, 29.10 10:00" in card
     assert "YANLIŞ" not in card
+
+
+# --------------------------------------------------------------------------- #
+# KEDD mode per conversation (task 09)
+# --------------------------------------------------------------------------- #
+
+def test_kedd_backend_pickles_without_session_and_hides_secret():
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    kb2 = pickle.loads(pickle.dumps(kb))
+    assert kb2.base == "https://kedd.example" and kb2._phone == "+905321"
+    assert kb2._schema == KeddBackend.SCHEMA
+    assert "s3cret" not in repr(kb2) and "5321" in repr(kb2)
+    h = kb2._headers("GET", "/agent/profile", "")        # signing works after the round trip
+    assert h["X-Agent-Phone"] == "+905321" and len(h["X-Agent-Signature"]) == 64
+
+
+def test_kedd_gateway_error_becomes_turkish_valueerror():
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    kb._s = _FakeSession(status=400, payload={"error": "bad_request", "message": "Gün anlaşılmadı."})
+    with pytest.raises(ValueError) as e:
+        kb.get_schedule("zzz")
+    assert str(e.value) == "Gün anlaşılmadı."            # the Turkish message, no HTTPError text
+    kb._s = _FakeSession(status=500, payload={"error": "boom"})
+    with pytest.raises(ValueError, match=r"boom.*HTTP 500"):
+        kb.store_profile()
+    kb._s = _FakeSession(status=503, payload="<html>kapalı</html>")
+    with pytest.raises(ValueError, match="HTTP 503"):
+        kb.store_profile()
+
+
+@pytest.mark.parametrize("code", ["in_progress", "unknown_outcome"])
+def test_kedd_409_says_may_have_run_and_not_retried(code):
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    kb._s = _FakeSession(status=409, payload={"error": code, "message": "İşlemin sonucu belirsiz."})
+    with pytest.raises(ValueError) as e:
+        kb.apply_bulk_price("pv101")
+    assert "tekrar denemedim" in str(e.value) and "olabilir" in str(e.value)
+    assert "İşlemin sonucu belirsiz." in str(e.value)    # the gateway message is kept
+
+
+def test_kedd_post_defaults_to_fresh_idempotency_key():
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    kb._s = _FakeSession()
+    kb.apply_bulk_price("pv1")
+    kb.apply_bulk_price("pv1", idempotency_key="run-7")
+    kb.find_customers(inactive_days=60)                  # reads-over-POST carry one too
+    keys = [h["Idempotency-Key"] for _m, _u, h, _b in kb._s.calls]
+    assert keys[0] and keys[1] == "run-7" and keys[2] and len(set(keys)) == 3
+
+
+def test_executor_passes_stable_idempotency_key(tmp_path):
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905321")
+    kb._s = _FakeSession(payload={"id": "k1", "type": "product", "name": "Fular", "price": 850,
+                                  "percent": 15})
+    prop = {"summary_tr": "x", "actions": [
+        {"type": "add_catalog_item", "item_type": "product", "ref": "n1", "name": "Fular", "price": 850},
+        {"type": "create_discount", "percent": 15, "item_refs": ["n1"],
+         "starts": "2026-10-31", "ends": "2026-11-01"}]}
+    run_dir = tmp_path / "20261028-120000-abcdef"
+    run_dir.mkdir()
+    steps = executor.execute(prop, MediaContext("x", "text"), kb, out_dir=run_dir)
+    assert [s["status"] for s in steps] == ["ok", "ok"]
+    keys = [h["Idempotency-Key"] for _m, _u, h, _b in kb._s.calls]
+    assert keys == ["20261028-120000-abcdef-0", "20261028-120000-abcdef-1"]
+    executor.execute(prop, MediaContext("x", "text"), kb, out_dir=run_dir)   # a retried delivery…
+    keys2 = [h["Idempotency-Key"] for _m, _u, h, _b in kb._s.calls[2:]]
+    assert keys2 == keys                                                     # …reuses both keys

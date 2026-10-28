@@ -886,6 +886,15 @@ class MockBackend:
 # KEDD adapter (private platform; HTTP only, no KEDD source code here)
 # --------------------------------------------------------------------------- #
 
+# A 409 means the gateway has seen this idempotency key before: the operation may already
+# have run, so it must never be retried automatically. Shown to the owner via the executor.
+_IDEMPOTENCY_CONFLICT_TR = {
+    "in_progress": "Bu işlem şu anda çalışıyor olabilir; çift çalışmaması için tekrar denemedim",
+    "unknown_outcome": ("Bu işlemin sonucu belirsiz (daha önce çalışmış olabilir); "
+                        "güvenlik için tekrar denemedim"),
+}
+
+
 class KeddBackend:
     """Adapter onto KEDD's agent gateway (a handful of signed HTTPS endpoints).
 
@@ -899,6 +908,9 @@ class KeddBackend:
     """
 
     name = "kedd"
+    # Same staleness contract as MockBackend: a session pickled before a shape change
+    # is re-seeded instead of crashing halfway through an approved plan.
+    SCHEMA = 1
 
     def __init__(self, base_url: str, secret: str, merchant_phone: str):
         import requests  # local import keeps mock mode dependency-light
@@ -906,6 +918,20 @@ class KeddBackend:
         self.base = base_url.rstrip("/")
         self._secret = secret.encode()
         self._phone = merchant_phone
+        self._schema = self.SCHEMA
+
+    def __repr__(self) -> str:
+        return f"KeddBackend(base={self.base!r}, phone=…{self._phone[-4:]})"
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop("_s", None)  # a requests.Session cannot be pickled; recreated on load
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        import requests  # local import keeps mock mode dependency-light
+        self.__dict__.update(state)
+        self._s = requests.Session()
 
     def _headers(self, method: str, path: str, body: str) -> dict[str, str]:
         ts = str(int(time.time()))
@@ -914,20 +940,53 @@ class KeddBackend:
         return {"X-Agent-Phone": self._phone, "X-Agent-Timestamp": ts, "X-Agent-Signature": sig,
                 "Content-Type": "application/json"}
 
+    @staticmethod
+    def _gateway_error(status: int, payload: Any) -> ValueError:
+        # Failures arrive as {error, message} JSON. The executor shows the message to the
+        # owner, so it must be the Turkish message — never a generic HTTP error dump.
+        body = payload if isinstance(payload, dict) else {}
+        code, msg = body.get("error", ""), body.get("message") or ""
+        if status == 409 and code in _IDEMPOTENCY_CONFLICT_TR:
+            text = _IDEMPOTENCY_CONFLICT_TR[code]
+            return ValueError(f"{text} ({msg})" if msg else text)
+        if msg:
+            return ValueError(msg)
+        if code:
+            return ValueError(f"KEDD hatası: {code} (HTTP {status})")
+        return ValueError(f"KEDD bağlantısı hata verdi (HTTP {status})")
+
+    @staticmethod
+    def _error_payload(r) -> Any:
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+
     def _get(self, path: str, **params):
         # The query string is part of the signed target, exactly as sent on the wire.
+        import requests  # local import keeps mock mode dependency-light
         from urllib.parse import urlencode
         qs = urlencode({k: v for k, v in params.items() if v not in (None, "")})
         target = f"{path}?{qs}" if qs else path
-        r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=30)
-        r.raise_for_status()
+        try:
+            r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=30)
+        except requests.exceptions.RequestException:
+            raise ValueError("KEDD'ye ulaşılamadı.") from None
+        if r.status_code >= 400:
+            raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()
 
-    def _post(self, path: str, body: dict):
+    def _post(self, path: str, body: dict, idempotency_key: str | None = None):
+        import requests  # local import keeps mock mode dependency-light
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
-        headers = {**self._headers("POST", path, payload), "Idempotency-Key": str(uuid.uuid4())}
-        r = self._s.post(f"{self.base}{path}", data=payload.encode(), headers=headers, timeout=30)
-        r.raise_for_status()
+        headers = {**self._headers("POST", path, payload),
+                   "Idempotency-Key": idempotency_key or str(uuid.uuid4())}
+        try:
+            r = self._s.post(f"{self.base}{path}", data=payload.encode(), headers=headers, timeout=30)
+        except requests.exceptions.RequestException:
+            raise ValueError("KEDD'ye ulaşılamadı; işlemin durumu belirsiz, tekrar denemedim.") from None
+        if r.status_code >= 400:
+            raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()
 
     def store_profile(self): return self._get("/agent/profile")
@@ -952,39 +1011,54 @@ class KeddBackend:
         res = self._get("/agent/campaign-templates")
         return res if isinstance(res, list) else res.get("templates", [])
     def add_catalog_item(self, item_type, name, price, category, description, image_path="",
-                         duration_minutes=None):
+                         duration_minutes=None, idempotency_key=None):
         return self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
                                              "category": category, "description": description,
-                                             "image_path": image_path, "duration_minutes": duration_minutes})
-    def create_discount(self, name, percent, item_ids, starts, ends):
+                                             "image_path": image_path,
+                                             "duration_minutes": duration_minutes}, idempotency_key)
+    def create_discount(self, name, percent, item_ids, starts, ends, idempotency_key=None):
         return self._post("/agent/discounts", {"name": name, "percent": percent,
-                                               "item_ids": item_ids, "starts": starts, "ends": ends})
-    def send_campaign(self, name, segment_id, message="", visual_path="", template=None, variables=None):
+                                               "item_ids": item_ids, "starts": starts,
+                                               "ends": ends}, idempotency_key)
+    def send_campaign(self, name, segment_id, message="", visual_path="", template=None,
+                      variables=None, idempotency_key=None):
         if template:   # the gateway fills {{1}} (customer name) itself, per recipient
             return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
-                                                   "template": template, "variables": variables or {}})
+                                                   "template": template,
+                                                   "variables": variables or {}}, idempotency_key)
         return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
-                                               "message": message, "visual_path": visual_path})
-    def create_appointment(self, customer_id, item_id, staff, starts):
+                                               "message": message,
+                                               "visual_path": visual_path}, idempotency_key)
+    def create_appointment(self, customer_id, item_id, staff, starts, idempotency_key=None):
         return self._post("/agent/appointments", {"customer_id": customer_id, "item_id": item_id,
-                                                  "staff": staff, "starts": starts})
-    def reschedule_appointment(self, appointment_id, starts, staff=None):
+                                                  "staff": staff, "starts": starts}, idempotency_key)
+    def reschedule_appointment(self, appointment_id, starts, staff=None, idempotency_key=None):
         return self._post("/agent/appointments/reschedule", {"appointment_id": appointment_id,
-                                                              "starts": starts, "staff": staff})
-    def cancel_appointment(self, appointment_id, reason=""):
-        return self._post("/agent/appointments/cancel", {"appointment_id": appointment_id, "reason": reason})
-    def apply_bulk_price(self, preview_id):
-        return self._post("/agent/catalog/bulk-price", {"preview_id": preview_id})
-    def adjust_loyalty(self, customer_id, points, reason):
+                                                              "starts": starts,
+                                                              "staff": staff}, idempotency_key)
+    def cancel_appointment(self, appointment_id, reason="", idempotency_key=None):
+        return self._post("/agent/appointments/cancel", {"appointment_id": appointment_id,
+                                                         "reason": reason}, idempotency_key)
+    def apply_bulk_price(self, preview_id, idempotency_key=None):
+        return self._post("/agent/catalog/bulk-price", {"preview_id": preview_id}, idempotency_key)
+    def adjust_loyalty(self, customer_id, points, reason, idempotency_key=None):
         return self._post("/agent/loyalty/adjust", {"customer_id": customer_id,
-                                                    "points": points, "reason": reason})
-    def ads_action(self, campaign_id, action, delta_pct=None):
+                                                    "points": points, "reason": reason}, idempotency_key)
+    def ads_action(self, campaign_id, action, delta_pct=None, idempotency_key=None):
         return self._post("/agent/ads/action", {"campaign_id": campaign_id, "action": action,
-                                                "delta_pct": delta_pct})
+                                                "delta_pct": delta_pct}, idempotency_key)
     def report(self): return self._get("/agent/report")
 
 
-def get_backend(business: str | None = None) -> Backend:
+def get_backend(business: str | None = None, sender: str | None = None) -> Backend:
+    if business == "kedd":
+        # Per-conversation KEDD mode (/kedd): the merchant is identified by the WhatsApp
+        # sender of this session, never by a model-chosen value.
+        if not (settings.kedd_api_url and settings.kedd_agent_secret):
+            raise RuntimeError("KEDD bağlantısı bu ortamda kapalı (KEDD_API_URL / KEDD_AGENT_SECRET yok)")
+        if not sender:
+            raise RuntimeError("KEDD bağlantısı için gönderen numarası yok")
+        return KeddBackend(settings.kedd_api_url, settings.kedd_agent_secret, "+" + sender.lstrip("+"))
     if settings.backend == "kedd":
         if not (settings.kedd_api_url and settings.kedd_agent_secret and settings.merchant_phone):
             raise RuntimeError("BACKEND=kedd needs KEDD_API_URL, KEDD_AGENT_SECRET and MERCHANT_PHONE")
