@@ -194,11 +194,16 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
 
     run_dir = _new_run_dir(session)
     backend = session.get_backend()
-    ctx = pipeline.understand_media(
-        text if kind == "text" else None,
-        media_path if kind == "audio" else None,
-        list(session.images), out_dir=run_dir,
-    )
+    try:
+        ctx = pipeline.understand_media(
+            text if kind == "text" else None,
+            media_path if kind == "audio" else None,
+            list(session.images), out_dir=run_dir,
+        )
+    except ValueError as e:              # the pipeline's ValueErrors are written for the owner (Turkish, actionable)
+        replies.append(Reply(str(e)))
+        _remember_replies(session, replies, now)
+        return replies
     session.images = []
     if ctx.instruction_source == "voice":
         notify(f"🎙️ Anladığım: “{ctx.instruction}”")

@@ -350,3 +350,13 @@ def test_webhook_verify_and_dispatch(cfg):
     assert c.post("/webhook", content=body, headers={"x-hub-signature-256": sig}).status_code == 200
     assert c.post("/webhook", content=body, headers={"x-hub-signature-256": sig}).status_code == 200  # redelivery
     assert [m["id"] for m in got] == ["m1"]       # stranger dropped, duplicate dropped, once
+
+
+def test_core_surfaces_pipeline_valueerror_to_owner(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    def bad_media(*a, **k):
+        raise ValueError("Sesli not 3 dakikadan uzun, kısaltıp tekrar dener misin?")
+    monkeypatch.setattr(core.pipeline, "understand_media", bad_media)
+    s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    r = core.handle(s, "audio", media_path="x.ogg")
+    assert r[-1].text.startswith("Sesli not 3 dakikadan uzun") and s.pending is None
