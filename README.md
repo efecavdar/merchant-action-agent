@@ -59,7 +59,7 @@ photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘               
 - **The model proposes, code executes.** The LLM only has read-only tools plus `propose_actions`. Writes
   (`add_product`, `create_discount`, `send_campaign`) are executed by `executor.py` after approval, in a fixed order,
   with temp ids resolved to real ids. The model never sends a message by itself.
-- **Validation loop.** Invalid proposals go back to the model as structured errors (max 2 revisions).
+- **Validation loop.** Invalid proposals go back to the model as structured errors (max 3 revisions).
   Besides types and limits, two consistency rules caught real failures in live runs: every `%X` / `X TL`
   in the customer message must exist in the plan, and a summary that promises a campaign must come with a
   `send_campaign` action.
