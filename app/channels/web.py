@@ -104,6 +104,9 @@ def create_app() -> FastAPI:
         sid, session, is_new = _ensure(request)
         page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         page = page.replace("{{BUSINESS}}", html.escape(_business_name(session)))
+        badge = "KEDD" if session.business == "kedd" else "demo"
+        page = page.replace("{{BADGE}}", badge).replace(
+            "{{BADGE_CLASS}}", "kedd" if badge == "KEDD" else "demo")
         resp = HTMLResponse(page)
         if is_new:
             resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax")

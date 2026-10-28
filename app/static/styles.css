@@ -16,13 +16,27 @@ body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; background
 }
 .titles { flex: 1; min-width: 0; }
 .name { font-weight: 700; font-size: 16px; }
-.business { font-size: 12px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.business { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.business #businessName { opacity: 0.75; }
+.badge {
+  font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.22); color: #fff; vertical-align: 1px;
+}
+.badge.kedd { background: #00a884; opacity: 1; }
 
 .chat { flex: 1; overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 6px; }
 .bubble { max-width: 82%; padding: 8px 10px; font-size: 14px; line-height: 1.4; box-shadow: 0 1px 1px rgba(0,0,0,0.12); }
 .bubble.me { align-self: flex-end; background: #dcf8c6; border-radius: 8px 0 8px 8px; white-space: pre-wrap; }
 .bubble.them { align-self: flex-start; background: #fff; border-radius: 0 8px 8px 8px; white-space: pre-wrap; }
-.bubble img { max-width: 100%; border-radius: 6px; display: block; margin-bottom: 6px; }
+.bubble img { max-width: 100%; border-radius: 6px; display: block; margin-bottom: 6px; cursor: zoom-in; }
+.bubble.me.pending { background: #cfd4d9; opacity: 0.9; }
+.bubble.typing { display: flex; align-items: center; gap: 8px; }
+.typing-label { font-size: 13px; color: #54656f; }
+.dots { display: inline-flex; gap: 3px; }
+.dots i { width: 7px; height: 7px; border-radius: 50%; background: #8696a0; animation: blink 1.2s infinite; }
+.dots i:nth-child(2) { animation-delay: 0.2s; }
+.dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
 .system {
   align-self: center; background: #e9edef; color: #54656f; font-size: 12px;
   padding: 5px 10px; border-radius: 8px; max-width: 92%; text-align: center;
@@ -41,6 +55,7 @@ body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; background
   width: 40px; height: 40px; border-radius: 50%; flex: none; color: #54656f;
 }
 .icon-btn.send { background: #00a884; color: #fff; font-size: 17px; }
+.icon-btn.send.busy { background: #8696a0; }
 .header .icon-btn { color: #d1d7db; width: 34px; height: 34px; font-size: 19px; }
 #micBtn.rec { background: #e5484d; color: #fff; }
 
@@ -50,6 +65,14 @@ body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; background
   font-size: 12px; padding: 6px 4px; border-radius: 14px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+.lightbox {
+  position: fixed; inset: 0; background: rgba(17, 27, 33, 0.92); z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; cursor: zoom-out;
+}
+.lightbox[hidden] { display: none; }
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
