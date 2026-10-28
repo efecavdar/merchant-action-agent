@@ -171,6 +171,40 @@ def test_agent_loop_ads_pause_loser(monkeypatch):
     assert run.campaigns == {"ad1", "ad2", "ad3"} and run.turns == 2
 
 
+class FakeTemplate:
+    """Scripted model: lists templates + builds a segment, then proposes a template campaign."""
+
+    def __init__(self):
+        self.step = 0
+
+    def create(self, **kw):
+        self.step += 1
+        fc = FakeResponses._fc
+        resp = lambda out: SimpleNamespace(id=f"t{self.step}", output=out, output_text="",  # noqa: E731
+                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        if self.step == 1:
+            return resp([fc("get_store_profile", {}, "c1"),
+                         fc("find_customers", {"inactive_days": 60}, "c2"),
+                         fc("list_campaign_templates", {}, "c3")])
+        if self.step == 2:
+            outs = {o["call_id"]: json.loads(o["output"]) for o in kw["input"]}
+            assert "marketing_reengagement_promo_tr" in [t["name"] for t in outs["c3"]["templates"]]
+            return resp([fc("propose_actions", {
+                "summary_tr": "Gelmeyenlere şablon kampanya.", "actions": [
+                    {"type": "send_campaign", "segment_id": outs["c2"]["segment_id"],
+                     "template": "marketing_reengagement_promo_tr",
+                     "variables": {"2": "FULAR15", "3": "hafta sonu fırsatı"}}]}, "c4")])
+        raise AssertionError("too many steps")
+
+
+def test_agent_loop_template_campaign(monkeypatch):
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeTemplate()))
+    run = agent.plan(MediaContext("uzun süredir gelmeyenlere haber ver", "text"),
+                     MockBackend("butik", today=date(2026, 10, 27)))
+    assert run.proposal["actions"][0]["template"] == "marketing_reengagement_promo_tr"
+    assert len(run.templates) == 3 and run.turns == 2
+
+
 def test_agent_loop_revises_invalid_proposal(monkeypatch):
     fake = FakeResponses()
     monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=fake))

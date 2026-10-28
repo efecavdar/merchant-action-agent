@@ -73,8 +73,9 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
             elif t == "send_campaign":
                 res = backend.send_campaign(
                     name=a.get("name") or f"Kampanya {date.today().isoformat()}",
-                    segment_id=a["segment_id"], message=a["message"],
+                    segment_id=a["segment_id"], message=a.get("message") or "",
                     visual_path=(visual_path if a.get("attach_visual") else "") or "",
+                    template=a.get("template"), variables=a.get("variables"),
                 )
                 record(a, "ok", {"campaign_id": res["id"], "recipients": res["recipients"],
                                  "note": res.get("note", "")})

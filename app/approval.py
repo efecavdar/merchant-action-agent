@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .pipeline import MediaContext
+from .tools.backend import render_campaign_template
 
 _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
          "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌"}
@@ -13,7 +14,8 @@ _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_
 def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
     """What the tools actually returned in this run. Card lines for ids are rendered from these facts and the
     action's own fields — never from model-written labels, so the owner approves what will really run."""
-    f: dict[str, Any] = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {}, "items": {}}
+    f: dict[str, Any] = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
+                       "items": {}, "templates": {}}
     for e in tool_log:
         r = e.get("result")
         if not isinstance(r, dict):
@@ -29,6 +31,8 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
             f["appointments"].update({a["id"]: a for a in r.get("appointments") or []})
         elif tool == "list_catalog":
             f["items"].update({i["id"]: i for i in r.get("items") or []})
+        elif tool == "list_campaign_templates":
+            f["templates"].update({t["name"]: t for t in r.get("templates") or []})
     return f
 
 
@@ -102,7 +106,16 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
         elif t == "send_campaign":
             n = segment_counts.get(a.get("segment_id"), "?")
             lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj")
-            lines.append(f"   “{a.get('message')}”")
+            if a.get("template"):
+                tmpl = facts["templates"].get(a["template"])
+                if tmpl:
+                    rendered = render_campaign_template(
+                        tmpl["body"], {"1": "‹müşteri adı›", **(a.get("variables") or {})})
+                    lines.append(f"   “{rendered}”")
+                else:
+                    lines.append(f"   “⚠️ şablon bulunamadı: {a['template']}”")
+            else:
+                lines.append(f"   “{a.get('message')}”")
         elif t in _FACT_TYPES:
             lines.append(_fact_line(t, a, facts))
     lines += ["", "Onaylıyor musun? (evet / hayır)"]

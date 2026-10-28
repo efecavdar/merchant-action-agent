@@ -59,6 +59,12 @@ Rules:
   "uzun süredir gelmeyenler" ≈ inactive_days 60; "sadık / müdavim" ≈ min_visits 3; "yeni gelenler" ≈ 1 visit.
 - Messages: Turkish, in the business's tone, personal, mention only discounts and prices that are in THIS plan,
   one emoji at most, under 350 characters. Do not promise anything the plan does not do.
+- Template campaigns: a business-initiated WhatsApp message is only delivered through an approved
+  template — call list_campaign_templates, pick the one matching the intent (reengagement for win-back,
+  thankyou for loyal customers, welcome for newcomers) and fill ONLY its variables, never {{1}} (the
+  gateway inserts each customer's name). Put the offer into `advantage`/`discount` exactly as planned
+  (e.g. "hafta sonu tüm fularlarda %15 indirim"); `code` is a short uppercase code like `FULAR15`.
+  Free-text `message` works in mock demos only.
 - The campaign visual prompt is in English and must describe the actual items (detected or described).
 - Order actions: add_catalog_item → create_discount → generate_visual → send_campaign; appointment actions
   may come anywhere.
@@ -133,6 +139,11 @@ TOOLS: list[dict[str, Any]] = [
     {"type": "function", "name": "get_ads_suggestions",
      "description": "Rule-based suggestions on the ad campaigns (pause losers, shift budget to winners).",
      "parameters": _NO_ARGS},
+    {"type": "function", "name": "list_campaign_templates",
+     "description": "Approved WhatsApp templates for business-initiated campaigns: name, body with "
+                    "{{n}} placeholders, variables. {{1}} is always the customer name (filled per "
+                    "recipient); the plan only supplies the remaining variables.",
+     "parameters": _NO_ARGS},
     {"type": "function", "name": "propose_actions",
      "description": "Submit the final plan for human approval. Call exactly once when done.",
      "parameters": PROPOSAL_SCHEMA},
@@ -152,6 +163,7 @@ class AgentRun:
     customers: set[str] = field(default_factory=set)
     previews: dict[str, dict[str, Any]] = field(default_factory=dict)
     campaigns: set[str] = field(default_factory=set)
+    templates: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     turns: int = 0
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
@@ -198,6 +210,10 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         return res
     if name == "get_ads_suggestions":
         return backend.ads_suggestions()
+    if name == "list_campaign_templates":
+        templates = backend.campaign_templates()
+        run.templates.update({t["name"]: t for t in templates})
+        return {"templates": templates}
     raise KeyError(name)
 
 
@@ -253,7 +269,7 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
             elif call.name == "propose_actions":
                 errors = validate_proposal(args, known_temp, catalog, run.segments,
                                            run.appointments, run.customers,
-                                           run.previews, run.campaigns)
+                                           run.previews, run.campaigns, run.templates)
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:
@@ -271,7 +287,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
                           "known_appointment_ids": sorted(run.appointments),
                           "known_customer_ids": sorted(run.customers),
                           "known_preview_ids": sorted(run.previews),
-                          "known_campaign_ids": sorted(run.campaigns)}
+                          "known_campaign_ids": sorted(run.campaigns),
+                          "known_template_names": sorted(run.templates)}
             else:
                 try:
                     result = _run_tool(call.name, args, backend, run)
