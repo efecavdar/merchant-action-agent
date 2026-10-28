@@ -665,7 +665,7 @@ class KeddBackend:
 
     Security contract (enforced on the KEDD side, mirrored here):
       * every request carries the merchant's WhatsApp phone, a timestamp and an
-        HMAC-SHA256 signature over "<timestamp>.<method>.<path>.<body>"; the gateway
+        HMAC-SHA256 signature over "<timestamp>.<method>.<path?query>.<body>"; the gateway
         resolves the business from its own phone→business mapping, never from the client
       * writes carry an Idempotency-Key so a retry can never send a campaign twice
       * customer phone numbers never leave KEDD: segments come back as counts + samples
@@ -689,7 +689,11 @@ class KeddBackend:
                 "Content-Type": "application/json"}
 
     def _get(self, path: str, **params):
-        r = self._s.get(f"{self.base}{path}", params=params, headers=self._headers("GET", path, ""), timeout=30)
+        # The query string is part of the signed target, exactly as sent on the wire.
+        from urllib.parse import urlencode
+        qs = urlencode({k: v for k, v in params.items() if v not in (None, "")})
+        target = f"{path}?{qs}" if qs else path
+        r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=30)
         r.raise_for_status()
         return r.json()
 
