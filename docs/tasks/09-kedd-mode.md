@@ -1,7 +1,7 @@
 # Task 09 — KEDD mode per conversation + public gateway contract
 
 Branch: `muse/09-kedd-mode`. Allowed to edit: `app/core.py` (demo commands + `Session.get_backend` only),
-`app/tools/backend.py` (`get_backend` + `KeddBackend`), `app/config.py` (nothing new expected — use the existing
+`app/tools/backend.py` (`get_backend` + `KeddBackend`), `app/executor.py` (idempotency key only), `app/config.py` (nothing new expected — use the existing
 `kedd_api_url`, `kedd_agent_secret`), new `docs/kedd-gateway-contract.md`, `README.md`, tests.
 
 ## 1. `/kedd` demo command
