@@ -10,6 +10,8 @@ Hackathon project: a human-in-the-loop WhatsApp agent for small businesses. Read
    `app/actions.py`, `app/executor.py`, `app/agent.py`, `app/core.py`, `app/channels/whatsapp.py`,
    `app/server.py`, `app/worker.py`, `modal_app.py`, `app/config.py`, `.env*`, `AGENTS.md`.
    If a task seems to need a change there, stop and write the proposed change in the PR description instead.
+   **Exception:** a task brief may list one of these files under "Allowed to edit" — then you may change it,
+   only as far as the brief says, and you must keep every existing test green.
 3. **Never read, print or commit secrets.** `.env` is git-ignored; keep it that way. No API keys in code or docs.
 4. **The model proposes, code executes.** Do not add any code path where a model output triggers a write
    (catalog, discount, message, appointment) without going through `app/core.py` → approval → `app/executor.py`.
