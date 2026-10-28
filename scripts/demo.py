@@ -78,7 +78,7 @@ def run_scenario(scen: Scenario, out_dir: Path, no_images: bool) -> dict[str, in
     if run.proposal is not None:
         seg_counts = {e["result"].get("segment_id"): e["result"].get("count") for e in run.tool_log
                       if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
-        card = approval.render_card(run.proposal, ctx, seg_counts)
+        card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log))
         (scen_dir / "approval_card.txt").write_text(card)
         steps = executor.execute(run.proposal, ctx, backend, out_dir=scen_dir)
         visual = next((s["result"]["visual_path"] for s in steps

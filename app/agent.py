@@ -68,6 +68,11 @@ Rules:
 - `recent_conversation` holds the last messages of this chat. Use it to resolve short replies such as
   'olur', 'evet o saat', 'ikincisi', '17:30 olsun'. The latest owner message wins. An approval still
   always goes through propose_actions and the card; never treat 'olur' as an approval by itself.
+- Bulk prices, loyalty, ads: for "tüm X'e zam/indirim" ALWAYS call preview_bulk_price first (mode
+  percent/amount, negative lowers), then apply_bulk_price with that preview_id — never invent prices. For
+  loyalty points resolve the customer with find_customer, then adjust_loyalty (points ≠ 0). For ads read
+  get_ads_performance (+ get_ads_suggestions); pure questions ("reklamlar nasıl?") get reply_only with
+  numbers ONLY from the tools, changes (pause/resume/budget) go through ads_action with a tool-seen id.
 """
 
 _NO_ARGS = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -108,6 +113,26 @@ TOOLS: list[dict[str, Any]] = [
                     "campaigns, catalog changes. Use for 'bugün ne oldu?'.",
      "parameters": {"type": "object", "properties": {"day": {"type": "string", "description": "ISO date"}},
                     "required": ["day"], "additionalProperties": False}},
+    {"type": "function", "name": "preview_bulk_price",
+     "description": "Preview a bulk price change (percent or TRY amount, negative lowers prices) over a "
+                    "category, an item type, or explicit item ids. Returns a preview_id plus before/after "
+                    "rows. Always preview before apply_bulk_price.",
+     "parameters": {"type": "object", "properties": {
+         "item_type": {"type": "string", "enum": ["product", "service"]},
+         "category": {"type": "string", "description": "e.g. 'çanta', 'elbise', 'boya'; omit to match all"},
+         "item_ids": {"type": "array", "items": {"type": "string"}},
+         "mode": {"type": "string", "enum": ["percent", "amount"]},
+         "value": {"type": "number", "description": "percent (e.g. 10) or TRY amount (e.g. 50), "
+                                                    "may be negative"}},
+         "required": ["mode", "value"], "additionalProperties": False}},
+    {"type": "function", "name": "get_ads_performance",
+     "description": "Ad campaigns with spend, impressions, clicks, results and cost per result, plus totals.",
+     "parameters": {"type": "object", "properties": {
+         "days": {"type": "integer", "description": "lookback window (default 7)"}},
+         "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "get_ads_suggestions",
+     "description": "Rule-based suggestions on the ad campaigns (pause losers, shift budget to winners).",
+     "parameters": _NO_ARGS},
     {"type": "function", "name": "propose_actions",
      "description": "Submit the final plan for human approval. Call exactly once when done.",
      "parameters": PROPOSAL_SCHEMA},
@@ -125,6 +150,8 @@ class AgentRun:
     segments: set[str] = field(default_factory=set)
     appointments: set[str] = field(default_factory=set)
     customers: set[str] = field(default_factory=set)
+    previews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    campaigns: set[str] = field(default_factory=set)
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     turns: int = 0
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
@@ -155,6 +182,22 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         return {"appointments": found}
     if name == "get_daily_summary":
         return backend.daily_summary(args["day"])
+    if name == "preview_bulk_price":
+        res = backend.preview_bulk_price(
+            item_type=args.get("item_type"),
+            category=args.get("category"),
+            item_ids=args.get("item_ids"),
+            mode=args.get("mode"),
+            value=args.get("value"),
+        )
+        run.previews[res["preview_id"]] = res
+        return res
+    if name == "get_ads_performance":
+        res = backend.ads_performance(args.get("days", 7))
+        run.campaigns.update(c["id"] for c in res.get("campaigns", []))
+        return res
+    if name == "get_ads_suggestions":
+        return backend.ads_suggestions()
     raise KeyError(name)
 
 
@@ -209,7 +252,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
                 result = {"accepted": False, "errors": ["text is empty"]}
             elif call.name == "propose_actions":
                 errors = validate_proposal(args, known_temp, catalog, run.segments,
-                                           run.appointments, run.customers)
+                                           run.appointments, run.customers,
+                                           run.previews, run.campaigns)
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:
@@ -225,7 +269,9 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
                                   "(all actions, in order). Keep everything that was already valid.",
                           "known_segment_ids": sorted(run.segments),
                           "known_appointment_ids": sorted(run.appointments),
-                          "known_customer_ids": sorted(run.customers)}
+                          "known_customer_ids": sorted(run.customers),
+                          "known_preview_ids": sorted(run.previews),
+                          "known_campaign_ids": sorted(run.campaigns)}
             else:
                 try:
                     result = _run_tool(call.name, args, backend, run)

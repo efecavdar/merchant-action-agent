@@ -201,7 +201,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         return replies
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
-    card = approval.render_card(run.proposal, ctx, seg_counts)
+    card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log))
     (run_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
     (run_dir / "approval_card.txt").write_text(card)
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
@@ -237,7 +237,8 @@ def _execute_pending(session: Session, notify: Notify) -> list[Reply]:
 _STEP_TR = {"add_catalog_item": "Kataloğa eklendi", "create_discount": "İndirim tanımlandı",
             "generate_visual": "Kampanya görseli hazırlandı", "send_campaign": "Kampanya gönderildi",
             "create_appointment": "Randevu oluşturuldu", "reschedule_appointment": "Randevu taşındı",
-            "cancel_appointment": "Randevu iptal edildi"}
+            "cancel_appointment": "Randevu iptal edildi", "apply_bulk_price": "Toplu fiyat güncellendi",
+            "adjust_loyalty": "Puan güncellendi", "ads_action": "Reklam güncellendi"}
 
 
 def _plain_summary(steps: list[dict[str, Any]]) -> str:

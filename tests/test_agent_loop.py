@@ -107,6 +107,70 @@ def test_recent_conversation_reaches_prompt_only_when_nonempty(monkeypatch):
     assert '"recent_conversation"' not in fake.inputs[1]
 
 
+class FakeBulk:
+    """Scripted model: previews a bulk change on the real backend, then applies it."""
+
+    def __init__(self):
+        self.step = 0
+
+    def create(self, **kw):
+        self.step += 1
+        fc = FakeResponses._fc
+        resp = lambda out: SimpleNamespace(id=f"b{self.step}", output=out, output_text="",  # noqa: E731
+                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        if self.step == 1:
+            return resp([fc("preview_bulk_price", {"category": "elbise", "mode": "percent", "value": 10},
+                            "c1")])
+        if self.step == 2:
+            pv = json.loads(kw["input"][0]["output"])
+            assert pv["count"] == 1 and pv["items"][0]["new_price"] == 1419.0
+            return resp([fc("propose_actions", {
+                "summary_tr": "Elbiselere %10 zam.", "actions": [
+                    {"type": "apply_bulk_price", "preview_id": pv["preview_id"],
+                     "label": "1 kalem (Midi Elbise 1290→1419 ₺)"}]}, "c2")])
+        raise AssertionError("too many steps")
+
+
+class FakeAds:
+    """Scripted model: reads ad performance, then pauses the loser."""
+
+    def __init__(self):
+        self.step = 0
+
+    def create(self, **kw):
+        self.step += 1
+        fc = FakeResponses._fc
+        resp = lambda out: SimpleNamespace(id=f"d{self.step}", output=out, output_text="",  # noqa: E731
+                                           usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        if self.step == 1:
+            return resp([fc("get_ads_performance", {"days": 7}, "c1"),
+                         fc("get_ads_suggestions", {}, "c2")])
+        if self.step == 2:
+            perf = json.loads(kw["input"][0]["output"])
+            assert len(perf["campaigns"]) == 3 and "totals" in perf
+            return resp([fc("propose_actions", {
+                "summary_tr": "Kötü giden reklam duraklatılıyor.", "actions": [
+                    {"type": "ads_action", "campaign_id": "ad2", "action": "pause",
+                     "label": "Deri Çanta duraklat"}]}, "c3")])
+        raise AssertionError("too many steps")
+
+
+def test_agent_loop_bulk_price_preview_then_apply(monkeypatch):
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeBulk()))
+    run = agent.plan(MediaContext("Tüm elbiselere %10 zam yap", "text"),
+                     MockBackend("butik", today=date(2026, 10, 27)))
+    assert run.proposal["actions"][0]["type"] == "apply_bulk_price"
+    assert len(run.previews) == 1 and run.turns == 2
+
+
+def test_agent_loop_ads_pause_loser(monkeypatch):
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeAds()))
+    run = agent.plan(MediaContext("En kötü giden reklamı durdur", "text"),
+                     MockBackend("butik", today=date(2026, 10, 27)))
+    assert run.proposal["actions"][0]["action"] == "pause"
+    assert run.campaigns == {"ad1", "ad2", "ad3"} and run.turns == 2
+
+
 def test_agent_loop_revises_invalid_proposal(monkeypatch):
     fake = FakeResponses()
     monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=fake))

@@ -3,6 +3,7 @@
 import json
 import unicodedata
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -10,7 +11,7 @@ from PIL import Image
 from app.actions import validate_proposal
 from app.meta_client import extract_json, parse_sam_boxes
 from app.pipeline import MediaContext, ProductCard
-from app.tools.backend import MockBackend
+from app.tools.backend import KeddBackend, MockBackend
 from app import approval, executor
 
 
@@ -344,3 +345,301 @@ def test_no_phone_numbers_in_new_methods(tmp_path):
     blob = json.dumps([b.daily_summary(day), b.daily_summary("2026-10-27"), b.find_appointments(),
                        b.find_appointments("ay"), a, m, c, b.report()])
     assert "phone" not in blob and "+90" not in blob and "5XX" not in blob
+
+
+# --------------------------------------------------------------------------- #
+# bulk price / loyalty / ads (task 07)
+# --------------------------------------------------------------------------- #
+
+def _preview(*rows):
+    items = [{"id": f"x{i}", "name": f"n{i}", "old_price": old, "new_price": new}
+             for i, (old, new) in enumerate(rows)]
+    return {"pv1": {"preview_id": "pv1", "items": items, "count": len(items)}}
+
+
+def _bulk_action(**kw):
+    a = {"type": "apply_bulk_price", "preview_id": "pv1", "label": "2 kalem zam"}
+    a.update(kw)
+    return {"summary_tr": "Zam.", "actions": [a]}
+
+
+def test_validate_bulk_price_accept_and_reject():
+    pv = _preview((100, 110), (850, 765.0))
+    assert validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=pv) == []
+    edge = _preview((100, 150), (100, 50))                       # exactly ±50% is allowed
+    assert validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=edge) == []
+
+    errs = validate_proposal(_bulk_action(preview_id="pvX"), set(), CATALOG, set(), known_previews=pv)
+    assert any("preview_id" in e for e in errs)
+    errs = validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=_preview())
+    assert any("1..200" in e for e in errs)
+    big = {"pv1": {"preview_id": "pv1",
+                   "items": [{"id": "x", "old_price": 100.0, "new_price": 110.0}] * 201, "count": 201}}
+    errs = validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=big)
+    assert any("1..200" in e for e in errs)
+    errs = validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=_preview((100, 0)))
+    assert any("positive" in e for e in errs)
+    errs = validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=_preview((100, 151)))
+    assert any("±50%" in e for e in errs)
+    errs = validate_proposal(_bulk_action(), set(), CATALOG, set(), known_previews=_preview((100, 49)))
+    assert any("±50%" in e for e in errs)
+    prop = _bulk_action()
+    del prop["actions"][0]["label"]
+    errs = validate_proposal(prop, set(), CATALOG, set(), known_previews=pv)
+    assert any("label" in e for e in errs)
+
+
+def _loyalty_action(**kw):
+    a = {"type": "adjust_loyalty", "customer_id": "c001", "points": 200, "reason": "doğum günü",
+         "label": "Ayşe Y. +200 (doğum günü)"}
+    a.update(kw)
+    return {"summary_tr": "Puan.", "actions": [a]}
+
+
+def test_validate_loyalty_accept_and_reject():
+    assert validate_proposal(_loyalty_action(), set(), CATALOG, set(), known_customers={"c001"}) == []
+    assert validate_proposal(_loyalty_action(points=-1000), set(), CATALOG, set(),
+                             known_customers={"c001"}) == []
+    prop = _loyalty_action(points="200")                          # numeric strings are coerced
+    assert validate_proposal(prop, set(), CATALOG, set(), known_customers={"c001"}) == []
+    assert prop["actions"][0]["points"] == 200
+
+    errs = validate_proposal(_loyalty_action(), set(), CATALOG, set(), known_customers=set())
+    assert any("customer_id" in e for e in errs)
+    for bad in (0, 1001, -1001, 1.5, True):
+        errs = validate_proposal(_loyalty_action(points=bad), set(), CATALOG, set(),
+                                 known_customers={"c001"})
+        assert any("points" in e for e in errs), bad
+    prop = _loyalty_action()
+    del prop["actions"][0]["reason"]
+    errs = validate_proposal(prop, set(), CATALOG, set(), known_customers={"c001"})
+    assert any("reason" in e for e in errs)
+    prop = _loyalty_action()
+    del prop["actions"][0]["label"]
+    assert any("label" in e for e in validate_proposal(prop, set(), CATALOG, set(), known_customers={"c001"}))
+
+
+def _ads_action(**kw):
+    a = {"type": "ads_action", "campaign_id": "ad2", "action": "pause", "label": "Deri Çanta duraklat"}
+    a.update(kw)
+    return {"summary_tr": "Reklam.", "actions": [a]}
+
+
+def test_validate_ads_action_accept_and_reject():
+    known = {"ad1", "ad2"}
+    assert validate_proposal(_ads_action(), set(), CATALOG, set(), known_campaigns=known) == []
+    assert validate_proposal(_ads_action(action="resume"), set(), CATALOG, set(),
+                             known_campaigns=known) == []
+    assert validate_proposal(_ads_action(action="increase_budget", delta_pct=15), set(), CATALOG, set(),
+                             known_campaigns=known) == []
+    prop = _ads_action(action="decrease_budget", delta_pct="20")
+    assert validate_proposal(prop, set(), CATALOG, set(), known_campaigns=known) == []
+    assert prop["actions"][0]["delta_pct"] == 20
+
+    errs = validate_proposal(_ads_action(), set(), CATALOG, set(), known_campaigns=set())
+    assert any("campaign_id" in e for e in errs)
+    errs = validate_proposal(_ads_action(action="boost"), set(), CATALOG, set(), known_campaigns=known)
+    assert any("one of" in e for e in errs)
+    errs = validate_proposal(_ads_action(action="increase_budget"), set(), CATALOG, set(),
+                             known_campaigns=known)
+    assert any("delta_pct" in e for e in errs)
+    for bad in (0, 21, "x", True):
+        errs = validate_proposal(_ads_action(action="decrease_budget", delta_pct=bad), set(), CATALOG,
+                                 set(), known_campaigns=known)
+        assert any("delta_pct" in e for e in errs), bad
+    prop = _ads_action()
+    del prop["actions"][0]["label"]
+    assert any("label" in e for e in validate_proposal(prop, set(), CATALOG, set(), known_campaigns=known))
+
+
+def test_preview_selection_and_math(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    pv = b.preview_bulk_price(category="elbise", mode="percent", value=10)
+    assert pv["count"] == 1 and pv["items"][0]["name"] == "Midi Elbise"
+    assert (pv["items"][0]["old_price"], pv["items"][0]["new_price"]) == (1290.0, 1419.0)
+    assert pv["preview_id"] in b.previews
+    assert b.items[2].price == 1290.0                              # preview changes nothing
+
+    all_products = b.preview_bulk_price(item_type="product", mode="amount", value=-50)
+    assert all_products["count"] == 3
+    assert {r["new_price"] for r in all_products["items"]} == {600.0, 370.0, 1240.0}
+    one = b.preview_bulk_price(item_ids=["i001", "i003"], mode="percent", value=0)
+    assert [r["id"] for r in one["items"]] == ["i001", "i003"]
+    assert b.preview_bulk_price(category="yok-böyle-kategori", mode="percent", value=10)["count"] == 0
+    with pytest.raises(ValueError, match="unknown catalog item"):
+        b.preview_bulk_price(item_ids=["ghost"], mode="percent", value=10)
+    with pytest.raises(ValueError, match="mode"):
+        b.preview_bulk_price(mode="double", value=10)
+    with pytest.raises(ValueError, match="sayı"):
+        b.preview_bulk_price(mode="percent", value="çok")
+    with pytest.raises(ValueError, match="item_type"):
+        b.preview_bulk_price(item_type="pizza", mode="percent", value=10)
+    blob = json.dumps([pv, all_products, one])
+    assert "phone" not in blob and "5XX" not in blob
+
+
+def test_ads_performance_and_suggestions(tmp_path):
+    for business in ("butik", "salon"):
+        b = MockBackend(business, today=TODAY, store_path=tmp_path / f"{business}.json")
+        perf = b.ads_performance()
+        assert [c["id"] for c in perf["campaigns"]] == ["ad1", "ad2", "ad3"]
+        assert set(perf["campaigns"][0]) == {"id", "name", "platform", "status", "daily_budget",
+                                             "spend", "impressions", "clicks", "results",
+                                             "cost_per_result"}
+        assert perf["totals"]["results"] == sum(c["results"] for c in perf["campaigns"])
+        assert perf["totals"]["spend"] == round(sum(c["spend"] for c in perf["campaigns"]), 2)
+        by_id = {c["id"]: c for c in perf["campaigns"]}
+        assert by_id["ad2"]["cost_per_result"] > by_id["ad1"]["cost_per_result"] * 3  # clear loser
+        fort = b.ads_performance(14)
+        assert fort["campaigns"][0]["spend"] == perf["campaigns"][0]["spend"] * 2
+        sug = b.ads_suggestions()["suggestions"]
+        assert 1 <= len(sug) <= 2 and all(set(s) == {"campaign_id", "kind", "text"} for s in sug)
+        assert "5XX" not in json.dumps([perf, sug])
+    with pytest.raises(ValueError, match="days"):
+        MockBackend("butik", today=TODAY, store_path=tmp_path / "x.json").ads_performance(0)
+
+
+def test_loyalty_points_seeded(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    pts = [c.loyalty_points for c in b.customers]
+    assert all(isinstance(p, int) and p >= 0 for p in pts) and any(p > 0 for p in pts)
+
+
+def test_apply_bulk_price_semantics_and_expiry(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    pv = b.preview_bulk_price(category="aksesuar", mode="amount", value=80)
+    res = b.apply_bulk_price(pv["preview_id"])
+    assert res["count"] == 1 and res["items"][0]["old_price"] == 420.0
+    assert next(i for i in b.items if i.id == "i002").price == 500.0
+    with pytest.raises(ValueError, match="bulunamadı"):
+        b.apply_bulk_price("pv-ghost")
+    stale = b.preview_bulk_price(mode="percent", value=5)
+    b.previews[stale["preview_id"]]["at"] -= 16 * 60
+    with pytest.raises(ValueError, match="süresi doldu"):
+        b.apply_bulk_price(stale["preview_id"])
+
+
+def test_adjust_loyalty_semantics(tmp_path):
+    b = _salon(tmp_path)
+    c = b.customers[0]
+    res = b.adjust_loyalty(c.id, 200, "doğum günü")
+    assert (res["old_points"], res["points"], res["delta"]) == (c.loyalty_points - 200, c.loyalty_points, 200)
+    res = b.adjust_loyalty(c.id, -100_000, "düzeltme")
+    assert res["points"] == 0                                       # KEDD clamps below zero
+    with pytest.raises(ValueError, match="Müşteri bulunamadı"):
+        b.adjust_loyalty("cx", 10, "x")
+
+
+def test_ads_action_semantics(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    assert b.ads_action("ad1", "pause")["status"] == "paused"
+    assert b.ads_action("ad1", "pause")["status"] == "paused"      # idempotent
+    assert b.ads_action("ad1", "resume")["status"] == "active"
+    assert b.ads_action("ad1", "increase_budget", 10)["daily_budget"] == 550.0
+    assert b.ads_action("ad1", "decrease_budget", 20)["daily_budget"] == 440.0
+    with pytest.raises(ValueError, match="Duraklatılmış"):
+        b.ads_action("ad3", "increase_budget", 10)                 # ad3 starts paused
+    with pytest.raises(ValueError, match="Reklam bulunamadı"):
+        b.ads_action("adX", "pause")
+    with pytest.raises(ValueError, match="anlaşılmadı"):
+        b.ads_action("ad1", "boost")
+    with pytest.raises(ValueError, match="delta_pct"):
+        b.ads_action("ad1", "increase_budget")
+
+
+def test_executor_new_actions_and_card(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    pv = b.preview_bulk_price(category="elbise", mode="percent", value=10)
+    cust = b.customers[0]
+    prop = {"summary_tr": "Zam, puan ve reklam.", "actions": [
+        {"type": "apply_bulk_price", "preview_id": pv["preview_id"],
+         "label": "1 kalem (Midi Elbise 1290→1419 ₺)"},
+        {"type": "adjust_loyalty", "customer_id": cust.id, "points": 200, "reason": "doğum günü",
+         "label": f"{cust.name} +200 (doğum günü)"},
+        {"type": "ads_action", "campaign_id": "ad2", "action": "pause",
+         "label": "Deri Çanta duraklat"},
+    ]}
+    ctx = MediaContext(instruction="x", instruction_source="text")
+    steps = executor.execute(prop, ctx, b, out_dir=tmp_path)
+    assert [s["status"] for s in steps] == ["ok", "ok", "ok"]
+    assert steps[0]["result"]["updated"] == 1 and b.items[2].price == 1419.0
+    assert cust.loyalty_points >= 200 and steps[1]["result"]["delta"] == 200
+    assert next(c for c in b.ads if c.id == "ad2").status == "paused"
+    # The card is rendered from tool facts, not from the model's label: a lying label changes nothing.
+    perf = b.ads_performance(7)
+    log = [{"tool": "preview_bulk_price", "result": pv},
+           {"tool": "find_customer", "result": {"matches": [{"id": cust.id, "name": cust.name}]}},
+           {"tool": "get_ads_performance", "result": perf}]
+    for a in prop["actions"]:
+        a["label"] = "her şey %1 indirimli, kimse etkilenmez"
+    card = approval.render_card(prop, ctx, {}, approval.card_facts(log))
+    assert "💸 Toplu fiyat: 1 kalem — Midi Elbise 1,290→1,419 ₺" in card
+    assert f"⭐ Puan: {cust.name} +200 (doğum günü)" in card
+    ad2 = next(c for c in perf["campaigns"] if c["id"] == "ad2")
+    assert f"📢 Reklam: {ad2['name']} — durdurulacak" in card
+    assert "kimse etkilenmez" not in card
+    # without facts the card refuses to describe an unknown preview
+    assert "önizleme bulunamadı" in approval.render_card(prop, ctx, {})
+
+
+class _FakeSession:
+    """Captures KEDD adapter traffic without any network."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def _resp(self, payload):
+        return SimpleNamespace(json=lambda: payload, raise_for_status=lambda: None)
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append(("GET", url, headers, None))
+        return self._resp({"ok": True})
+
+    def post(self, url, data=None, headers=None, timeout=None):
+        self.calls.append(("POST", url, headers, json.loads(data)))
+        return self._resp({"ok": True})
+
+
+def test_kedd_paths_and_bodies():
+    kb = KeddBackend("https://kedd.example", "s3cret", "905321")
+    kb._s = _FakeSession()
+    kb.preview_bulk_price(category="çanta", mode="percent", value=10)
+    kb.ads_performance(30)
+    kb.ads_suggestions()
+    kb.apply_bulk_price("pv101")
+    kb.adjust_loyalty("c001", 200, "doğum günü")
+    kb.ads_action("ad2", "increase_budget", 15)
+    calls = kb._s.calls
+    assert [(m, u) for m, u, _h, _b in calls] == [
+        ("POST", "https://kedd.example/agent/catalog/bulk-price/preview"),
+        ("GET", "https://kedd.example/agent/ads/performance?days=30"),
+        ("GET", "https://kedd.example/agent/ads/suggestions"),
+        ("POST", "https://kedd.example/agent/catalog/bulk-price"),
+        ("POST", "https://kedd.example/agent/loyalty/adjust"),
+        ("POST", "https://kedd.example/agent/ads/action"),
+    ]
+    assert calls[0][3] == {"item_type": None, "category": "çanta", "item_ids": None,
+                           "mode": "percent", "value": 10}
+    assert calls[3][3] == {"preview_id": "pv101"}
+    assert calls[4][3] == {"customer_id": "c001", "points": 200, "reason": "doğum günü"}
+    assert calls[5][3] == {"campaign_id": "ad2", "action": "increase_budget", "delta_pct": 15}
+    for _m, _u, headers, _b in calls:
+        assert {"X-Agent-Phone", "X-Agent-Timestamp", "X-Agent-Signature"} <= set(headers)
+        assert headers["X-Agent-Phone"] == "905321"
+
+
+def test_appointment_card_lines_come_from_tool_facts():
+    log = [{"tool": "find_customer", "result": {"matches": [{"id": "c001", "name": "Ayşe Y."}]}},
+           {"tool": "list_catalog", "result": {"items": [{"id": "i001", "name": "Saç Kesimi"}]}},
+           {"tool": "find_appointments", "result": {"appointments": [
+               {"id": "a007", "customer": "Ayşe A.", "service": "Saç Boyama", "starts": "2026-10-29T10:00"}]}}]
+    prop = {"summary_tr": "x", "actions": [
+        {"type": "create_appointment", "customer_id": "c001", "item_ref": "i001", "staff": "Elif",
+         "starts": "2026-10-31T15:00", "label": "YANLIŞ ETİKET"},
+        {"type": "reschedule_appointment", "appointment_id": "a007", "starts": "2026-10-29T11:00", "label": "YANLIŞ"},
+        {"type": "cancel_appointment", "appointment_id": "a007", "label": "YANLIŞ"}]}
+    card = approval.render_card(prop, MediaContext("x", "text"), {}, approval.card_facts(log))
+    assert "📅 Randevu: Ayşe Y. — Saç Kesimi, Elif, 31.10 15:00" in card
+    assert "🔁 Randevu taşınıyor: Ayşe A. — Saç Boyama, 29.10 10:00 → 29.10 11:00" in card
+    assert "❌ Randevu iptal: Ayşe A. — Saç Boyama, 29.10 10:00" in card
+    assert "YANLIŞ" not in card

@@ -93,6 +93,21 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
             elif t == "cancel_appointment":
                 res = backend.cancel_appointment(a["appointment_id"], a.get("reason") or "")
                 record(a, "ok", {"appointment_id": res["id"], "status": res["status"], "label": a.get("label")})
+
+            elif t == "apply_bulk_price":
+                res = backend.apply_bulk_price(a["preview_id"])
+                record(a, "ok", {"preview_id": res["preview_id"], "updated": res["count"],
+                                 "items": res["items"], "label": a.get("label")})
+
+            elif t == "adjust_loyalty":
+                res = backend.adjust_loyalty(a["customer_id"], int(a["points"]), a.get("reason") or "")
+                record(a, "ok", {"customer_id": res["customer_id"], "points": res["points"],
+                                 "delta": res["delta"], "label": a.get("label")})
+
+            elif t == "ads_action":
+                res = backend.ads_action(a["campaign_id"], a["action"], a.get("delta_pct"))
+                record(a, "ok", {"campaign_id": res["id"], "status": res["status"],
+                                 "daily_budget": res["daily_budget"], "label": a.get("label")})
         except Exception as e:
             record(a, "failed", f"{type(e).__name__}: {e}")
             # Fail closed: do not continue sending things after an error.
