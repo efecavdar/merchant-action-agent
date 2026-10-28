@@ -29,7 +29,7 @@ seen = modal.Dict.from_name("cirak-seen", create_if_missing=True)
 
 # One container, one message at a time: approvals and sessions can never race.
 @app.function(image=image, secrets=[secret], volumes={"/data": volume}, timeout=600, max_containers=1)
-def worker(msg: dict) -> None:
+def worker(msg: dict) -> dict[str, str] | None:
     import logging
 
     from app.worker import process_inbound
@@ -37,9 +37,20 @@ def worker(msg: dict) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     volume.reload()
     try:
+        if msg.get("brief"):           # internal job from morning_brief; webhook payloads never carry this key
+            from app.brief import send_morning_briefs
+            return send_morning_briefs(sessions.get, sessions.__setitem__)
         process_inbound(msg, sessions.get, sessions.__setitem__)
     finally:
         volume.commit()
+
+
+# 06:00 UTC = 09:00 Türkiye. Manual trigger for the demo: modal run modal_app.py::morning_brief
+# The brief runs INSIDE `worker`, so it is serialised with inbound messages. Running it in its own container
+# could write back a stale session copy and revive an approval card the owner just consumed.
+@app.function(image=image, secrets=[secret], schedule=modal.Cron("0 6 * * *"))
+def morning_brief() -> dict[str, str]:
+    return worker.remote({"brief": True})
 
 
 @app.function(image=image, secrets=[secret], min_containers=1)

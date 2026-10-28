@@ -53,6 +53,7 @@ photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘               
 | *"Yarın boşluklarım var, saç boyamada %20 indirim, sadık müşterilere yaz"* | schedule is read, discount + campaign proposed (after approval) |
 | *"Ayşe'nin yarınki randevusunu bir saat sonraya al"* | customer and appointment resolved, slot checked; if it clashes the agent **asks** instead of forcing |
 | *"Bugün ne oldu?"* | read-only: appointments, revenue, new customers, unanswered messages, free slots — no approval needed |
+| ☀️ Sabah özeti (every morning 09:00, Çırak writes first) | today's appointments, free hours, waiting messages, yesterday's revenue + one concrete suggestion (still needs *evet*) |
 
 ## Design choices
 

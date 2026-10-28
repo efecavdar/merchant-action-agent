@@ -103,8 +103,27 @@
     fileInput.value = "";
     renderPreview();
   });
+  async function requestBrief() {
+    if (busy) return;
+    busy = true;
+    try {
+      const r = await fetch("/api/brief", { method: "POST" });
+      if (!r.ok) throw new Error("http " + r.status);
+      const data = await r.json();
+      for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
+      if (data.business_name) businessEl.textContent = data.business_name;
+    } catch (e) {
+      addStatus("Bağlantı koptu, tekrar dener misin?");
+    } finally {
+      busy = false;
+    }
+  }
   document.querySelectorAll(".quick button").forEach((b) => {
     b.addEventListener("click", () => {
+      if (b.dataset.brief) {
+        requestBrief();
+        return;
+      }
       textInput.value = b.dataset.fill || "";
       textInput.focus();
     });
