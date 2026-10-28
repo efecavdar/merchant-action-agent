@@ -565,10 +565,21 @@ def test_executor_new_actions_and_card(tmp_path):
     assert steps[0]["result"]["updated"] == 1 and b.items[2].price == 1419.0
     assert cust.loyalty_points >= 200 and steps[1]["result"]["delta"] == 200
     assert next(c for c in b.ads if c.id == "ad2").status == "paused"
-    card = approval.render_card(prop, ctx, {})
-    assert "💸 Toplu fiyat: 1 kalem (Midi Elbise 1290→1419 ₺)" in card
+    # The card is rendered from tool facts, not from the model's label: a lying label changes nothing.
+    perf = b.ads_performance(7)
+    log = [{"tool": "preview_bulk_price", "result": pv},
+           {"tool": "find_customer", "result": {"matches": [{"id": cust.id, "name": cust.name}]}},
+           {"tool": "get_ads_performance", "result": perf}]
+    for a in prop["actions"]:
+        a["label"] = "her şey %1 indirimli, kimse etkilenmez"
+    card = approval.render_card(prop, ctx, {}, approval.card_facts(log))
+    assert "💸 Toplu fiyat: 1 kalem — Midi Elbise 1,290→1,419 ₺" in card
     assert f"⭐ Puan: {cust.name} +200 (doğum günü)" in card
-    assert "📢 Reklam: Deri Çanta duraklat" in card
+    ad2 = next(c for c in perf["campaigns"] if c["id"] == "ad2")
+    assert f"📢 Reklam: {ad2['name']} — durdurulacak" in card
+    assert "kimse etkilenmez" not in card
+    # without facts the card refuses to describe an unknown preview
+    assert "önizleme bulunamadı" in approval.render_card(prop, ctx, {})
 
 
 class _FakeSession:
@@ -615,3 +626,20 @@ def test_kedd_paths_and_bodies():
     for _m, _u, headers, _b in calls:
         assert {"X-Agent-Phone", "X-Agent-Timestamp", "X-Agent-Signature"} <= set(headers)
         assert headers["X-Agent-Phone"] == "905321"
+
+
+def test_appointment_card_lines_come_from_tool_facts():
+    log = [{"tool": "find_customer", "result": {"matches": [{"id": "c001", "name": "Ayşe Y."}]}},
+           {"tool": "list_catalog", "result": {"items": [{"id": "i001", "name": "Saç Kesimi"}]}},
+           {"tool": "find_appointments", "result": {"appointments": [
+               {"id": "a007", "customer": "Ayşe A.", "service": "Saç Boyama", "starts": "2026-10-29T10:00"}]}}]
+    prop = {"summary_tr": "x", "actions": [
+        {"type": "create_appointment", "customer_id": "c001", "item_ref": "i001", "staff": "Elif",
+         "starts": "2026-10-31T15:00", "label": "YANLIŞ ETİKET"},
+        {"type": "reschedule_appointment", "appointment_id": "a007", "starts": "2026-10-29T11:00", "label": "YANLIŞ"},
+        {"type": "cancel_appointment", "appointment_id": "a007", "label": "YANLIŞ"}]}
+    card = approval.render_card(prop, MediaContext("x", "text"), {}, approval.card_facts(log))
+    assert "📅 Randevu: Ayşe Y. — Saç Kesimi, Elif, 31.10 15:00" in card
+    assert "🔁 Randevu taşınıyor: Ayşe A. — Saç Boyama, 29.10 10:00 → 29.10 11:00" in card
+    assert "❌ Randevu iptal: Ayşe A. — Saç Boyama, 29.10 10:00" in card
+    assert "YANLIŞ" not in card

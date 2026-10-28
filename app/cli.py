@@ -45,7 +45,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for entry in run.tool_log:
         if entry.get("tool") == "find_customers" and isinstance(entry.get("result"), dict):
             seg_counts[entry["result"].get("segment_id")] = entry["result"].get("count")
-    card = approval.render_card(run.proposal, ctx, seg_counts)
+    card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log))
     (out_dir / "approval_card.txt").write_text(card)
     ok = (approval.auto_approve if args.auto_approve else approval.ask_console)(card)
     if not ok:
