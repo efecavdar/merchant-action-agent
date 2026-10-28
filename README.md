@@ -68,6 +68,8 @@ photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘               
 - **Fail closed.** If one step fails, later steps (like sending messages) do not run.
 - **Standard mode only.** Model ids without `-contributor`: content is not used to train Meta models.
 
+Architecture & security deep-dive: [docs/architecture.md](docs/architecture.md).
+
 ## Run it (mock backend, no KEDD needed)
 
 ```bash
