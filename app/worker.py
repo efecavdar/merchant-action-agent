@@ -27,8 +27,13 @@ def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
         media_path = ""
         if m.media_id:
             media_path = str(wa.download_media(m.media_id, settings.out_dir / "inbox" / m.sender[-4:]))
-        replies = core.handle(session, m.kind, text=m.text, media_path=media_path,
-                              notify=lambda t: wa.send_text(m.sender, t))
+        def notify(t: str) -> None:
+            try:                      # progress notes are best effort; a failed one must not abort the job
+                wa.send_text(m.sender, t)
+            except Exception:  # noqa: BLE001
+                log.warning("notify failed: %s", t[:40])
+
+        replies = core.handle(session, m.kind, text=m.text, media_path=media_path, notify=notify)
     except Exception:
         log.exception("handling failed")
         replies = [core.Reply("Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?")]
