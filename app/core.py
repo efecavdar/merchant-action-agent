@@ -17,7 +17,7 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,6 +31,9 @@ YES = {"evet", "e", "onay", "onaylıyorum", "tamam", "ok", "olur", "yes", "y", "
 NO = {"hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur"}
 PENDING_TTL_S = 2 * 3600
 IMAGES_TTL_S = 30 * 60
+HISTORY_KEEP = 10
+HISTORY_TTL_S = 2 * 3600
+HISTORY_REPLY_CHARS = 600
 
 HELP = ("Merhaba, ben Çırak 👋 Sesli not ya da yazıyla ne istediğini söyle, istersen önce ürün fotoğrafı at.\n"
         "Örn: \"Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver.\"\n"
@@ -53,6 +56,17 @@ class Session:
     images_at: float = 0.0
     pending: dict[str, Any] | None = None       # {"proposal", "ctx", "seg_counts", "run_dir", "at"}
     greeted: bool = False
+    history: list[dict[str, Any]] = field(default_factory=list)  # {"role": "owner"|"cirak", "text", "at"}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # A session pickled before a field existed (e.g. `history`) unpickles without it.
+        for f in fields(self):
+            if f.name not in state:
+                if f.default_factory is not MISSING:
+                    state[f.name] = f.default_factory()  # type: ignore[misc]
+                elif f.default is not MISSING:
+                    state[f.name] = f.default
+        self.__dict__.update(state)
 
     def get_backend(self) -> Backend:
         # A session pickled by an older deploy may hold a backend whose shape no longer matches the code.
@@ -73,6 +87,25 @@ def _norm(text: str) -> str:
     return text.strip().lower().strip(".!?,👍 ")
 
 
+def _history_prune(session: Session, now: float) -> None:
+    """Drop items older than HISTORY_TTL_S; keep the newest HISTORY_KEEP."""
+    session.history = [h for h in session.history if now - h.get("at", now) <= HISTORY_TTL_S][-HISTORY_KEEP:]
+
+
+def _history_add(session: Session, role: str, text: str, now: float) -> None:
+    if not text:
+        return
+    if role == "cirak":
+        text = text[:HISTORY_REPLY_CHARS]
+    session.history.append({"role": role, "text": text, "at": now})
+    _history_prune(session, now)
+
+
+def _remember_replies(session: Session, replies: list[Reply], now: float) -> None:
+    for r in replies:
+        _history_add(session, "cirak", r.text, now)
+
+
 def _new_run_dir(session: Session) -> Path:
     d = settings.out_dir / "runs" / session.sender[-4:] / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     d.mkdir(parents=True, exist_ok=True)
@@ -84,6 +117,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     """Process one inbound message. Mutates `session`; returns replies to deliver."""
     notify = notify or (lambda _msg: None)
     now = time.time()
+    _history_prune(session, now)
     if session.pending and now - session.pending["at"] > PENDING_TTL_S:
         session.pending = None
     if session.images and now - session.images_at > IMAGES_TTL_S:
@@ -94,10 +128,12 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     # -- demo commands ---------------------------------------------------------
     if kind == "text" and t in {"/butik", "/salon"}:
         session.business, session.backend, session.pending, session.images = t[1:], None, None, []
+        session.history = []
         name = session.get_backend().store_profile().get("business_name", t[1:])
         return [Reply(f"Tamam, artık *{name}* (demo) için çalışıyorum.")]
     if kind == "text" and t in {"/sifirla", "/reset"}:
         session.backend, session.pending, session.images = None, None, []
+        session.history = []
         return [Reply("Sıfırladım. Demo verisi baştan yüklendi.")]
     if kind == "text" and t in {"/yardim", "/help", "yardım", "merhaba", "selam"} and not session.pending:
         session.greeted = True
@@ -105,10 +141,16 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
 
     # -- approval --------------------------------------------------------------
     if session.pending and kind == "text" and t in YES:
-        return _execute_pending(session, notify)
+        _history_add(session, "owner", text, now)
+        replies = _execute_pending(session, notify)
+        _remember_replies(session, replies, now)
+        return replies
     if session.pending and kind == "text" and t in NO:
+        _history_add(session, "owner", text, now)
         session.pending = None
-        return [Reply("Tamam, hiçbir şey yapmadım. Planı iptal ettim.")]
+        replies = [Reply("Tamam, hiçbir şey yapmadım. Planı iptal ettim.")]
+        _remember_replies(session, replies, now)
+        return replies
 
     # -- photos are buffered until an instruction arrives ------------------------
     if kind == "image":
@@ -116,7 +158,12 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         session.images_at = now
         if not text:   # no caption → wait for the instruction
             n = len(session.images)
-            return [Reply(f"📷 {n} fotoğraf aldım. Ne yapayım? Sesli not ya da mesajla söyle.")] if n == 1 else []
+            _history_add(session, "owner", f"[{n} fotoğraf]", now)
+            if n == 1:
+                replies = [Reply(f"📷 {n} fotoğraf aldım. Ne yapayım? Sesli not ya da mesajla söyle.")]
+                _remember_replies(session, replies, now)
+                return replies
+            return []
         kind = "text"  # the caption is the instruction
 
     if kind not in ("text", "audio"):
@@ -141,12 +188,17 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     session.images = []
     if ctx.instruction_source == "voice":
         notify(f"🎙️ Anladığım: “{ctx.instruction}”")
+    # The planner sees the conversation so far, not the message it is about to answer.
+    ctx.history = [dict(h) for h in session.history]
+    _history_add(session, "owner", ctx.instruction if kind == "audio" else text, now)
 
     run = agent.plan(ctx, backend)
     (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     if run.answer:                       # a question, not a job: answer and keep nothing pending
         log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
-        return replies + [Reply(run.answer)]
+        replies = replies + [Reply(run.answer)]
+        _remember_replies(session, replies, now)
+        return replies
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
     card = approval.render_card(run.proposal, ctx, seg_counts)
@@ -155,7 +207,9 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
                        "run_dir": str(run_dir), "at": now, "usage": run.usage}
     log.info("plan ready: %d turns, usage %s", run.turns, run.usage)
-    return replies + [Reply(card)]
+    replies = replies + [Reply(card)]
+    _remember_replies(session, replies, now)
+    return replies
 
 
 def _execute_pending(session: Session, notify: Notify) -> list[Reply]:

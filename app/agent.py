@@ -65,6 +65,9 @@ Rules:
 - Do NOT answer in plain text; always finish with propose_actions or reply_only.
 - If the instruction is unclear or unsafe, still call propose_actions with the safe subset you can do and
   explain what you skipped in summary_tr — or reply_only with one precise question.
+- `recent_conversation` holds the last messages of this chat. Use it to resolve short replies such as
+  'olur', 'evet o saat', 'ikincisi', '17:30 olsun'. The latest owner message wins. An approval still
+  always goes through propose_actions and the card; never treat 'olur' as an approval by itself.
 """
 
 _NO_ARGS = {"type": "object", "properties": {}, "additionalProperties": False}

@@ -3,6 +3,8 @@
 import hashlib
 import hmac
 import json
+import pickle
+import time
 from datetime import date
 from types import SimpleNamespace
 
@@ -142,6 +144,123 @@ def test_core_reject_and_photo_buffer(monkeypatch, cfg, tmp_path):
     assert seen["images"] == ["a.jpg", "b.jpg"] and s.images == [] and s.pending
     assert "iptal" in core.handle(s, "text", "hayır")[0].text and s.pending is None and s.backend.campaigns == []
     assert "Studio Elif" in core.handle(s, "text", "/salon")[0].text and s.business == "salon"
+
+
+# --------------------------------------------------------------------------- #
+# conversation memory (task 05)
+# --------------------------------------------------------------------------- #
+
+def _salon(tmp_path):
+    return core.Session(sender="905321",
+                        backend=MockBackend("salon", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+
+
+def _answering(seen, text="Ayşe E.'nin randevusunu 17:15'e alayım mı?"):
+    def _plan(ctx, backend, max_revisions=3):
+        seen.append(ctx)
+        return SimpleNamespace(proposal=None, answer=text, tool_log=[], turns=1, usage={})
+    return _plan
+
+
+def test_core_history_records_owner_and_cirak_and_reaches_planner(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    seen = []
+    monkeypatch.setattr(agent, "plan", _answering(seen))
+    s = _salon(tmp_path)
+
+    core.handle(s, "text", "Ayşe E.'nin randevusunu bir saat sonraya al")
+    assert [(h["role"], h["text"]) for h in s.history] == [
+        ("owner", "Ayşe E.'nin randevusunu bir saat sonraya al"),
+        ("cirak", "Ayşe E.'nin randevusunu 17:15'e alayım mı?"),
+    ]
+    assert all(set(h) == {"role", "text", "at"} for h in s.history)
+    assert seen[0].history == []                       # first message: nothing to remember yet
+
+    core.handle(s, "text", "olur")                     # short follow-up, nothing pending → planner
+    assert [h["role"] for h in s.history] == ["owner", "cirak", "owner", "cirak"]
+    assert s.history[2]["text"] == "olur" and s.pending is None
+    assert seen[1].history == s.history[:2]            # snapshot from before the current message
+    assert seen[1].history is not s.history
+
+
+def test_core_history_records_photos_voice_cards_and_reports(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    s = _salon(tmp_path)
+
+    assert "1 fotoğraf aldım" in core.handle(s, "image", media_path="a.jpg")[0].text
+    assert core.handle(s, "image", media_path="b.jpg") == []
+    assert [(h["role"], h["text"]) for h in s.history] == [
+        ("owner", "[1 fotoğraf]"), ("cirak", s.history[1]["text"]), ("owner", "[2 fotoğraf]")]
+    assert "1 fotoğraf aldım" in s.history[1]["text"]
+
+    monkeypatch.setattr(core.pipeline, "understand_media",
+                        lambda text, audio, images, concept=None, out_dir=None:
+                        core.pipeline.MediaContext(instruction="yarın boşluk var mı",
+                                                   instruction_source="voice"))
+    monkeypatch.setattr(agent, "plan", _answering([], text="Yarın 14:00 boş 👍"))
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    core.handle(s, "audio", media_path="v.ogg")
+    assert s.history[-2:] == [{"role": "owner", "text": "yarın boşluk var mı", "at": s.history[-2]["at"]},
+                              {"role": "cirak", "text": "Yarın 14:00 boş 👍", "at": s.history[-1]["at"]}]
+
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    monkeypatch.setattr(core.pipeline, "understand_media",
+                        lambda text, audio, images, concept=None, out_dir=None:
+                        core.pipeline.MediaContext(instruction=text, instruction_source="text"))
+    card = core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver")[-1].text
+    assert s.history[-2]["text"] == "Fular ekle 850 lira, gelmeyenlere haber ver"
+    assert s.history[-1] == {"role": "cirak", "text": card[:600], "at": s.history[-1]["at"]}
+    assert len(s.history[-1]["text"]) <= 600
+
+    summary = core.handle(s, "text", "Evet!")[0].text
+    assert (s.history[-2]["text"], s.history[-1]["text"]) == ("Evet!", summary)
+    assert s.history[-2]["role"] == "owner" and len(s.backend.campaigns) == 1
+
+
+def test_core_history_trimmed_and_expired_dropped(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _answering([], text="ok"))
+    s = _salon(tmp_path)
+    now = time.time()
+    s.history = ([{"role": "owner", "text": "stale", "at": now - 3 * 3600}]
+                 + [{"role": "owner", "text": f"m{i}", "at": now - i} for i in range(12)])
+
+    core.handle(s, "text", "yeni soru")
+    assert len(s.history) == core.HISTORY_KEEP
+    assert all(now - h["at"] <= core.HISTORY_TTL_S for h in s.history)
+    assert [h["text"] for h in s.history[-2:]] == ["yeni soru", "ok"]
+
+
+def test_core_history_cleared_by_reset_and_business_switch(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _answering([], text="ok"))
+    s = _salon(tmp_path)
+    core.handle(s, "text", "selam ver")
+    assert len(s.history) == 2
+    assert "Sıfırladım" in core.handle(s, "text", "/sifirla")[0].text and s.history == []
+    core.handle(s, "text", "selam ver")
+    assert len(s.history) == 2
+    core.handle(s, "text", "/butik")
+    assert s.history == [] and s.business == "butik"
+
+
+def test_core_old_session_pickle_loads_with_empty_history():
+    s = core.Session(sender="905321")
+    s.__dict__.pop("history")                        # shape of a pre-history pickle
+    assert pickle.loads(pickle.dumps(s)).history == []
+
+    s = core.Session(sender="905321", history=[{"role": "owner", "text": "x", "at": 1.0}])
+    assert pickle.loads(pickle.dumps(s)).history == s.history
+
+
+def test_core_evet_without_pending_plans_instead_of_executing(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    s = _salon(tmp_path)
+    n_items = len(s.backend.items)
+    r = core.handle(s, "text", "olur")
+    assert s.pending is not None and "onayına sunuyorum" in r[-1].text
+    assert s.backend.campaigns == [] and len(s.backend.items) == n_items
 
 
 # --------------------------------------------------------------------------- #

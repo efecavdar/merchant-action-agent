@@ -76,6 +76,37 @@ def test_agent_loop_reply_only(monkeypatch):
     assert run.proposal is None and run.answer.startswith("Bugün ciro") and run.turns == 2
 
 
+class FakeCapture:
+    """Records the first user message, then answers with reply_only."""
+
+    def __init__(self):
+        self.inputs: list[str] = []
+
+    def create(self, **kw):
+        if isinstance(kw.get("input"), str):
+            self.inputs.append(kw["input"])
+        fc = FakeResponses._fc
+        return SimpleNamespace(id="r1", output=[fc("reply_only", {"text": "tamam"}, "c1")],
+                               output_text="", usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+
+
+def test_recent_conversation_reaches_prompt_only_when_nonempty(monkeypatch):
+    assert "recent_conversation" not in MediaContext("selam", "text").to_prompt_json()
+    hist = [{"role": "owner", "text": "randevumu al", "at": 1.0},
+            {"role": "cirak", "text": "17:15'e alayım mı?", "at": 2.0}]
+    assert MediaContext("olur", "text", history=hist).to_prompt_json()["recent_conversation"] == hist
+
+    assert "never treat 'olur' as an approval by itself" in agent.SYSTEM_PROMPT
+
+    fake = FakeCapture()
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=fake))
+    backend = MockBackend("salon", today=date(2026, 10, 27))
+    agent.plan(MediaContext("olur", "text", history=hist), backend)
+    agent.plan(MediaContext("selam", "text"), backend)
+    assert '"recent_conversation"' in fake.inputs[0] and "17:15'e alayım mı?" in fake.inputs[0]
+    assert '"recent_conversation"' not in fake.inputs[1]
+
+
 def test_agent_loop_revises_invalid_proposal(monkeypatch):
     fake = FakeResponses()
     monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=fake))

@@ -41,9 +41,10 @@ class MediaContext:
     products: list[ProductCard] = field(default_factory=list)
     concept: str = ""                    # what SAM was asked to find
     notes: list[str] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)  # recent chat, oldest first
 
     def to_prompt_json(self) -> dict[str, Any]:
-        return {
+        prompt: dict[str, Any] = {
             "instruction": self.instruction,
             "instruction_source": self.instruction_source,
             "detected_products": [
@@ -53,6 +54,9 @@ class MediaContext:
             ],
             "notes": self.notes,
         }
+        if self.history:
+            prompt["recent_conversation"] = self.history
+        return prompt
 
 
 # --------------------------------------------------------------------------- #
