@@ -55,6 +55,12 @@ class Session:
     greeted: bool = False
 
     def get_backend(self) -> Backend:
+        # A session pickled by an older deploy may hold a backend whose shape no longer matches the code.
+        # Re-seed it rather than crash halfway through an approved plan.
+        if self.backend is not None and getattr(self.backend, "_schema", None) != getattr(
+                type(self.backend), "SCHEMA", None):
+            log.warning("stale backend in session (schema changed); re-seeding demo data")
+            self.backend = None
         if self.backend is None:
             self.backend = get_backend(self.business)
         return self.backend
@@ -158,12 +164,35 @@ def _execute_pending(session: Session, notify: Notify) -> list[Reply]:
     backend = session.get_backend()
     run_dir = Path(p["run_dir"])
     steps = executor.execute(p["proposal"], p["ctx"], backend, out_dir=run_dir)
-    rep = report.build_report(steps, backend)
-    (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
-    summary = report.summarize_for_merchant(rep)
+    # From here on things HAVE happened. A failing report must never turn into "nothing was done".
+    try:
+        rep = report.build_report(steps, backend)
+        (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
+        summary = report.summarize_for_merchant(rep)
+    except Exception:  # noqa: BLE001
+        log.exception("report failed after execution; falling back to the step list")
+        summary = _plain_summary(steps)
     failed = [s for s in steps if s["status"] != "ok"]
     if failed:
         summary += "\n\n⚠️ Bir adım başarısız oldu, sonrasını güvenlik için durdurdum: " + str(failed[0]["result"])[:200]
     visual = next((s["result"]["visual_path"] for s in steps
                    if s["action"] == "generate_visual" and s["status"] == "ok"), "")
     return [Reply(summary, image_path=visual)]
+
+
+_STEP_TR = {"add_catalog_item": "Kataloğa eklendi", "create_discount": "İndirim tanımlandı",
+            "generate_visual": "Kampanya görseli hazırlandı", "send_campaign": "Kampanya gönderildi",
+            "create_appointment": "Randevu oluşturuldu", "reschedule_appointment": "Randevu taşındı",
+            "cancel_appointment": "Randevu iptal edildi"}
+
+
+def _plain_summary(steps: list[dict[str, Any]]) -> str:
+    """Deterministic, model-free account of what ran. Used when the normal report cannot be built."""
+    lines = ["Yapılanlar:"]
+    for s in steps:
+        r = s["result"] if isinstance(s["result"], dict) else {}
+        detail = r.get("name") or r.get("label") or (f"%{r['percent']}" if "percent" in r else "") or (
+            f"{r['recipients']} kişi" if "recipients" in r else "")
+        mark = "✅" if s["status"] == "ok" else "⚠️"
+        lines.append(f"{mark} {_STEP_TR.get(s['action'], s['action'])}" + (f": {detail}" if detail else ""))
+    return "\n".join(lines)

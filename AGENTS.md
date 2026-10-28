@@ -17,8 +17,10 @@ Hackathon project: a human-in-the-loop WhatsApp agent for small businesses. Read
 6. **Tests must pass:** `python -m pytest -q` (offline, no API key needed). Add tests for what you build.
 7. **Style:** Python 3.12, type hints, ~110-char lines (`setup.cfg`), comments only where the *why* is not obvious.
    Match the existing code; no new dependencies without a one-line justification in the PR.
-8. **Turkish-facing text** (merchant messages, UI labels) is informal "sen", short, one emoji max.
-9. **Finish with a PR description:** what changed, how to test it manually, anything you were unsure about.
+8. **`MockBackend.SCHEMA`:** if you add, remove or rename an attribute of `MockBackend`, bump `SCHEMA` by one.
+   Live sessions are pickled; an old shape meeting new code crashed an approved plan once.
+9. **Turkish-facing text** (merchant messages, UI labels) is informal "sen", short, one emoji max.
+10. **Finish with a PR description:** what changed, how to test it manually, anything you were unsure about.
 
 ## Layout
 

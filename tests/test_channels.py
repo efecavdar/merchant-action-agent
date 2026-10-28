@@ -97,6 +97,27 @@ def test_core_flow_plan_approve_execute(monkeypatch, cfg, tmp_path):
     assert core.handle(s, "text", "evet")[0].text != "Hallettim."              # second "evet" cannot re-run
 
 
+def test_core_stale_backend_is_reseeded_and_report_failure_is_honest(monkeypatch, cfg, tmp_path):
+    # Seen live: a session pickled by an older deploy crashed in report() AFTER the actions ran,
+    # and the merchant was told "hiçbir şey yapılmadı". Both must not happen again.
+    cfg("out_dir", tmp_path)
+    old = MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s")
+    del old._schema                                   # shape of a pre-SCHEMA pickle
+    s = core.Session(sender="905321", backend=old)
+    assert s.get_backend() is not old and s.backend._schema == MockBackend.SCHEMA
+
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver")
+
+    def boom(rep):
+        raise RuntimeError("model down")
+    monkeypatch.setattr(report, "summarize_for_merchant", boom)
+    r = core.handle(s, "text", "evet")
+    assert "hiçbir şey" not in r[0].text
+    assert "✅ Kataloğa eklendi: İpek Fular" in r[0].text and "Kampanya gönderildi" in r[0].text
+    assert len(s.backend.campaigns) == 1
+
+
 def test_core_answer_path_leaves_nothing_pending(monkeypatch, cfg, tmp_path):
     cfg("out_dir", tmp_path)
     monkeypatch.setattr(agent, "plan", lambda ctx, backend, max_revisions=3: SimpleNamespace(

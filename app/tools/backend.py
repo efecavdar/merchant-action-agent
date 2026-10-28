@@ -315,6 +315,8 @@ class MockBackend:
     """In-memory KEDD-shaped backend. State can be persisted to data/store.json for the demo."""
 
     name = "mock"
+    # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
+    SCHEMA = 2
 
     def __init__(self, business: str | None = None, store_path: Path | None = None,
                  seed: int = 16, today: date | None = None):
@@ -347,6 +349,7 @@ class MockBackend:
         self._rng = random.Random(seed + 1)
         self._counter = 100
         self._items_at_start = len(self.items)
+        self._schema = self.SCHEMA
 
     # -- helpers ------------------------------------------------------------- #
     def _next_id(self, prefix: str) -> str:
