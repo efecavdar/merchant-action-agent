@@ -18,12 +18,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from .. import core
+from ..brief import build_morning_brief
 from ..config import settings
 
 log = logging.getLogger(__name__)
 
 COOKIE = "cirak_sid"
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+_FAIL_MSG = "Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?"
 _SID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -113,7 +115,7 @@ def create_app() -> FastAPI:
             return core.handle(session, kind, text=text, media_path=media, notify=status.append)
         except Exception:  # noqa: BLE001 — never leave the demo chat hanging
             log.exception("web handle failed")
-            return [core.Reply("Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?")]
+            return [core.Reply(_FAIL_MSG)]
 
     @app.post("/api/message")
     async def post_message(request: Request) -> JSONResponse:
@@ -160,6 +162,26 @@ def create_app() -> FastAPI:
                     replies.extend(_safe_handle(session, "audio", "",
                                                 _store(audio_name, audio_content, "voice.webm"), status))
                 return {"replies": [_reply_json(r) for r in replies], "status": status,
+                        "business": session.business, "business_name": _business_name(session)}
+
+        data = await run_in_threadpool(_work)
+        resp = JSONResponse(data)
+        if is_new:
+            resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax")
+        return resp
+
+    @app.post("/api/brief")
+    async def post_brief(request: Request) -> JSONResponse:
+        sid, session, is_new = _ensure(request)
+
+        def _work() -> dict[str, Any]:
+            with _lock(sid):
+                try:
+                    replies = build_morning_brief(session)
+                except Exception:  # noqa: BLE001 — never leave the demo chat hanging
+                    log.exception("brief failed")
+                    replies = [core.Reply(_FAIL_MSG)]
+                return {"replies": [_reply_json(r) for r in replies], "status": [],
                         "business": session.business, "business_name": _business_name(session)}
 
         data = await run_in_threadpool(_work)

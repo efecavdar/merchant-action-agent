@@ -13,6 +13,21 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 
+def deliver_replies(sender: str, replies: list[core.Reply]) -> list[Exception]:
+    """Send every reply; a failed one is logged and does not stop the rest. Returns the errors."""
+    errors: list[Exception] = []
+    for r in replies:
+        try:
+            if r.image_path and Path(r.image_path).exists():
+                wa.send_image(sender, r.image_path, caption=r.text)
+            elif r.text:
+                wa.send_text(sender, r.text)
+        except Exception as e:  # noqa: BLE001 — one failed reply must not stop the rest
+            log.exception("reply delivery failed")
+            errors.append(e)
+    return errors
+
+
 def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
                     save: Callable[[str, core.Session], None]) -> None:
     m = wa.Inbound(**msg)
@@ -39,11 +54,4 @@ def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
         replies = [core.Reply("Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?")]
     finally:
         save(m.sender, session)          # persist even on failure (e.g. a consumed approval stays consumed)
-    for r in replies:
-        try:
-            if r.image_path and Path(r.image_path).exists():
-                wa.send_image(m.sender, r.image_path, caption=r.text)
-            elif r.text:
-                wa.send_text(m.sender, r.text)
-        except Exception:
-            log.exception("reply delivery failed")
+    deliver_replies(m.sender, replies)

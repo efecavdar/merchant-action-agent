@@ -42,6 +42,22 @@ def worker(msg: dict) -> None:
         volume.commit()
 
 
+# 06:00 UTC = 09:00 Türkiye. Manual trigger for the demo: modal run modal_app.py::morning_brief
+@app.function(image=image, secrets=[secret], volumes={"/data": volume},
+              schedule=modal.Cron("0 6 * * *"), max_containers=1)
+def morning_brief() -> dict[str, str]:
+    import logging
+
+    from app.brief import send_morning_briefs
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    volume.reload()
+    try:
+        return send_morning_briefs(sessions.get, sessions.__setitem__)
+    finally:
+        volume.commit()
+
+
 @app.function(image=image, secrets=[secret], min_containers=1)
 @modal.concurrent(max_inputs=50)
 @modal.asgi_app()
