@@ -69,6 +69,8 @@ photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘               
   `send_campaign` action.
 - **Customer data stays in the backend.** Segments come back as counts and samples; the model never sees a
   phone number, and only customers with marketing consent are counted.
+- **Template campaigns.** Business-initiated WhatsApp messages use approved templates (the gateway
+  fills `{{1}}` with each customer's name) while the model only supplies short variables like code and offer.
 - **Fail closed.** If one step fails, later steps (like sending messages) do not run.
 - **Standard mode only.** Model ids without `-contributor`: content is not used to train Meta models.
 

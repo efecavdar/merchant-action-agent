@@ -105,6 +105,8 @@ class Campaign:
     message: str
     visual_path: str
     recipients: int
+    template: str = ""
+    variables: dict[str, str] = field(default_factory=dict)
     status: str = "scheduled"
     # Engagement is SIMULATED in mock mode and clearly labelled as such in reports.
     replies: int = 0
@@ -137,6 +139,37 @@ class InboxMessage:
     customer: str                   # display name only, never a phone number
     preview: str                    # synthetic snippet
     age_minutes: int = 0
+
+
+# --------------------------------------------------------------------------- #
+# Approved WhatsApp campaign templates
+# --------------------------------------------------------------------------- #
+# A business may only start a conversation with an approved template. {{1}} is always the
+# customer name and is filled per recipient by the gateway (KEDD) or the mock; the model only
+# supplies the remaining variables as short strings. Bodies carry no numbers so they never
+# force offer text into a plan — numbers arrive via the variables and are validated there.
+
+_CAMPAIGN_TEMPLATES: list[dict[str, Any]] = [
+    {"name": "marketing_reengagement_promo_tr",
+     "body": "Merhaba {{1}}! Seni özledik 💛 {{3}} — kasada {{2}} kodunu söylemen yeterli.",
+     "variables": [{"number": 1, "name": "name"}, {"number": 2, "name": "code"},
+                   {"number": 3, "name": "advantage"}]},
+    {"name": "marketing_engagement_thankyou_promo_tr",
+     "body": "Teşekkürler {{1}}! Sana özel bir hediyemiz var: {{3}} 🎁 Kodun: {{2}}",
+     "variables": [{"number": 1, "name": "name"}, {"number": 2, "name": "code"},
+                   {"number": 3, "name": "discount"}]},
+    {"name": "marketing_welcome_offer_friendly_tr",
+     "body": "Aramıza hoş geldin {{1}}! İlk siparişinde seni küçük bir sürpriz bekliyor 🎉",
+     "variables": [{"number": 1, "name": "name"}]},
+]
+
+
+def render_campaign_template(body: str, values: dict[str, str]) -> str:
+    """Fill {{n}} placeholders from `values` (keys "1", "2", …). Unknown placeholders stay as-is."""
+    out = body
+    for key, val in values.items():
+        out = out.replace("{{" + str(key) + "}}", str(val))
+    return out
 
 
 @dataclass
@@ -174,6 +207,7 @@ class Backend(Protocol):
                            value: float | None = None) -> dict[str, Any]: ...
     def ads_performance(self, days: int = 7) -> dict[str, Any]: ...
     def ads_suggestions(self) -> dict[str, Any]: ...
+    def campaign_templates(self) -> list[dict[str, Any]]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -181,8 +215,9 @@ class Backend(Protocol):
                          duration_minutes: int | None = None) -> dict[str, Any]: ...
     def create_discount(self, name: str, percent: int, item_ids: list[str],
                         starts: str, ends: str) -> dict[str, Any]: ...
-    def send_campaign(self, name: str, segment_id: str, message: str,
-                      visual_path: str) -> dict[str, Any]: ...
+    def send_campaign(self, name: str, segment_id: str, message: str = "",
+                      visual_path: str = "", template: str | None = None,
+                      variables: dict[str, str] | None = None) -> dict[str, Any]: ...
     def create_appointment(self, customer_id: str, item_id: str, staff: str,
                            starts: str) -> dict[str, Any]: ...
     def reschedule_appointment(self, appointment_id: str, starts: str,
@@ -363,7 +398,7 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 3
+    SCHEMA = 4
 
     PREVIEW_TTL_S = 15 * 60
 
@@ -685,6 +720,11 @@ class MockBackend:
     def ads_suggestions(self) -> dict[str, Any]:
         return {"suggestions": [dict(s) for s in self.ad_suggestions]}
 
+    def campaign_templates(self) -> list[dict[str, Any]]:
+        """Approved templates {name, body, variables}; {{1}} is always the customer name."""
+        return [{"name": t["name"], "body": t["body"],
+                 "variables": [dict(v) for v in t["variables"]]} for t in _CAMPAIGN_TEMPLATES]
+
     # -- write tools (only called by the executor AFTER human approval) ------ #
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
                          description: str, image_path: str = "",
@@ -707,14 +747,27 @@ class MockBackend:
         self.discounts.append(d)
         return {**asdict(d), "sale_prices": {it.id: it.sale_price for it in items}}
 
-    def send_campaign(self, name: str, segment_id: str, message: str,
-                      visual_path: str) -> dict[str, Any]:
+    def send_campaign(self, name: str, segment_id: str, message: str = "",
+                      visual_path: str = "", template: str | None = None,
+                      variables: dict[str, str] | None = None) -> dict[str, Any]:
         if segment_id not in self.segments:
             raise ValueError(f"unknown segment {segment_id}")
         n = len(self.segments[segment_id])
         if n > settings.max_campaign_recipients:
             raise ValueError(f"segment too large ({n} > {settings.max_campaign_recipients})")
-        c = Campaign(self._next_id("cmp"), name, segment_id, message, visual_path, n, status="sent",
+        variables = dict(variables or {})
+        if template:
+            bodies = {t["name"]: t["body"] for t in _CAMPAIGN_TEMPLATES}
+            if template not in bodies:
+                raise ValueError(f"unknown template {template}")
+            names = {c.id: c.name for c in self.customers}
+            rendered = [render_campaign_template(bodies[template], {"1": names.get(cid, "Müşteri"),
+                                                                   **variables})
+                        for cid in self.segments[segment_id]]
+            message = rendered[0] if rendered else render_campaign_template(
+                bodies[template], {"1": "Müşteri", **variables})
+        c = Campaign(self._next_id("cmp"), name, segment_id, message, visual_path, n,
+                     template=template or "", variables=variables, status="sent",
                      day=self.today.isoformat())
         # Simulated engagement so the report has numbers to show. Labelled "simulated".
         c.replies = int(n * self._rng.uniform(0.18, 0.32))
@@ -895,6 +948,9 @@ class KeddBackend:
         return self._get("/agent/ads/performance", days=days)
     def ads_suggestions(self):
         return self._get("/agent/ads/suggestions")
+    def campaign_templates(self):
+        res = self._get("/agent/campaign-templates")
+        return res if isinstance(res, list) else res.get("templates", [])
     def add_catalog_item(self, item_type, name, price, category, description, image_path="",
                          duration_minutes=None):
         return self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
@@ -903,7 +959,10 @@ class KeddBackend:
     def create_discount(self, name, percent, item_ids, starts, ends):
         return self._post("/agent/discounts", {"name": name, "percent": percent,
                                                "item_ids": item_ids, "starts": starts, "ends": ends})
-    def send_campaign(self, name, segment_id, message, visual_path):
+    def send_campaign(self, name, segment_id, message="", visual_path="", template=None, variables=None):
+        if template:   # the gateway fills {{1}} (customer name) itself, per recipient
+            return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
+                                                   "template": template, "variables": variables or {}})
         return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
                                                "message": message, "visual_path": visual_path})
     def create_appointment(self, customer_id, item_id, staff, starts):

@@ -9,10 +9,11 @@ import pytest
 from PIL import Image
 
 from app.actions import validate_proposal
+from app.config import settings
 from app.meta_client import extract_json, parse_sam_boxes
 from app.pipeline import MediaContext, ProductCard
 from app.tools.backend import KeddBackend, MockBackend
-from app import approval, executor
+from app import agent, approval, executor
 
 
 TODAY = date(2026, 10, 27)
@@ -626,6 +627,195 @@ def test_kedd_paths_and_bodies():
     for _m, _u, headers, _b in calls:
         assert {"X-Agent-Phone", "X-Agent-Timestamp", "X-Agent-Signature"} <= set(headers)
         assert headers["X-Agent-Phone"] == "905321"
+
+
+# --------------------------------------------------------------------------- #
+# template campaigns (task 08)
+# --------------------------------------------------------------------------- #
+
+def _known_templates():
+    return {t["name"]: t for t in MockBackend("butik", today=TODAY).campaign_templates()}
+
+
+def _template_proposal(**kw):
+    a = {"type": "send_campaign", "segment_id": "seg1",
+         "template": "marketing_reengagement_promo_tr",
+         "variables": {"2": "FULAR15", "3": "hafta sonu tüm fularlarda %15 indirim"}}
+    a.update(kw)
+    return {"summary_tr": "Fularlarda %15, gelmeyenlere mesaj.", "actions": [
+        {"type": "create_discount", "percent": 15, "item_refs": ["i001"],
+         "starts": "2026-10-31", "ends": "2026-11-01"},
+        a,
+    ]}
+
+
+def test_campaign_templates_shape():
+    templates = MockBackend("butik", today=TODAY).campaign_templates()
+    assert [t["name"] for t in templates] == ["marketing_reengagement_promo_tr",
+                                             "marketing_engagement_thankyou_promo_tr",
+                                             "marketing_welcome_offer_friendly_tr"]
+    assert all(set(t) == {"name", "body", "variables"} for t in templates)
+    by_name = {t["name"]: t for t in templates}
+    assert [(v["number"], v["name"]) for v in by_name["marketing_reengagement_promo_tr"]["variables"]] == [
+        (1, "name"), (2, "code"), (3, "advantage")]
+    assert [(v["number"], v["name"]) for v in by_name["marketing_engagement_thankyou_promo_tr"]
+                ["variables"]] == [(1, "name"), (2, "code"), (3, "discount")]
+    assert [(v["number"], v["name"]) for v in by_name["marketing_welcome_offer_friendly_tr"]
+                ["variables"]] == [(1, "name")]
+    for t in templates:
+        assert "{{1}}" in t["body"] and len(t["body"]) <= 350
+        assert "%" not in t["body"] and "TL" not in t["body"] and "₺" not in t["body"]
+    templates[0]["body"] = "mutated"          # callers get copies, not the registry
+    assert MockBackend("butik", today=TODAY).campaign_templates()[0]["body"] != "mutated"
+
+
+def test_validate_template_campaign_ok():
+    assert validate_proposal(_template_proposal(), set(), CATALOG, {"seg1"},
+                             known_templates=_known_templates()) == []
+    welcome = {"summary_tr": "Yeni üyeye hoş geldin mesajı.", "actions": [
+        {"type": "send_campaign", "segment_id": "seg1",
+         "template": "marketing_welcome_offer_friendly_tr"}]}
+    assert validate_proposal(welcome, set(), CATALOG, {"seg1"}, known_templates=_known_templates()) == []
+    welcome["actions"][0]["variables"] = {}   # explicitly empty is also fine (only {{1}} exists)
+    assert validate_proposal(welcome, set(), CATALOG, {"seg1"}, known_templates=_known_templates()) == []
+
+
+def test_validate_template_must_come_from_tool():
+    errs = validate_proposal(_template_proposal(template="marketing_uydurma"), set(), CATALOG, {"seg1"},
+                             known_templates=_known_templates())
+    assert any("list_campaign_templates" in e for e in errs)
+    errs = validate_proposal(_template_proposal(), set(), CATALOG, {"seg1"}, known_templates={})
+    assert any("list_campaign_templates" in e for e in errs)
+
+
+def test_validate_template_variables_exact():
+    base = _known_templates()
+    prop = _template_proposal(variables={"2": "FULAR15"})
+    assert any("needs variables ['3']" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                       known_templates=base))
+    prop = _template_proposal(variables={"2": "FULAR15", "3": "x", "4": "y"})
+    assert any("has no variables ['4']" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                        known_templates=base))
+    prop = _template_proposal(variables={"1": "Ayşe", "2": "FULAR15", "3": "x"})
+    assert any("must not include '1'" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                      known_templates=base))
+    prop = _template_proposal(variables=["FULAR15"])
+    assert any("must be an object" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                   known_templates=base))
+    prop = _template_proposal(template="marketing_welcome_offer_friendly_tr", variables={"2": "x"})
+    assert any("has no variables ['2']" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                        known_templates=base))
+
+
+def test_validate_template_variable_values():
+    base = _known_templates()
+
+    def errs_for(value):
+        prop = _template_proposal(variables={"2": "FULAR15", "3": value})
+        return validate_proposal(prop, set(), CATALOG, {"seg1"}, known_templates=base)
+
+    assert any("> 60" in e for e in errs_for("x" * 61))
+    assert any("newline" in e for e in errs_for("satır bir\nsatır iki"))
+    assert any("URL" in e for e in errs_for("bak https://ornek.com/firsat"))
+    assert any("URL" in e for e in errs_for("bak www.ornek.com"))
+    assert any("must be a string" in e for e in errs_for(15))
+    assert errs_for("x" * 60) == []                       # exactly 60 is allowed
+
+
+def test_validate_template_rendered_numbers_checked():
+    base = _known_templates()
+    prop = _template_proposal(variables={"2": "FULAR15", "3": "hafta sonu %30 indirim"})
+    assert any("%30" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                     known_templates=base))
+    prop = _template_proposal(variables={"2": "FULAR15", "3": "fular 999 TL"})
+    assert any("999" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                     known_templates=base))
+    prop = _template_proposal(variables={"2": "FULAR15", "3": "yüzde 30 indirim"})
+    assert any("%30" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                     known_templates=base))
+
+
+def test_validate_message_and_template_exclusive():
+    prop = _template_proposal(message="Selam!")
+    assert any("must be omitted" in e for e in validate_proposal(prop, set(), CATALOG, {"seg1"},
+                                                                 known_templates=_known_templates()))
+
+
+def test_validate_kedd_requires_template():
+    object.__setattr__(settings, "backend", "kedd")
+    try:
+        assert validate_proposal(_template_proposal(), set(), CATALOG, {"seg1"},
+                                 known_templates=_known_templates()) == []
+        errs = validate_proposal(_proposal("seg101"), {"tmp1"}, CATALOG, {"seg101"})
+        assert any("template is required" in e for e in errs)
+    finally:
+        object.__setattr__(settings, "backend", "mock")
+    assert validate_proposal(_proposal("seg101"), {"tmp1"}, CATALOG, {"seg101"}) == []  # mock free-text ok
+
+
+def test_template_card_renders_from_facts(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    seg = b.find_customers(inactive_days=60)
+    log = [{"tool": "list_campaign_templates", "result": {"templates": b.campaign_templates()}}]
+    facts = approval.card_facts(log)
+    prop = {"summary_tr": "x", "actions": [
+        {"type": "send_campaign", "segment_id": seg["segment_id"],
+         "template": "marketing_reengagement_promo_tr",
+         "variables": {"2": "FULAR15", "3": "hafta sonu %15 indirim"},
+         "message": "YALAN MESAJ %99 bedava"},
+    ]}
+    card = approval.render_card(prop, MediaContext("x", "text"), {seg["segment_id"]: seg["count"]}, facts)
+    assert "‹müşteri adı›" in card and "FULAR15" in card and "hafta sonu %15 indirim" in card
+    assert "YALAN MESAJ" not in card and "%99" not in card
+    no_facts = approval.render_card(prop, MediaContext("x", "text"), {})
+    assert "şablon bulunamadı" in no_facts  # no facts → no invented body
+
+
+def test_executor_template_campaign_mock(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    seg = b.find_customers(inactive_days=60)
+    prop = {"summary_tr": "x", "actions": [
+        {"type": "send_campaign", "segment_id": seg["segment_id"],
+         "template": "marketing_reengagement_promo_tr",
+         "variables": {"2": "FULAR15", "3": "hafta sonu %15 indirim"}}]}
+    steps = executor.execute(prop, MediaContext("x", "text"), b, out_dir=tmp_path)
+    assert steps[0]["status"] == "ok" and steps[0]["result"]["recipients"] == seg["count"]
+    stored = b.campaigns[0]
+    assert stored.template == "marketing_reengagement_promo_tr"
+    assert stored.variables == {"2": "FULAR15", "3": "hafta sonu %15 indirim"}
+    first_name = next(c.name for c in b.customers if c.id == b.segments[seg["segment_id"]][0])
+    assert first_name in stored.message and "FULAR15" in stored.message and "{{" not in stored.message
+    prop["actions"][0]["template"] = "ghost"              # unknown template fails closed
+    assert executor.execute(prop, MediaContext("x", "text"), b, out_dir=tmp_path)[0]["status"] == "failed"
+    assert len(b.campaigns) == 1
+    free = b.send_campaign("k2", seg["segment_id"], "merhaba", "")   # free-text signature unchanged
+    assert free["template"] == "" and free["message"] == "merhaba"
+
+
+def test_kedd_template_paths_and_bodies():
+    kb = KeddBackend("https://kedd.example", "s3cret", "905321")
+    kb._s = _FakeSession()
+    kb.campaign_templates()
+    kb.send_campaign("Kış", "seg9", template="marketing_reengagement_promo_tr",
+                     variables={"2": "FULAR15", "3": "hafta sonu %15"})
+    kb.send_campaign("Eski", "seg9", "merhaba", "")
+    calls = kb._s.calls
+    assert calls[0][:2] == ("GET", "https://kedd.example/agent/campaign-templates")
+    assert calls[1][:2] == ("POST", "https://kedd.example/agent/campaigns")
+    assert calls[1][3] == {"name": "Kış", "segment_id": "seg9",
+                           "template": "marketing_reengagement_promo_tr",
+                           "variables": {"2": "FULAR15", "3": "hafta sonu %15"}}
+    assert calls[2][3] == {"name": "Eski", "segment_id": "seg9", "message": "merhaba", "visual_path": ""}
+
+
+def test_list_campaign_templates_tool_and_prompt(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    run = agent.AgentRun()
+    res = agent._run_tool("list_campaign_templates", {}, b, run)
+    assert {t["name"] for t in res["templates"]} == set(run.templates) and len(run.templates) == 3
+    assert "list_campaign_templates" in {t["name"] for t in agent.TOOLS}
+    assert "list_campaign_templates" in agent.SYSTEM_PROMPT and "FULAR15" in agent.SYSTEM_PROMPT
+    assert "{{1}}" in agent.SYSTEM_PROMPT
 
 
 def test_appointment_card_lines_come_from_tool_facts():

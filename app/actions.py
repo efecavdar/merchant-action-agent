@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from .config import settings
+from .tools.backend import render_campaign_template
 
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
@@ -52,7 +53,16 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                                       "description": "English prompt for the campaign image, mention the items"},
                     # send_campaign
                     "segment_id": {"type": "string", "description": "from find_customers"},
-                    "message": {"type": "string", "description": "WhatsApp message, Turkish, personal, <= 350 chars"},
+                    "message": {"type": "string",
+                                "description": "WhatsApp message, Turkish, personal, <= 350 chars "
+                                               "(mock free-text only; omit when template is set)"},
+                    "template": {"type": "string",
+                                 "description": "approved template name from list_campaign_templates "
+                                                "(required for real WhatsApp sends)"},
+                    "variables": {"type": "object",
+                                  "description": "template variables by number, e.g. "
+                                                 "{\"2\": \"FULAR15\", \"3\": \"hafta sonu %15\"}; "
+                                                 "never \"1\""},
                     "attach_visual": {"type": "boolean"},
                     # appointments
                     "customer_id": {"type": "string", "description": "from find_customer (create_appointment)"},
@@ -96,6 +106,52 @@ def _promised_numbers(message: str) -> tuple[set[int], set[float]]:
     return pcts, prices
 
 
+_URL_RE = re.compile(r"https?://|www\.", re.I)
+
+
+def _check_promised_numbers(where: str, text: str, plan_pcts: set[int], plan_prices: set[float],
+                            errors: list[str]) -> None:
+    """The customer text must not promise what the plan does not do."""
+    pcts, prices = _promised_numbers(text)
+    for p in sorted(pcts - plan_pcts):
+        errors.append(f"{where}: message mentions %{p} but no create_discount in this plan has percent={p}")
+    for p in sorted(prices - plan_prices):
+        errors.append(f"{where}: message mentions {p:g} TL but no action in this plan sets that price "
+                      f"(add the item or drop the number)")
+
+
+def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: str,
+                              errors: list[str]) -> None:
+    variables = a.get("variables")
+    if variables is None:
+        variables = {}
+    if not isinstance(variables, dict):
+        errors.append(f"{where}: variables must be an object like {{\"2\": \"FULAR15\"}}")
+        return
+    required = {str(v.get("number")) for v in tmpl.get("variables") or [] if str(v.get("number")) != "1"}
+    provided = {str(k) for k in variables}
+    if "1" in provided:
+        errors.append(f"{where}: variables must not include '1' (the gateway fills the customer name)")
+    missing = sorted(required - provided)
+    if missing:
+        errors.append(f"{where}: template '{a['template']}' needs variables {missing} "
+                      f"(exactly {sorted(required)} besides '1')")
+    extra = sorted(provided - required - {"1"})
+    if extra:
+        errors.append(f"{where}: template '{a['template']}' has no variables {extra} "
+                      f"(needs exactly {sorted(required)} besides '1')")
+    for k, v in variables.items():
+        if not isinstance(v, str):
+            errors.append(f"{where}: variables[{k!r}] must be a string")
+            continue
+        if len(v) > 60:
+            errors.append(f"{where}: variables[{k!r}] too long ({len(v)} > 60 chars)")
+        if "\n" in v or "\r" in v:
+            errors.append(f"{where}: variables[{k!r}] must be a single line (no newline)")
+        if _URL_RE.search(v):
+            errors.append(f"{where}: variables[{k!r}] must not contain a URL")
+
+
 def _coerce_numbers(a: dict[str, Any]) -> None:
     """Tool-call arguments sometimes arrive as strings ("20") or floats (20.0). Normalise in place
     so the validator and the executor see plain numbers."""
@@ -137,16 +193,19 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       known_appointments: set[str] | None = None,
                       known_customers: set[str] | None = None,
                       known_previews: dict[str, dict[str, Any]] | None = None,
-                      known_campaigns: set[str] | None = None) -> list[str]:
+                      known_campaigns: set[str] | None = None,
+                      known_templates: dict[str, dict[str, Any]] | None = None) -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
     Ids for appointments / customers / campaigns / previews must come from a tool call
-    in the same run (like segments); `known_previews` maps preview_id -> preview result."""
+    in the same run (like segments); `known_previews` maps preview_id -> preview result,
+    `known_templates` maps template name -> template (from list_campaign_templates)."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
     known_previews = known_previews or {}
     known_campaigns = known_campaigns or set()
+    known_templates = known_templates or {}
     errors: list[str] = []
     if not isinstance(proposal, dict):
         return ["proposal must be an object"]
@@ -230,20 +289,36 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             if a.get("segment_id") not in known_segments:
                 errors.append(f"{where}: segment_id must come from a find_customers call "
                               f"(known: {sorted(known_segments)})")
-            msg = a.get("message") or ""
-            if not msg:
-                errors.append(f"{where}: message is required")
-            elif len(msg) > 350:
-                errors.append(f"{where}: message too long ({len(msg)} > 350 chars)")
             if a.get("attach_visual") and not has_visual:
                 errors.append(f"{where}: attach_visual=true but no generate_visual action before it")
-            # The message must not promise what the plan does not do.
-            pcts, prices = _promised_numbers(msg)
-            for p in sorted(pcts - plan_pcts):
-                errors.append(f"{where}: message mentions %{p} but no create_discount in this plan has percent={p}")
-            for p in sorted(prices - plan_prices):
-                errors.append(f"{where}: message mentions {p:g} TL but no action in this plan sets that price "
-                              f"(add the item or drop the number)")
+            has_template = bool(a.get("template"))
+            if has_template and a.get("message"):
+                errors.append(f"{where}: message must be omitted when template is set "
+                              f"(the template body is used)")
+            if has_template:
+                tmpl = known_templates.get(a["template"])
+                if tmpl is None:
+                    errors.append(f"{where}: template must come from a list_campaign_templates call "
+                                  f"(known: {sorted(known_templates)})")
+                else:
+                    _check_template_variables(a, tmpl, where, errors)
+                    raw_vars = a.get("variables") if isinstance(a.get("variables"), dict) else {}
+                    rendered = render_campaign_template(
+                        tmpl.get("body", ""),
+                        {"1": "Müşteri", **{str(k): v for k, v in raw_vars.items()
+                                           if isinstance(v, str)}})
+                    _check_promised_numbers(where, rendered, plan_pcts, plan_prices, errors)
+            elif settings.backend == "kedd":
+                errors.append(f"{where}: template is required with BACKEND=kedd "
+                              f"(call list_campaign_templates and fill its variables)")
+            else:
+                msg = a.get("message") or ""
+                if not msg:
+                    errors.append(f"{where}: message is required "
+                                  f"(or pick a template from list_campaign_templates)")
+                elif len(msg) > 350:
+                    errors.append(f"{where}: message too long ({len(msg)} > 350 chars)")
+                _check_promised_numbers(where, msg, plan_pcts, plan_prices, errors)
 
         elif t in APPOINTMENT_TYPES:
             if not a.get("label"):
