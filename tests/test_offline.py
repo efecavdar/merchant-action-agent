@@ -1,5 +1,7 @@
 """Offline tests: everything that does not need an API key."""
 
+import hashlib
+import hmac
 import json
 import pickle
 import unicodedata
@@ -1106,3 +1108,32 @@ def test_review_no_false_positives(text):
 def test_review_card_strips_unicode_separators_and_bidi():
     s = approval.clean_display("Ay şe‮Yılmaz\u0085X")
     assert not any(ch in s for ch in " ‮\u0085") and "Ay şe Yılmaz X" == s
+
+def test_kedd_signature_matches_gateway_k12_vectors(monkeypatch):
+    # Vectors computed with the gateway's own buildSignaturePayload/computeSignature (K1.2 format):
+    # "<ts>.<METHOD>.<target>.<phone>.<idempotency key or empty>.<rawBody>".
+    import app.tools.backend as backend_mod
+    monkeypatch.setattr(backend_mod.time, "time", lambda: 1761730000)
+    kb = KeddBackend("https://kedd.example", "test-secret", "+905000000000")
+    post = kb._headers("POST", "/agent/discounts?x=%C5%9F", '{"a":"ş"}', "run-1-0")
+    assert post["X-Agent-Signature"] == "70a72fea3217bc17af8f5b2a9cc74daea481df180eb8ed4f8c4eb334f5cf39f8"
+    assert post["Idempotency-Key"] == "run-1-0"
+    get = kb._headers("GET", "/agent/profile", "")
+    assert get["X-Agent-Signature"] == "420103b29361cacbfc2f7130d82572dc685f97123c1a45b279ddf02e5704d3e3"
+    assert "Idempotency-Key" not in get
+
+
+def test_kedd_post_signs_the_idempotency_key_it_sends():
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905000000000")
+    sent: dict = {}
+
+    class _S:
+        def post(self, url, data, headers, timeout):
+            sent.update(headers=headers, data=data)
+            return type("R", (), {"status_code": 200, "json": lambda self: {"ok": True}})()
+
+    kb._s = _S()
+    kb._post("/agent/discounts", {"percent": 10}, idempotency_key="run-7-2")
+    h = sent["headers"]
+    msg = f"{h['X-Agent-Timestamp']}.POST./agent/discounts.+905000000000.run-7-2.{sent['data'].decode()}"
+    assert h["X-Agent-Signature"] == hmac.new(b"s3cret", msg.encode(), hashlib.sha256).hexdigest()

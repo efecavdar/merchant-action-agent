@@ -941,12 +941,17 @@ class KeddBackend:
         self._s = requests.Session()
         self._secret = settings.kedd_agent_secret.encode()
 
-    def _headers(self, method: str, path: str, body: str) -> dict[str, str]:
+    def _headers(self, method: str, path: str, body: str, idempotency_key: str = "") -> dict[str, str]:
+        # Phone and Idempotency-Key are inside the signature: a captured request cannot be replayed
+        # for another merchant or under another key (gateway K1.2; the old format is rejected).
         ts = str(int(time.time()))
-        msg = f"{ts}.{method}.{path}.{body}".encode()
+        msg = f"{ts}.{method}.{path}.{self._phone}.{idempotency_key}.{body}".encode()
         sig = hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
-        return {"X-Agent-Phone": self._phone, "X-Agent-Timestamp": ts, "X-Agent-Signature": sig,
-                "Content-Type": "application/json"}
+        headers = {"X-Agent-Phone": self._phone, "X-Agent-Timestamp": ts, "X-Agent-Signature": sig,
+                   "Content-Type": "application/json"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        return headers
 
     @staticmethod
     def _gateway_error(status: int, payload: Any) -> ValueError:
@@ -989,8 +994,7 @@ class KeddBackend:
         # The gateway reads absent and null identically; dropping Nones keeps bodies exact.
         payload = json.dumps({k: v for k, v in body.items() if v is not None},
                              ensure_ascii=False, separators=(",", ":"))
-        headers = {**self._headers("POST", path, payload),
-                   "Idempotency-Key": idempotency_key or str(uuid.uuid4())}
+        headers = self._headers("POST", path, payload, idempotency_key or str(uuid.uuid4()))
         try:
             r = self._s.post(f"{self.base}{path}", data=payload.encode(), headers=headers, timeout=30)
         except requests.exceptions.RequestException:
