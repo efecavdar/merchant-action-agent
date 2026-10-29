@@ -916,6 +916,14 @@ class MockBackend:
 # KEDD adapter (private platform; HTTP only, no KEDD source code here)
 # --------------------------------------------------------------------------- #
 
+class KeddError(ValueError):
+    """The KEDD gateway failed (unreachable, 5xx, 429, 403 …), not the request itself.
+
+    A ValueError subclass so every existing handler keeps working; channels catch this
+    specifically to say "KEDD'ye ulaşılamıyor" instead of a generic failure.
+    """
+
+
 SOCIAL_JPG_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -965,14 +973,15 @@ class KeddBackend:
     name = "kedd"
     # Same staleness contract as MockBackend: a session pickled before a shape change
     # is re-seeded instead of crashing halfway through an approved plan.
-    SCHEMA = 2  # 2: secret no longer pickled
+    SCHEMA = 3  # 3: scoped demo credential (key id travels with the backend)
 
-    def __init__(self, base_url: str, secret: str, merchant_phone: str):
+    def __init__(self, base_url: str, secret: str, merchant_phone: str, key_id: str = "main"):
         import requests  # local import keeps mock mode dependency-light
         self._s = requests.Session()
         self.base = base_url.rstrip("/")
         self._secret = secret.encode()
         self._phone = merchant_phone
+        self._key_id = key_id  # "main" or "demo": selects the secret server-side (contract §1)
         self._schema = self.SCHEMA
 
     def __repr__(self) -> str:
@@ -988,7 +997,12 @@ class KeddBackend:
         import requests  # local import keeps mock mode dependency-light
         self.__dict__.update(state)
         self._s = requests.Session()
-        self._secret = settings.kedd_agent_secret.encode()
+        # A demo session restored with the MAIN secret would silently escalate: re-read
+        # whichever secret matches the key id the session was pickled with.
+        key_id = state.get("_key_id", "main")
+        self._key_id = key_id
+        secret = settings.kedd_demo_secret if key_id == "demo" else settings.kedd_agent_secret
+        self._secret = secret.encode()
 
     def _headers(self, method: str, path: str, body: str, idempotency_key: str = "") -> dict[str, str]:
         # Phone and Idempotency-Key are inside the signature: a captured request cannot be replayed
@@ -997,25 +1011,25 @@ class KeddBackend:
         msg = f"{ts}.{method}.{path}.{self._phone}.{idempotency_key}.{body}".encode()
         sig = hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
         headers = {"X-Agent-Phone": self._phone, "X-Agent-Timestamp": ts, "X-Agent-Signature": sig,
-                   "Content-Type": "application/json"}
+                   "X-Agent-Key-Id": self._key_id, "Content-Type": "application/json"}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         return headers
 
     @staticmethod
-    def _gateway_error(status: int, payload: Any) -> ValueError:
+    def _gateway_error(status: int, payload: Any) -> KeddError:
         # Failures arrive as {error, message} JSON. The executor shows the message to the
         # owner, so it must be the Turkish message — never a generic HTTP error dump.
         body = payload if isinstance(payload, dict) else {}
         code, msg = body.get("error", ""), body.get("message") or ""
         if status == 409 and code in _IDEMPOTENCY_CONFLICT_TR:
             text = _IDEMPOTENCY_CONFLICT_TR[code]
-            return ValueError(f"{text} ({msg})" if msg else text)
+            return KeddError(f"{text} ({msg})" if msg else text)
         if msg:
-            return ValueError(msg)
+            return KeddError(msg)
         if code:
-            return ValueError(f"KEDD hatası: {code} (HTTP {status})")
-        return ValueError(f"KEDD bağlantısı hata verdi (HTTP {status})")
+            return KeddError(f"KEDD hatası: {code} (HTTP {status})")
+        return KeddError(f"KEDD bağlantısı hata verdi (HTTP {status})")
 
     @staticmethod
     def _error_payload(r) -> Any:
@@ -1033,7 +1047,7 @@ class KeddBackend:
         try:
             r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=30)
         except requests.exceptions.RequestException:
-            raise ValueError("KEDD'ye ulaşılamadı.") from None
+            raise KeddError("KEDD'ye ulaşılamadı.") from None
         if r.status_code >= 400:
             raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()
@@ -1047,7 +1061,7 @@ class KeddBackend:
         try:
             r = self._s.post(f"{self.base}{path}", data=payload.encode(), headers=headers, timeout=30)
         except requests.exceptions.RequestException:
-            raise ValueError("KEDD'ye ulaşılamadı; işlemin durumu belirsiz, tekrar denemedim.") from None
+            raise KeddError("KEDD'ye ulaşılamadı; işlemin durumu belirsiz, tekrar denemedim.") from None
         if r.status_code >= 400:
             raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()
@@ -1360,6 +1374,10 @@ class KeddBackend:
                       visual_path: str = "", template: str | None = None,
                       variables: dict[str, str] | None = None,
                       idempotency_key: str | None = None) -> dict[str, Any]:
+        if self._key_id == "demo":
+            # Preview-only demo: refuse before touching the network (the gateway's demo
+            # policy is the second lock). The approval card already showed the preview.
+            raise ValueError("Demo işletmede kampanya gönderimi kapalı; karttaki önizlemeyle yetin.")
         raise ValueError("KEDD'ye kampanya gönderimi henüz bağlı değil.")
 
     def create_appointment(self, customer_id: str, item_id: str, staff: str,
@@ -1421,6 +1439,11 @@ class KeddBackend:
                             publish_at: str | None = None,
                             idempotency_key: str | None = None,
                             dry_run: bool = False) -> dict[str, Any]:
+        if self._key_id == "demo":
+            # Preview-only demo, even for dry runs: a "preview" outcome would render as
+            # "paylaşıldı", so refuse honestly instead of faking a share.
+            raise ValueError("Demo işletmede gönderi paylaşımı kapalı;"
+                             " karttaki görseli önizleme say.")
         if dry_run:
             return {"campaign_id": "", "status": "preview", "scheduled_for": publish_at, "note": ""}
         try:
@@ -1448,6 +1471,14 @@ class KeddBackend:
 
 
 def get_backend(business: str | None = None, sender: str | None = None) -> Backend:
+    if business == "kedd-demo":
+        # The public demo's live business: scoped credential + demo key id. The main key
+        # is never consulted here, so a public deploy cannot escalate by misconfiguration.
+        if not (settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_business):
+            raise RuntimeError("KEDD demo bağlantısı bu ortamda kapalı "
+                               "(KEDD_API_URL / KEDD_DEMO_SECRET / KEDD_DEMO_BUSINESS yok)")
+        return KeddBackend(settings.kedd_api_url, settings.kedd_demo_secret,
+                           settings.kedd_demo_business, key_id="demo")
     if business == "kedd":
         # Per-conversation KEDD mode (/kedd): the merchant is identified by the WhatsApp
         # sender of this session, never by a model-chosen value.
