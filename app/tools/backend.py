@@ -916,7 +916,7 @@ class KeddBackend:
     name = "kedd"
     # Same staleness contract as MockBackend: a session pickled before a shape change
     # is re-seeded instead of crashing halfway through an approved plan.
-    SCHEMA = 1
+    SCHEMA = 2  # 2: secret no longer pickled
 
     def __init__(self, base_url: str, secret: str, merchant_phone: str):
         import requests  # local import keeps mock mode dependency-light
@@ -931,13 +931,15 @@ class KeddBackend:
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
-        state.pop("_s", None)  # a requests.Session cannot be pickled; recreated on load
+        state.pop("_s", None)       # a requests.Session cannot be pickled; recreated on load
+        state.pop("_secret", None)  # never persist the HMAC secret with a session; re-read from config on load
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         import requests  # local import keeps mock mode dependency-light
         self.__dict__.update(state)
         self._s = requests.Session()
+        self._secret = settings.kedd_agent_secret.encode()
 
     def _headers(self, method: str, path: str, body: str) -> dict[str, str]:
         ts = str(int(time.time()))

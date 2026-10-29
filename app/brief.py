@@ -32,7 +32,7 @@ def _starts_with_greeting(text: str) -> bool:
 
 def build_morning_brief(session: core.Session) -> list[core.Reply]:
     """Run the brief instruction through `core.handle`; greet if the reply does not."""
-    replies = core.handle(session, "text", BRIEF_INSTRUCTION)
+    replies = core.handle(session, "text", BRIEF_INSTRUCTION, async_delivery=True)
     if replies and not _starts_with_greeting(replies[0].text):
         replies[0].text = _MORNING + replies[0].text
     return replies
@@ -64,6 +64,7 @@ def send_morning_briefs(load: Callable[[str], core.Session | None],
             session = session or core.Session(sender=sender)
             try:
                 errors = worker.deliver_replies(sender, build_morning_brief(session))
+                core.mark_delivered(session, not errors)   # e.g. 24h window refusal → no live card at 09:00
             finally:
                 save(sender, session)
             if not errors:
