@@ -98,12 +98,12 @@ def web():
 # .env by hand instead. The .env read happens only on the deploy machine: inside containers
 # is_local() is False and the secret stays an empty placeholder (the real values arrive via
 # the deployed Secret). BACKEND stays forced to mock: the demo branch never consults it.
-_DEMO_KEYS = {"MODEL_API_KEY", "KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_BUSINESS"}
+_DEMO_KEYS = {"MODEL_API_KEY", "KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_PHONE"}
 if modal.is_local():
     _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock", **_read_local_env(_DEMO_KEYS)}
     if "MODEL_API_KEY" not in _demo_env:
         raise RuntimeError("MODEL_API_KEY not found in the local .env; refusing to deploy the public demo.")
-    if not {"KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_BUSINESS"} <= _demo_env.keys():
+    if not {"KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_PHONE"} <= _demo_env.keys():
         raise RuntimeError("KEDD demo credential missing from the local .env; "
                            "refusing to deploy the public demo.")
     demo_secret = modal.Secret.from_dict(_demo_env)

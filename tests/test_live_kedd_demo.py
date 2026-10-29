@@ -104,7 +104,7 @@ def cfg():
 def demo_env(cfg):
     cfg("kedd_api_url", BASE)
     cfg("kedd_demo_secret", DEMO_SECRET)
-    cfg("kedd_demo_business", DEMO_PHONE)
+    cfg("kedd_demo_phone", DEMO_PHONE)
     cfg("kedd_agent_secret", MAIN_SECRET)
     return cfg
 
@@ -163,7 +163,7 @@ def test_t17_signer_defaults_to_main_key_id(kedd_stub, demo_env):
 def test_t17_get_backend_demo_needs_all_three_settings(cfg):
     cfg("kedd_api_url", BASE)
     cfg("kedd_demo_secret", "")
-    cfg("kedd_demo_business", DEMO_PHONE)
+    cfg("kedd_demo_phone", DEMO_PHONE)
     with pytest.raises(RuntimeError, match="KEDD_DEMO_SECRET"):
         get_backend("kedd-demo")
 
@@ -173,7 +173,7 @@ def test_t17_demo_unpickle_restores_demo_secret_not_main(cfg, tmp_path):
 
     cfg("kedd_api_url", BASE)
     cfg("kedd_demo_secret", DEMO_SECRET)
-    cfg("kedd_demo_business", DEMO_PHONE)
+    cfg("kedd_demo_phone", DEMO_PHONE)
     cfg("kedd_agent_secret", MAIN_SECRET)
     kb = get_backend("kedd-demo")
     kb2 = pickle.loads(pickle.dumps(kb))
@@ -439,7 +439,7 @@ def test_t17_panel_i18n_keys_exist_in_both_languages():
 # --------------------------------------------------------------------------- #
 
 def test_t17_demo_secret_carries_demo_credential_only():
-    assert "KEDD_DEMO_SECRET" in SRC_MODAL and "KEDD_DEMO_BUSINESS" in SRC_MODAL
+    assert "KEDD_DEMO_SECRET" in SRC_MODAL and "KEDD_DEMO_PHONE" in SRC_MODAL
     assert "KEDD_API_URL" in SRC_MODAL
     at = SRC_MODAL.index("def demo():")
     deco = SRC_MODAL[SRC_MODAL.rindex("@app.function", 0, at):at]

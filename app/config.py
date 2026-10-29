@@ -37,7 +37,7 @@ class Settings:
     # never loads the main key. The business value is the demo merchant's E.164 phone; the
     # gateway maps it to the agent-demo-studio business (same header semantics as above).
     kedd_demo_secret: str = field(default=os.environ.get("KEDD_DEMO_SECRET", ""), repr=False)
-    kedd_demo_business: str = os.environ.get("KEDD_DEMO_BUSINESS", "")
+    kedd_demo_phone: str = os.environ.get("KEDD_DEMO_PHONE", "")
 
     # Paths (overridable so the Modal deployment can point them at a persistent volume)
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("DATA_DIR", ROOT / "data")))

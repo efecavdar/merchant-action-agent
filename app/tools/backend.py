@@ -1474,11 +1474,11 @@ def get_backend(business: str | None = None, sender: str | None = None) -> Backe
     if business == "kedd-demo":
         # The public demo's live business: scoped credential + demo key id. The main key
         # is never consulted here, so a public deploy cannot escalate by misconfiguration.
-        if not (settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_business):
+        if not (settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_phone):
             raise RuntimeError("KEDD demo bağlantısı bu ortamda kapalı "
-                               "(KEDD_API_URL / KEDD_DEMO_SECRET / KEDD_DEMO_BUSINESS yok)")
+                               "(KEDD_API_URL / KEDD_DEMO_SECRET / KEDD_DEMO_PHONE yok)")
         return KeddBackend(settings.kedd_api_url, settings.kedd_demo_secret,
-                           settings.kedd_demo_business, key_id="demo")
+                           settings.kedd_demo_phone, key_id="demo")
     if business == "kedd":
         # Per-conversation KEDD mode (/kedd): the merchant is identified by the WhatsApp
         # sender of this session, never by a model-chosen value.

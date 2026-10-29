@@ -66,7 +66,7 @@ SESS_DAY_MAX = 60
 SESSION_CREATE_HOUR_MAX = 20
 SESSION_CREATE_DAY_MAX = 60
 # Live KEDD demo (task 17).
-KEDD_DEMO_BUSINESS = "kedd-demo"
+KEDD_DEMO_PHONE = "kedd-demo"
 CAP_APPROVED_HOUR_MAX = 3
 KEDD_STATE_CACHE_S = 10
 KEDD_STATE_TIMEOUT_S = 10
@@ -186,7 +186,7 @@ def _create_limited(create_hits: dict[str, list[float]], ip: str, now: float) ->
 
 def _demo_creds_ready() -> bool:
     """The demo credential triple is configured, so kedd-demo sessions can be built."""
-    return bool(settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_business)
+    return bool(settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_phone)
 
 
 def _cap_hit(approve_hits: dict[str, list[float]], ip: str, now: float) -> bool:
@@ -365,7 +365,7 @@ def _fallback_state(error: str) -> dict[str, Any]:
 def _kedd_state(session: core.Session, fresh: bool, cache: dict[str, Any]) -> dict[str, Any]:
     """Live panel payload: cached KEDD reads, mock data for mock sessions, salon fallback."""
     business = session.business
-    if business not in (KEDD_DEMO_BUSINESS, "kedd"):
+    if business not in (KEDD_DEMO_PHONE, "kedd"):
         try:
             return {"state": "mock", **_snapshot(session.get_backend(), business), "error": None}
         except Exception:  # noqa: BLE001 — a broken mock must not 500 the panel
@@ -445,7 +445,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             is_new = sid not in sessions
             sess = core.Session(sender=f"web-{sid}")
             if settings.public_demo and _demo_creds_ready():
-                sess.business = KEDD_DEMO_BUSINESS  # backend stays lazy; first read builds Kedd(demo)
+                sess.business = KEDD_DEMO_PHONE  # backend stays lazy; first read builds Kedd(demo)
             sessions[sid] = sess
             locks.setdefault(sid, threading.Lock())
             last_seen[sid] = now
@@ -463,7 +463,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             return
         if session.business == "kedd":
             session.business, session.backend = settings.mock_business, None
-        if session.business == KEDD_DEMO_BUSINESS:
+        if session.business == KEDD_DEMO_PHONE:
             backend = session.backend
             ok = (isinstance(backend, KeddBackend) and getattr(backend, "_key_id", "main") == "demo"
                   and getattr(backend, "_schema", None) == KeddBackend.SCHEMA)
@@ -496,7 +496,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             return HTMLResponse(_IP_LIMIT_MSG, status_code=429)
         page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         page = page.replace("{{BUSINESS}}", html.escape(_business_name(session)))
-        if session.business == KEDD_DEMO_BUSINESS:
+        if session.business == KEDD_DEMO_PHONE:
             badge, bclass = "KEDD demo", "kedd"
         elif session.business == "kedd":
             badge, bclass = "KEDD", "kedd"
@@ -603,7 +603,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                 if limited == "global":
                     log.info("message: limited=global")
                     return _finalize(_refusal(session, _GLOBAL_LIMIT_MSG), is_new, sid)
-            if (session.business == KEDD_DEMO_BUSINESS and session.pending
+            if (session.business == KEDD_DEMO_PHONE and session.pending
                     and not (uploads or audio_name) and _norm_command(text) in core.YES):
                 with guard:
                     capped = _cap_hit(approve_hits, _client_ip(request), _now())
