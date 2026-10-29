@@ -603,8 +603,22 @@
       return `${a.time || "?"} ${a.service || "?"}${who}`;
     }) : [t("kedd.nowrites")]);
     const writes = d.recent_writes || [];
-    keddRow(t("kedd.writes"), writes.length ? writes.map((w) => w.label || w.kind || "?")
-      : [t("kedd.nowrites")]);
+    const wTitle = t("kedd.writes") + (d.writes_window_hours ? ` (${d.writes_window_hours}h)` : "");
+    keddRow(wTitle, writes.length ? writes.map((w) => (w.capability ? keddWriteLabel(w)
+      : (w.label || w.kind || "?"))) : [t("kedd.nowrites")]);
+  }
+
+  // Every capability the server can send, as full i18n keys (unknown future ones
+  // render as the raw key rather than breaking the panel).
+  const KEDD_WRITE_KEYS = ["kedd.w.catalog.create", "kedd.w.catalog.update",
+    "kedd.w.catalog.bulkPriceApply", "kedd.w.discounts.create", "kedd.w.appointments",
+    "kedd.w.campaigns.send"];
+
+  function keddWriteLabel(w) {
+    const key = "kedd.w." + w.capability;
+    const name = KEDD_WRITE_KEYS.includes(key) ? t(key) : String(w.capability || "?");
+    const base = `${name} × ${w.ok || 0}`;
+    return w.error ? `${base} (${w.error} ${t("kedd.werr")})` : base;
   }
 
   async function refreshKedd(fresh) {

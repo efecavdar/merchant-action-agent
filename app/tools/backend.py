@@ -951,6 +951,13 @@ _IDEMPOTENCY_CONFLICT_TR = {
                         "güvenlik için tekrar denemedim"),
 }
 
+# Capabilities in GET /agent/report that count as agent writes for the Live-in-KEDD panel.
+# Reads (catalog.list, segments.create, …) never appear there; appointments.* all merge.
+_WRITE_CAPABILITIES = frozenset({
+    "catalog.create", "catalog.update", "catalog.bulkPriceApply",
+    "discounts.create", "campaigns.send",
+})
+
 
 class KeddBackend:
     """Adapter onto KEDD's agent gateway (a handful of signed HTTPS endpoints).
@@ -1057,7 +1064,9 @@ class KeddBackend:
         qs = urlencode({k: v for k, v in params.items() if v not in (None, "")})
         target = f"{path}?{qs}" if qs else path
         try:
-            r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=30)
+            # Reads fail fast: a hung gateway must surface in seconds so the demo chat
+            # falls back instead of hanging (writes below keep the patient 30 s).
+            r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=8)
         except requests.exceptions.RequestException:
             raise KeddError("KEDD'ye ulaşılamadı.") from None
         if r.status_code >= 400:
@@ -1480,6 +1489,34 @@ class KeddBackend:
         return {"backend": self.name, "business": business, "items_added": [],
                 "active_discounts": [], "campaigns": [], "social_posts": [],
                 "appointments_changed": [], "engagement_note": None}
+
+    def agent_write_counts(self) -> dict[str, Any]:
+        """Last-window agent writes per action, for the Live-in-KEDD panel.
+
+        The gateway counts every capability (reads included); the panel shows writes
+        only, with all appointments.* merged into one row. Unknown capabilities and
+        malformed counts are skipped, never crash the panel.
+        """
+        res = self._get("/agent/report")
+        body = res if isinstance(res, dict) else {}
+        window = body.get("window_hours")
+        window = window if isinstance(window, int) and not isinstance(window, bool) else None
+        counts: dict[str, dict[str, int]] = {}
+        by_cap = body.get("by_capability")
+        if isinstance(by_cap, dict):
+            for name, v in by_cap.items():
+                if name in _WRITE_CAPABILITIES:
+                    key = name
+                elif isinstance(name, str) and name.startswith("appointments."):
+                    key = "appointments"
+                else:
+                    continue
+                v = v if isinstance(v, dict) else {}
+                slot = counts.setdefault(key, {"ok": 0, "error": 0})
+                for field in ("ok", "error"):
+                    n = v.get(field)
+                    slot[field] += n if isinstance(n, int) and not isinstance(n, bool) else 0
+        return {"window_hours": window, "counts": counts}
 
 
 def get_backend(business: str | None = None, sender: str | None = None) -> Backend:

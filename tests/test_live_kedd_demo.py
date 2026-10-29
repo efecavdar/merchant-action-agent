@@ -64,6 +64,7 @@ def _default_routes(**overrides):
         ("GET", "/agent/profile"): _load("profile"),
         ("GET", "/agent/catalog"): _load("catalog"),
         ("GET", "/agent/schedule"): _load("schedule"),
+        ("GET", "/agent/report"): _load("report"),
         ("POST", "/agent/segments"): _load("segments"),
         ("POST", "/agent/catalog"): _load("catalog_create"),
     }
@@ -348,7 +349,10 @@ def test_t17_kedd_state_live_shape_and_10s_cache(pubapp, kedd_stub):
     assert data["catalog_sample"] and len(data["catalog_sample"]) <= 5
     assert set(data["catalog_sample"][0]) == {"name", "price"}
     assert data["appointments_today"]["count"] >= 1
-    assert data["recent_writes"] == []
+    # task 18: live writes come from GET /agent/report (reads like "profile" excluded)
+    assert data["writes_window_hours"] == 24
+    assert data["recent_writes"] == [
+        {"kind": "kedd", "capability": "catalog.create", "ok": 1, "error": 1}]
     n_calls = len(kedd_stub.calls)
     assert n_calls > 0
     c.get("/api/kedd-state")  # served from the 10 s cache: no new gateway traffic
