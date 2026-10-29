@@ -46,7 +46,7 @@ is a sale-price window on catalog items.
 | GET | `/agent/ads/performance` | `days` (default 7) | ad campaigns with spend/impressions/clicks/results/cost-per-result, plus totals |
 | GET | `/agent/ads/suggestions` | — | suggested ad actions with reasons |
 | GET | `/agent/campaign-templates` | — | approved templates: name, body, variables. `{{1}}` is always the customer name and is filled per recipient by the gateway |
-| GET | `/agent/report` | — | what the run changed: items added, discounts, campaigns, appointment changes |
+| GET | `/agent/report` | — | agent activity counters for the window: `{window_hours, total, by_capability: {name: {ok, error}}}`. Names are dotted capabilities (`catalog.create`, `appointments.reschedule`, `profile`, …) and include reads as well as writes; clients filter what they display |
 | POST (R) | `/agent/segments` | `{inactive_days, min_visits, tags}` | `{segment_id, criteria, count, excluded_no_consent, sample}` — the sample is at most 5 entries (name + last visit), never phone numbers |
 | POST (R) | `/agent/catalog/bulk-price/preview` | `{item_type, category, item_ids, mode, value}` (`mode`: `percent` \| `amount`) | `{preview_id, items: [{id, name, old_price, new_price}], count}` — changes nothing |
 

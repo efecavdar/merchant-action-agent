@@ -1,8 +1,6 @@
-# Merchant Action Agent
+# Çırak — Merchant Action Agent
 
-> **Try it live:** <paste the `demo` URL printed by `modal deploy` here> — runs on the live KEDD demo business (reads are live, writes stay previews; mock salon if KEDD is down). Nothing is sent to real customers.
-
-A multimodal, human-in-the-loop AI agent for small business automation.
+A WhatsApp agent for small businesses: the merchant talks, Çırak plans, the merchant approves with one word, deterministic code executes it in KEDD.
 
 **Meta Global AI Developer Hackathon 2026 — Startup track**
 
@@ -10,76 +8,100 @@ A multimodal, human-in-the-loop AI agent for small business automation.
 > Built during the hackathon (Oct 27 – Nov 4, 2026): everything in this repository — the agent layer that turns a
 > voice note and product photos into approved, executed business actions.
 
-## The problem
+## Try it live
 
-Our users (boutiques, salons, cafés) never open a dashboard. They live in WhatsApp and they talk, they don't type.
-Every feature that needs a panel gets ignored. So the interface here is a conversation, and the agent does the clicking.
+**https://efe-cavdar--cirak-demo.us-east.modal.run** — a WhatsApp-style web demo running on the live KEDD demo
+business (reads are live, customer-facing writes stay previews; it falls back to a mock salon if KEDD is down).
+Nothing is sent to real customers.
 
-## What it does
+What to type (or tap the quick prompts under the chat box):
 
-A merchant sends product photos and a voice note:
+1. ☀️ **Sabah özeti** — the morning brief: today's appointments, free hours, waiting messages, yesterday's revenue.
+2. *“Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver.”* — products + scheduled discount + win-back campaign in one plan.
+3. *“Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.”* — slots + offer + a new service, no photo needed.
+4. *“Bugün ne oldu?”* — read-only recap; no approval needed.
+5. When the approval card arrives, reply **`evet`** and watch it execute. The **Live in KEDD** panel below the
+   chat shows the demo business as the gateway sees it: catalog sample, today's appointments, last-24h writes.
 
-> *"Bunları vitrine ekle, tanesi 850 lira, hafta sonu yüzde 15 indirim yap, uzun süredir gelmeyenlere haber ver."*
-> ("Add these to the catalog at 850 TRY each, 15% off this weekend, tell customers who haven't been around.")
+The chat speaks Turkish (it is the product); the surrounding page is EN/TR.
 
-Or a salon owner, with no photo at all:
+## How it works, in 30 seconds
 
-> *"Yarın öğleden sonra boşluklarım var, saç boyamada yüzde 20 indirim yap, sadık müşterilere haber ver.
-> Bir de keratin bakımı ekle, 90 dakika, 2500 lira."*
+1. The merchant sends a voice note and/or product photos over WhatsApp (or the web demo).
+2. The voice note is transcribed; each product is cut out of the photos and described as a catalog card.
+3. The planner reads live business data (profile, catalog, schedule, segments) and proposes a structured plan.
+4. Code validates the plan, renders an approval card from verified facts, and waits.
+5. The merchant replies `evet`; deterministic code executes the plan step by step and reports back.
 
-The agent:
+Which Meta model does what:
 
-1. **Transcribes** the voice note — Muse Voice Transcribe (Turkish is one of the 25 validated languages)
-2. **Segments** each product out of the photo — SAM 3.1 (boxes → crops)
-3. **Describes** each crop into a Turkish catalog card — Muse Spark (vision)
-4. **Plans** with tools: reads the business profile, catalog (products *and* services), schedule, builds a CRM
-   segment, drafts the message — Muse Spark (tool calling)
-5. **Validates** the plan in code (prices, discount limits, dates, segment ids, message length, and that the
-   message only promises what the plan actually does)
-6. **Asks for approval** with a WhatsApp-style card. Nothing runs before a human says *evet*.
-7. **Executes** deterministically: catalog → discount → campaign visual (Muse Image, composed from the real crops) → WhatsApp campaign
-8. **Reports** back in the merchant's language.
-
-```
-voice note ─► Muse Voice Transcribe ─┐
-                                     ├─► Muse Spark (plan + tools) ─► validate ─► 👤 approve ─► execute ─► report
-photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘                                          └─► Muse Image (campaign visual)
-```
-
-## What the owner can ask
-
-| Owner says (voice or text) | What happens |
+| Step | Model |
 |---|---|
-| *"Bunları ekle, tanesi 850, hafta sonu %15, uzun süredir gelmeyenlere haber ver"* + photos | SAM crops → catalog cards → discount → campaign visual → WhatsApp campaign (after approval) |
-| *"Keratin bakımı ekle, 90 dakika, 2500 lira"* | a service is added from words alone (after approval) |
-| *"Yarın boşluklarım var, saç boyamada %20 indirim, sadık müşterilere yaz"* | schedule is read, discount + campaign proposed (after approval) |
-| *"Ayşe'nin yarınki randevusunu bir saat sonraya al"* | customer and appointment resolved, slot checked; if it clashes the agent **asks** instead of forcing |
-| *"Bugün ne oldu?"* | read-only: appointments, revenue, new customers, unanswered messages, free slots — no approval needed |
-| ☀️ Sabah özeti (every morning 09:00, Çırak writes first) | today's appointments, free hours, waiting messages, yesterday's revenue + one concrete suggestion (still needs *evet*) |
-| *"Tüm çantalara %10 zam yap"* | bulk price change with a before/after preview on the card (after approval) |
-| *"Ayşe Y.'ye 200 puan ekle, doğum günü"* | loyalty points adjusted (after approval) |
-| *"Reklamlar nasıl gidiyor?"* / *"En kötü reklamı durdur"* | ads performance + suggestions (answer only); pause and budget changes need approval |
-| *"Fularlar için Instagram gönderisi hazırla"* | scheduled social post; the visual is generated before approval so the owner sees exactly what goes out |
+| Voice note → Turkish text | Muse Voice Transcribe |
+| Product segmentation (boxes → crops) | SAM 3.1 |
+| Crop → catalog card, tool-calling planner, merchant summaries | Muse Spark |
+| Campaign visual, composed from the real product crops | Muse Image |
 
-## Design choices
+## The model proposes, code executes
 
-- **The model proposes, code executes.** The LLM only has read-only tools plus `propose_actions`. Writes
-  (`add_product`, `create_discount`, `send_campaign`) are executed by `executor.py` after approval, in a fixed order,
-  with temp ids resolved to real ids. The model never sends a message by itself.
-- **Validation loop.** Invalid proposals go back to the model as structured errors (max 3 revisions).
-  Besides types and limits, two consistency rules caught real failures in live runs: every `%X` / `X TL`
-  in the customer message must exist in the plan, and a summary that promises a campaign must come with a
-  `send_campaign` action.
-- **Customer data stays in the backend.** Segments come back as counts and samples; the model never sees a
-  phone number, and only customers with marketing consent are counted.
-- **Template campaigns.** Business-initiated WhatsApp messages use approved templates (the gateway
-  fills `{{1}}` with each customer's name) while the model only supplies short variables like code and offer.
-- **Fail closed.** If one step fails, later steps (like sending messages) do not run.
-- **Standard mode only.** Model ids without `-contributor`: content is not used to train Meta models.
+- **Nothing runs without `evet`.** The model has read-only tools plus `propose_actions`; there is no write tool.
+  Every plan renders as an approval card and waits for the owner's word.
+- **The card shows verified facts, not model prose.** Prices, percents, dates, segment sizes and slot checks are
+  computed in code; the model's note goes last so it cannot frame what is about to run.
+- **Writes are idempotent and audited.** Each approved action carries a stable idempotency key, so a retried
+  delivery can never send a campaign twice; every gateway call is audit-logged server-side.
+- **Limits are enforced twice.** Discount caps, recipient caps, slot clashes and business hours are checked by
+  the agent *and* re-validated by the KEDD server, which never trusts the client. Execution fails closed: one
+  failed step stops everything after it.
+- **The public demo cannot touch real merchants.** It signs with a scoped demo key bound to one synthetic
+  business; the main key is never loaded there, and demo writes are refused client-side on top of the
+  gateway's own demo policy.
+- **No customer phone numbers reach the model.** Segments come back as counts plus at most five name-only
+  samples, and only customers with marketing consent are counted. Model ids carry no `-contributor` suffix,
+  so content is not used to train Meta models.
 
-Architecture & security deep-dive: [docs/architecture.md](docs/architecture.md).
+Deep-dive: [docs/architecture.md](docs/architecture.md).
 
-## Run it (mock backend, no KEDD needed)
+## What it can do in KEDD
+
+Live today:
+
+- Catalog & prices — add products and services from photos or words
+- Bulk price change — previewed before/after, then applied
+- Discounts (scheduled) — percent-off windows on chosen items
+- Appointments — book, move and cancel with slot checks
+- Daily summary & morning brief — today at a glance, every 09:00
+- Customer segments — win-back, regulars and newcomers by behaviour
+
+Coming next:
+
+- WhatsApp template campaigns — approved templates, personalised per customer
+- Loyalty points — earn and spend flows for regulars
+- Ads performance & actions — read stats, pause losers, shift budget
+- Instagram/Facebook posts — drafted from the same catalog
+
+(This mirrors `app/static/coverage.json`, which the landing page renders.)
+
+## Architecture
+
+```mermaid
+flowchart TD
+    U["Merchant<br/>WhatsApp or web demo"] --> M["Modal<br/>webhook + worker + demo"]
+    M --> V["Muse Voice Transcribe<br/>voice note → text"]
+    M --> S["SAM 3.1 + Muse Spark<br/>photos → catalog cards"]
+    M --> P["Muse Spark<br/>plans with read-only tools"]
+    P --> A{"Owner replies evet?"}
+    A -- no --> D["Nothing runs"]
+    A -- yes --> E["Deterministic code<br/>executes the plan"]
+    E --> I["Muse Image<br/>campaign visual"]
+    E --> K["KEDD gateway<br/>signed, idempotent writes"]
+```
+
+Channels (`app/channels/`) feed one conversation core (`app/core.py`); the planner proposes, the owner approves,
+the executor runs. The KEDD side is described only by its public contract —
+[docs/kedd-gateway-contract.md](docs/kedd-gateway-contract.md). Full map: [docs/architecture.md](docs/architecture.md).
+
+## Run locally (mock mode, no keys)
 
 ```bash
 git clone https://github.com/efecavdar/merchant-action-agent && cd merchant-action-agent
@@ -93,56 +115,53 @@ python -m app.cli run --text "Yeni ipek fular koleksiyonu ekle, tanesi 850 lira,
 python -m app.cli run --text "Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim" --images demo/sample/bags.jpg
 python -m app.cli run --audio demo/sample/voice.ogg --images demo/sample/bags.jpg --auto-approve
 python -m app.cli run --business salon --text "Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver"
-python -m pytest -q                                           # offline tests
+python -m pytest -q                                           # offline tests, no key needed
 ```
 
-For the browser demo run `python -m app.channels.web` and open http://127.0.0.1:8000: a WhatsApp-style chat with Çırak that uses the same `core.handle` flow as WhatsApp, with photo attach, hold-to-talk voice notes, quick demo prompts, and inline campaign visuals.
+For the browser demo run `python -m app.channels.web` and open http://127.0.0.1:8000: the same chat the judges
+get, against two fictional mock businesses (`/butik`, `/salon`; `/kedd` needs gateway credentials).
 Demo video bundle: `python scripts/demo.py` runs all five scenarios into `out/demo/` — see [docs/demo.md](docs/demo.md).
 
 Outputs land in `out/`: `crops/`, `proposal.json`, `tool_log.json`, `approval_card.txt`, `campaign_visual.png`,
 `report.json`, `summary.txt`.
 
 The mock backend (`app/tools/backend.py`) is an in-memory store shaped after KEDD's data model (one catalog for
-products and services, discounts as sale-price windows, customer stats + consent, appointments) and seeded with
-fictional businesses: `--business butik` (default) or `--business salon`. Campaign engagement in mock mode is
-simulated and labelled as such. With `BACKEND=kedd` the same interface talks to our platform through a small signed
-gateway (adapter only; the platform is not included).
+products and services, discounts as sale-price windows, customer stats + consent, appointments). Campaign
+engagement in mock mode is simulated and labelled as such. With `BACKEND=kedd` the same interface talks to our
+platform through the small signed gateway (adapter only; the platform is not included).
 
 ### KEDD integration
 
 In this repo: the `KeddBackend` adapter (`app/tools/backend.py`) and the public contract it speaks,
 [docs/kedd-gateway-contract.md](docs/kedd-gateway-contract.md) — signed requests, per-merchant tenant resolution,
-idempotent writes. Built during the hackathon inside the closed-source KEDD codebase: the gateway itself (~3k lines),
-which implements that contract. In the chat, `/kedd` switches the conversation to the real KEDD demo business
-(`/butik` and `/salon` switch back to the mock). Judges can run everything against the mock, which follows the
-same contract.
+idempotent writes. Built during the hackathon inside the closed-source KEDD codebase: the gateway itself, which
+implements that contract. Judges can run everything against the mock, which follows the same contract.
 
 ## Repository layout
 
 ```
 app/
-  config.py        settings, model ids, guard-rails
-  meta_client.py   Meta Model API wrappers: Spark, Voice Transcribe, SAM 3.1, Muse Image (+ SAM wire parser)
-  pipeline.py      voice/photo → MediaContext (transcript + product cards)
+  core.py          conversation core (Session, handle) — every channel calls this
   agent.py         Phase 1: tool loop → validated proposal
   actions.py       proposal schema + business-rule validation
   approval.py      human approval card
   executor.py      Phase 2: deterministic execution
+  pipeline.py      voice/photo → MediaContext (transcript + product cards)
+  meta_client.py   Meta Model API wrappers: Spark, Voice Transcribe, SAM 3.1, Muse Image
   report.py        merchant-facing summary
+  brief.py         morning brief builder
+  config.py        settings, model ids, guard-rails
   cli.py           entry point
-  tools/backend.py MockBackend (KEDD-shaped, synthetic data, 2 seeds) + KeddBackend (signed HTTP adapter)
+  channels/        whatsapp.py (webhook path), web.py (demo UI + Live-in-KEDD panel)
+  static/          demo page, panel, i18n
+  tools/backend.py MockBackend (KEDD-shaped, synthetic data) + KeddBackend (signed HTTP adapter)
+  server.py        WhatsApp webhook app
+  worker.py        Modal worker: serialised inbound processing
+modal_app.py       Modal deployment: webhook, worker, demo, morning brief
 scripts/check_api.py   smoke test for each Meta model
-tests/                 offline tests incl. a scripted agent loop
+tests/             offline tests incl. a scripted agent loop
+docs/              architecture.md, kedd-gateway-contract.md, demo.md, tasks/
 ```
-
-## Meta models used
-
-| Model | Endpoint | Role |
-|---|---|---|
-| `muse-spark-1.3` | Responses API, tool calling | orchestration, product description (vision), summaries |
-| `muse-voice-transcribe-1.0` | `POST /v1/asr/transcribe` | voice note → text |
-| `sam-3.1` | Responses API (stream) | product segmentation |
-| `muse-image-1.0` | `POST /v1/images/edits` | campaign visual from the real product crops |
 
 ## Scope and data
 
