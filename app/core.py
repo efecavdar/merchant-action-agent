@@ -235,6 +235,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         return replies
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
+    executor.prepare_social_previews(run.proposal, ctx, run_dir)
     card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log))
     (run_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
     (run_dir / "approval_card.txt").write_text(card)
@@ -242,7 +243,9 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
                        "run_dir": str(run_dir), "at": now, "usage": run.usage,
                        "shown_at": None if async_delivery else time.time()}
     log.info("plan ready: %d turns, usage %s", run.turns, run.usage)
-    replies = replies + [Reply(card)]
+    preview = next((a.get("_preview_path") or "" for a in run.proposal["actions"]
+                    if a.get("type") == "publish_social_post"), "")
+    replies = replies + [Reply(card, image_path=preview)]
     _remember_replies(session, replies, now)
     return replies
 
@@ -284,6 +287,7 @@ def _execute_pending(session: Session, notify: Notify,
 
 _STEP_TR = {"add_catalog_item": "Kataloğa eklendi", "create_discount": "İndirim tanımlandı",
             "generate_visual": "Kampanya görseli hazırlandı", "send_campaign": "Kampanya gönderildi",
+            "publish_social_post": "Sosyal medya gönderisi paylaşıldı",
             "create_appointment": "Randevu oluşturuldu", "reschedule_appointment": "Randevu taşındı",
             "cancel_appointment": "Randevu iptal edildi", "apply_bulk_price": "Toplu fiyat güncellendi",
             "adjust_loyalty": "Puan güncellendi", "ads_action": "Reklam güncellendi"}

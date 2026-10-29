@@ -54,7 +54,7 @@ def _kb(*fixtures: str, **overrides) -> KeddBackend:
     for name in fixtures:
         method = "POST" if name in {"segments", "bulk_preview", "catalog_create", "bulk_apply",
                                     "discounts", "appointment_create", "appointment_reschedule",
-                                    "appointment_cancel"} else "GET"
+                                    "appointment_cancel", "social_post"} else "GET"
         routes[(method, _PATHS[name])] = _load(name)
     routes.update(overrides)
     kb = KeddBackend(BASE, "s3cret", "+905321")
@@ -81,7 +81,17 @@ _PATHS = {
     "appointment_create": "/agent/appointments",
     "appointment_reschedule": "/agent/appointments/reschedule",
     "appointment_cancel": "/agent/appointments/cancel",
+    "social_post": "/agent/social/post",
 }
+
+
+def _tiny_png() -> str:
+    import tempfile
+
+    from PIL import Image
+    p = Path(tempfile.gettempdir()) / "cirak-qa-tiny.png"
+    Image.new("RGB", (8, 8)).save(p)
+    return str(p)
 
 
 def _mock() -> MockBackend:
@@ -181,6 +191,10 @@ CASES = [
      lambda k: k.apply_bulk_price("pv-fixture-1"), []),
     ("report", ["report", "profile"],
      lambda m: m.report(), lambda k: k.report(), []),
+    ("publish_social_post", ["social_post"],
+     lambda m: m.publish_social_post("Yeni #sezon", _tiny_png(), ["instagram"], "2026-11-01T10:00"),
+     lambda k: k.publish_social_post("Yeni #sezon", _tiny_png(), ["instagram"], "2026-11-01T10:00"),
+     ["campaign_id"]),
 ]
 
 
@@ -297,3 +311,47 @@ def test_profile_counts_survive_a_missing_catalog_module():
     res = kb.store_profile()
     assert res["catalog_count"] == {"product": None, "service": None}
     assert res["business_name"] == "Örnek Kuaför" and res["staff"] == ["Elif", "Deniz"]
+
+
+# --------------------------------------------------------------------------- #
+# task 14: social post upload
+# --------------------------------------------------------------------------- #
+
+def test_t14_social_post_body_shape_and_stable_key(tmp_path):
+    import base64
+
+    from PIL import Image
+    img = tmp_path / "post.png"
+    Image.new("RGB", (64, 64), (200, 30, 40)).save(img)
+    kb = _kb("social_post")
+    res = kb.publish_social_post("Yeni #sezon", str(img), ["instagram", "facebook"],
+                                 "2026-11-01T10:00", idempotency_key="run-9-0")
+    method, url, headers, body = kb._s.calls[0]
+    assert (method, url) == ("POST", BASE + "/agent/social/post")
+    assert headers["Idempotency-Key"] == "run-9-0"
+    assert body["caption"] == "Yeni #sezon" and body["platforms"] == ["instagram", "facebook"]
+    assert body["publish_at"] == "2026-11-01T10:00"
+    raw = base64.b64decode(body["image_base64"])
+    assert raw[:2] == b"\xff\xd8" and len(raw) <= 5 * 1024 * 1024  # jpg, ≤ 5 MB
+    assert res["campaign_id"] == "sp-9" and res["status"] == "scheduled"
+    # same key on retry: the gateway answers from its stored result
+    kb.publish_social_post("Yeni #sezon", str(img), ["instagram"], idempotency_key="run-9-0")
+    assert kb._s.calls[1][2]["Idempotency-Key"] == "run-9-0"
+    assert "publish_at" not in kb._s.calls[1][3]  # absent, not null
+
+
+def test_t14_social_post_downscales_huge_images(tmp_path):
+    import base64
+    import io
+
+    from PIL import Image
+    # dense noise: ~6.6 MB as JPEG q85, ~5.5 MB as q75 — only rescaling fits 5 MB
+    big = tmp_path / "big.png"
+    Image.effect_noise((3000, 3000), 128).convert("RGB").save(big)
+    kb = _kb("social_post")
+    kb.publish_social_post("büyük", str(big), ["instagram"], idempotency_key="k")
+    raw = base64.b64decode(kb._s.calls[0][3]["image_base64"])
+    assert raw[:2] == b"\xff\xd8" and len(raw) <= 5 * 1024 * 1024
+    assert Image.open(io.BytesIO(raw)).size < (3000, 3000)
+    with pytest.raises(ValueError, match="okunamadı"):
+        kb.publish_social_post("yok", str(tmp_path / "missing.png"), ["instagram"])

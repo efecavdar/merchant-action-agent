@@ -20,6 +20,43 @@ from .tools.backend import Backend, KeddBackend
 
 log = logging.getLogger(__name__)
 
+# Same art direction for campaign and social visuals: the product stays the hero, square, no text.
+_VISUAL_SUFFIX = (" Clean studio composition, soft daylight, premium small-business look,"
+                  " square format, no text, no watermark, no recognizable faces.")
+
+
+def prepare_social_previews(proposal: dict[str, Any], ctx: MediaContext, run_dir: Path) -> None:
+    """Generate the social visuals BEFORE the owner approves, so the card shows exactly what
+    will be published. Mutates the proposal: each publish_social_post gets `_preview_path`;
+    an action whose visual fails is dropped and explained in `proposal[\"_social_notes\"]`."""
+    notes: list[str] = []
+    # "_" keys are ours, never the model's: a model-written path or note must not reach the card or the publish.
+    proposal.pop("_social_notes", None)
+    for a in proposal.get("actions") or []:
+        for k in [k for k in a if k.startswith("_")]:
+            a.pop(k)
+    crops = {p.temp_id: p for p in ctx.products}
+    keep: list[dict[str, Any]] = []
+    for pos, a in enumerate(proposal.get("actions") or []):
+        if a.get("type") != "publish_social_post":
+            keep.append(a)
+            continue
+        plats = ", ".join(p.capitalize() for p in (a.get("platforms") or [])) or "sosyal medya"
+        try:
+            refs = [r for r in (a.get("item_refs") or []) if r in crops]
+            imgs = [Image.open(crops[r].crop_path) for r in refs]
+            out = run_dir / f"social_preview_{pos}.png"
+            meta.generate_campaign_visual(imgs, a.get("visual_prompt", "") + _VISUAL_SUFFIX, out)
+            a["_preview_path"] = str(out)
+            keep.append(a)
+        except Exception as e:  # noqa: BLE001 — a dead image endpoint must not kill the card
+            log.warning("social preview failed: %s", type(e).__name__)
+            notes.append(f"{plats} gönderisi için görsel üretemedim, onu plandan çıkardım"
+                         " — tekrar dene istersen.")
+    proposal["actions"] = keep
+    if notes:
+        proposal["_social_notes"] = notes
+
 
 def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
             out_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -70,8 +107,7 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
             elif t == "generate_visual":
                 refs = a.get("item_refs") or list(crops)
                 imgs = [Image.open(crops[r].crop_path) for r in refs if r in crops]
-                prompt = (a["visual_prompt"] + " Clean studio composition, soft daylight, premium "
-                          "small-business look, square format, no text, no watermark, no recognizable faces.")
+                prompt = a["visual_prompt"] + _VISUAL_SUFFIX
                 path = meta.generate_campaign_visual(imgs, prompt, out_dir / "campaign_visual.png")
                 visual_path = str(path)
                 record(a, "ok", {"visual_path": visual_path, "real_product_crops_used": len(imgs)})
@@ -85,6 +121,20 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                     **idem,
                 )
                 record(a, "ok", {"campaign_id": res["id"], "recipients": res["recipients"],
+                                 "note": res.get("note", "")})
+
+            elif t == "publish_social_post":
+                preview = a.get("_preview_path") or ""
+                if not preview:
+                    raise ValueError("Sosyal gönderi için onaylı bir görsel yok,"
+                                     " planı tekrar çalıştırır mısın?")
+                res = backend.publish_social_post(
+                    caption=a["caption"], image_path=preview, platforms=list(a["platforms"]),
+                    publish_at=a.get("publish_at"),
+                    **idem,
+                )
+                record(a, "ok", {"campaign_id": res["campaign_id"], "status": res["status"],
+                                 "scheduled_for": res["scheduled_for"], "platforms": a["platforms"],
                                  "note": res.get("note", "")})
 
             elif t == "create_appointment":

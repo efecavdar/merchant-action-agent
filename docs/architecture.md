@@ -56,7 +56,7 @@ ways to finish: `propose_actions` (a structured plan) or `reply_only` (a plain a
 "Bugün ne oldu?"). There is no write tool. A question answered with `reply_only` is returned by
 `core.handle` directly and leaves nothing pending.
 
-Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows ten action types:
+Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows eleven action types:
 `add_catalog_item`, `create_discount`, `generate_visual`, `send_campaign`, `create_appointment`,
 `reschedule_appointment`, `cancel_appointment`, `apply_bulk_price`, `adjust_loyalty`, `ads_action`.
 A proposal is validated in code, shown to the owner as a card, and only then executed by

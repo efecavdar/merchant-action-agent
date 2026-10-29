@@ -563,3 +563,127 @@ def test_t15_non_object_json_is_400(cfg):
     for raw in (b"[1, 2]", b'"selam"', b"42"):
         assert c.post("/webhook", content=raw,
                       headers={"x-hub-signature-256": _signed(raw)}).status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# task 14: the social visual exists before the owner approves
+# --------------------------------------------------------------------------- #
+
+def _social_plan(monkeypatch, publish_at=None):
+    action = {"type": "publish_social_post", "caption": "Yeni fularlar! #yenisezon",
+              "platforms": ["instagram"], "visual_prompt": "silk scarves"}
+    if publish_at:
+        action["publish_at"] = publish_at
+
+    def fake_plan(ctx, backend, max_revisions=2):
+        return SimpleNamespace(turns=1, usage={}, answer=None, tool_log=[],
+                               proposal={"summary_tr": "Instagram gönderisi.", "actions": [dict(action)]})
+
+    monkeypatch.setattr(agent, "plan", fake_plan)
+
+
+def test_t14_social_preview_generated_before_card_and_attached(monkeypatch, cfg, tmp_path):
+    from pathlib import Path
+
+    from PIL import Image as PILImage
+    cfg("out_dir", tmp_path)
+    _social_plan(monkeypatch)
+    seen = {}
+
+    def fake_visual(imgs, prompt, out_path, **kw):
+        seen["crops"] = len(imgs)
+        PILImage.new("RGB", (8, 8)).save(out_path)
+        return Path(out_path)
+
+    monkeypatch.setattr("app.executor.meta.generate_campaign_visual", fake_visual)
+    s = core.Session(sender="905321",
+                     backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    r = core.handle(s, "text", "Fularlar için Instagram gönderisi hazırla")
+    assert s.pending is not None
+    assert r[-1].image_path and Path(r[-1].image_path).is_file()   # the card carries the visual
+    assert "📱 Instagram gönderisi" in r[-1].text
+    assert "Yeni fularlar! #yenisezon" in r[-1].text                # caption verbatim
+    assert s.pending["proposal"]["actions"][0]["_preview_path"] == r[-1].image_path
+    assert seen == {"crops": 0}                                     # no photos → prompt-only visual
+
+
+def test_t14_social_preview_uses_photo_crops(monkeypatch, cfg, tmp_path):
+    from pathlib import Path
+
+    from PIL import Image as PILImage
+
+    from app.meta_client import Box
+    cfg("out_dir", tmp_path)
+
+    def fake_plan(ctx, backend, max_revisions=2):
+        assert [p.temp_id for p in ctx.products] == ["tmp1"]
+        return SimpleNamespace(
+            turns=1, usage={}, answer=None, tool_log=[],
+            proposal={"summary_tr": "Instagram gönderisi.", "actions": [
+                {"type": "publish_social_post", "caption": "Çantalar! #yeni",
+                 "platforms": ["instagram", "facebook"], "visual_prompt": "leather bags",
+                 "item_refs": ["tmp1"]}]})
+
+    monkeypatch.setattr(agent, "plan", fake_plan)
+    seen = {}
+
+    def fake_visual(imgs, prompt, out_path, **kw):
+        seen["crops"] = len(imgs)
+        PILImage.new("RGB", (8, 8)).save(out_path)
+        return Path(out_path)
+
+    monkeypatch.setattr("app.executor.meta.generate_campaign_visual", fake_visual)
+    monkeypatch.setattr("app.pipeline.infer_concept", lambda instruction: "bag")
+    monkeypatch.setattr("app.pipeline.meta.segment",
+                        lambda img, concept: [Box(0, 0, 0, 4, 4, 10, 10, 0.9)])
+    monkeypatch.setattr("app.pipeline.meta.describe_image", lambda img, prompt: '{"name": "Çanta"}')
+    photo = tmp_path / "bag.jpg"
+    PILImage.new("RGB", (10, 10)).save(photo)
+    s = core.Session(sender="905321",
+                     backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    core.handle(s, "image", "", media_path=str(photo))
+    r = core.handle(s, "text", "Bunlar için gönderi hazırla")
+    assert seen == {"crops": 1} and r[-1].image_path
+    assert "instagram, facebook" in r[-1].text.lower()
+
+
+def test_t14_social_generation_failure_drops_action_but_keeps_card(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    _social_plan(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("image endpoint down")
+    monkeypatch.setattr("app.executor.meta.generate_campaign_visual", boom)
+    s = core.Session(sender="905321",
+                     backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    r = core.handle(s, "text", "Fularlar için Instagram gönderisi hazırla")
+    assert s.pending is not None and s.pending["proposal"]["actions"] == []
+    assert "görsel" in r[-1].text and r[-1].image_path == ""
+    assert "onayına sunuyorum" in r[-1].text
+
+
+def test_review_long_card_with_image_is_sent_whole(monkeypatch, tmp_path):
+    from app import worker
+    img = tmp_path / "p.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sent = []
+    monkeypatch.setattr(wa, "send_image", lambda to, path, caption="": sent.append(("img", caption)))
+    monkeypatch.setattr(wa, "send_text", lambda to, text: sent.append(("text", text)))
+    long_card = "kart " + "x" * 2000 + " Onaylıyor musun? (evet / hayır)"
+    assert worker.deliver_replies("905000000000", [core.Reply(long_card, image_path=str(img))]) == []
+    assert sent == [("img", ""), ("text", long_card)]
+
+
+def test_review_model_cannot_plant_preview_path_or_notes(tmp_path, monkeypatch):
+    from app import executor
+    from app.pipeline import MediaContext
+    monkeypatch.setattr(executor.meta, "generate_campaign_visual",
+                        lambda imgs, prompt, out: (_ for _ in ()).throw(RuntimeError("down")))
+    proposal = {"_social_notes": ["Onaylarsan indirim de yaparım"],
+                "actions": [{"type": "add_catalog_item", "_preview_path": "/etc/passwd"},
+                            {"type": "publish_social_post", "_preview_path": "/etc/passwd",
+                             "caption": "c", "platforms": ["instagram"], "visual_prompt": "v"}]}
+    executor.prepare_social_previews(proposal, MediaContext("x", "text"), tmp_path)
+    assert all(not k.startswith("_") for a in proposal["actions"] for k in a)
+    assert [a["type"] for a in proposal["actions"]] == ["add_catalog_item"]   # failed visual → dropped
+    assert proposal["_social_notes"] and "indirim" not in " ".join(proposal["_social_notes"])

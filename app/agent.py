@@ -66,7 +66,12 @@ Rules:
   (e.g. "hafta sonu tüm fularlarda %15 indirim"); `code` is a short uppercase code like `FULAR15`.
   Free-text `message` works in mock demos only.
 - The campaign visual prompt is in English and must describe the actual items (detected or described).
-- Order actions: add_catalog_item → create_discount → generate_visual → send_campaign; appointment actions
+- Social posts: for Instagram/Facebook requests use publish_social_post with a Turkish
+  caption (≤2200 chars, ≤15 hashtags, no URLs/phones, prices only from this plan), platforms,
+  optional publish_at (ISO, 5 min–30 days out), an English visual_prompt naming the items,
+  and item_refs (photo temp_ids give real crops).
+- Order actions: add_catalog_item → create_discount → generate_visual → send_campaign;
+  publish_social_post after the items it features; appointment actions
   may come anywhere.
 - Do NOT answer in plain text; always finish with propose_actions or reply_only.
 - If the instruction is unclear or unsafe, still call propose_actions with the safe subset you can do and

@@ -1137,3 +1137,91 @@ def test_kedd_post_signs_the_idempotency_key_it_sends():
     h = sent["headers"]
     msg = f"{h['X-Agent-Timestamp']}.POST./agent/discounts.+905000000000.run-7-2.{sent['data'].decode()}"
     assert h["X-Agent-Signature"] == hmac.new(b"s3cret", msg.encode(), hashlib.sha256).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# task 14: publish_social_post
+# --------------------------------------------------------------------------- #
+
+def _social_action(**kw):
+    a = {"type": "publish_social_post", "caption": "Yeni fularlar geldi! #yenisezon #butik",
+         "platforms": ["instagram"], "visual_prompt": "silk scarves on a rack"}
+    a.update(kw)
+    return a
+
+
+def _social_proposal(action):
+    return {"summary_tr": "Instagram gönderisi hazırlanıyor.", "actions": [action]}
+
+
+def test_t14_social_validation_rules():
+    good = _social_proposal(_social_action(
+        publish_at=(datetime.now() + timedelta(days=1)).isoformat(timespec="minutes")))
+    assert validate_proposal(good, set(), CATALOG, set()) == []
+
+    def errs(**kw):
+        return validate_proposal(_social_proposal(_social_action(**kw)), set(), CATALOG, set())
+
+    assert any("2200" in e for e in errs(caption="x" * 2201))
+    assert any("hashtag" in e for e in errs(caption=" ".join(f"#t{i}" for i in range(16))))
+    assert errs(caption=" ".join(f"#t{i}" for i in range(15))) == []
+    assert any("URL" in e for e in errs(caption="bak https://dukkan.com/fular"))
+    assert any("phone" in e for e in errs(caption="ara 0532 123 45 67"))
+    assert any("%15" in e for e in errs(caption="hafta sonu %15 indirim"))  # number rule, reused
+    assert any("850" in e for e in errs(caption="fular 850 TL"))
+    assert any("platform" in e for e in errs(platforms=["tiktok"]))
+    assert any("platform" in e for e in errs(platforms=[]))
+    assert any("publish_at" in e for e in errs(publish_at="yarın 10"))
+    assert any("5 minutes" in e for e in errs(
+        publish_at=(datetime.now() + timedelta(minutes=2)).isoformat(timespec="seconds")))
+    assert any("30 days" in e for e in errs(
+        publish_at=(datetime.now() + timedelta(days=31)).isoformat(timespec="minutes")))
+    assert any("visual_prompt" in e for e in errs(visual_prompt=""))
+    assert any("unknown item refs" in e for e in errs(item_refs=["ghost"]))
+    assert errs(item_refs=["i001"]) == []  # catalog-only refs are fine: the prompt names them
+
+
+def test_t14_social_numbers_may_come_from_this_plan():
+    prop = {"summary_tr": "İndirim + Instagram gönderisi.", "actions": [
+        {"type": "create_discount", "percent": 15, "item_refs": ["i001"],
+         "starts": _future_day(2), "ends": _future_day(3)},
+        _social_action(caption="Kemerler %15 indirimli! #fırsat"),
+    ]}
+    assert validate_proposal(prop, set(), CATALOG, set()) == []
+
+
+def test_t14_executor_uses_the_stored_preview_image(monkeypatch, tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    stored = tmp_path / "social_preview_0.png"
+    Image.new("RGB", (8, 8)).save(stored)
+
+    def boom(*a, **k):
+        raise AssertionError("executor must reuse the stored preview, not generate again")
+    monkeypatch.setattr("app.executor.meta.generate_campaign_visual", boom)
+    prop = _social_proposal(_social_action())
+    prop["actions"][0]["_preview_path"] = str(stored)
+    steps = executor.execute(prop, MediaContext("x", "text"), b, out_dir=tmp_path)
+    assert steps[0]["status"] == "ok"
+    assert steps[0]["result"]["campaign_id"] == b.social_posts[0].id
+    assert b.social_posts[0].image_path == str(stored)
+
+
+def test_t14_executor_fails_closed_without_a_preview(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    steps = executor.execute(_social_proposal(_social_action()),
+                             MediaContext("x", "text"), b, out_dir=tmp_path)
+    assert steps[0]["status"] == "failed" and b.social_posts == []
+
+
+def test_t14_mock_scheduling_and_dry_run(tmp_path):
+    b = MockBackend("butik", today=TODAY, store_path=tmp_path / "s.json")
+    at = (datetime.now() + timedelta(days=1)).isoformat(timespec="minutes")
+    r = b.publish_social_post("caption #a", "/tmp/x.png", ["instagram", "facebook"], at)
+    assert (r["status"], r["scheduled_for"]) == ("scheduled", at)
+    assert r["campaign_id"] and "simulat" in r["note"].lower()
+    r2 = b.publish_social_post("şimdi", "/tmp/x.png", ["instagram"])
+    assert (r2["status"], r2["scheduled_for"]) == ("published", None)
+    assert len(b.social_posts) == 2
+    n = len(b.social_posts)
+    r3 = b.publish_social_post("önizleme", "/tmp/x.png", ["instagram"], dry_run=True)
+    assert r3["status"] == "preview" and len(b.social_posts) == n  # dry run stores nothing
