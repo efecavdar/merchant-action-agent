@@ -329,7 +329,7 @@ def _recent_writes(rep: dict[str, Any]) -> list[dict[str, str]]:
 def _bare_state(state: str, business: str, error: str | None) -> dict[str, Any]:
     return {"state": state, "business": business, "business_name": business,
             "catalog_sample": [], "appointments_today": {"count": 0, "items": []},
-            "recent_writes": [], "error": error}
+            "recent_writes": [], "writes_window_hours": None, "error": error}
 
 
 def _snapshot(backend: Any, business: str) -> dict[str, Any]:
@@ -337,8 +337,13 @@ def _snapshot(backend: Any, business: str) -> dict[str, Any]:
     profile = backend.store_profile()
     items = backend.list_catalog()[:5]
     appts = backend.get_schedule(date.today().isoformat()).get("appointments") or []
+    window: int | None = None
     if isinstance(backend, KeddBackend):
-        writes: list[dict[str, str]] = []  # gateway /agent/report has no row shape to map yet
+        wc = backend.agent_write_counts()
+        writes: list[dict[str, Any]] = [{"kind": "kedd", "capability": cap,
+                                         "ok": n["ok"], "error": n["error"]}
+                                        for cap, n in wc["counts"].items()]
+        window = wc["window_hours"]
     else:
         writes = _recent_writes(backend.report())
     return {
@@ -350,6 +355,7 @@ def _snapshot(backend: Any, business: str) -> dict[str, Any]:
             "items": [{"time": str(a.get("time", "")), "service": str(a.get("service", "")),
                        "staff": str(a.get("staff", ""))} for a in appts[:5]]},
         "recent_writes": writes,
+        "writes_window_hours": window,
     }
 
 
