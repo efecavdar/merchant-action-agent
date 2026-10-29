@@ -72,6 +72,7 @@ class Customer:
     marketing_consent: bool = True
     created: str = ""                   # ISO date the customer signed up ("" = old customer)
     loyalty_points: int = 0
+    note: str = ""                      # owner note, write-only (no read shape returns it)
 
     def loyalty_status(self, today: date) -> str:
         days = (today - date.fromisoformat(self.last_visit)).days
@@ -142,6 +143,11 @@ class Lead:
     day: str                        # ISO date the lead came in
     source: str = ""
     interest: str = ""
+    stage: str = "new"              # new | contacted | qualified | proposal | won | lost
+    last_contact: str | None = None  # ISO date of the last note/contact
+    value: float | None = None      # estimated deal value, TRY
+    tags: list[str] = field(default_factory=list)
+    notes: list[dict[str, Any]] = field(default_factory=list)  # [{id, note, day}]
 
 
 @dataclass
@@ -151,6 +157,16 @@ class InboxMessage:
     customer: str                   # display name only, never a phone number
     preview: str                    # synthetic snippet
     age_minutes: int = 0
+
+
+@dataclass
+class TaskItem:
+    id: str
+    title: str
+    due_date: str                   # ISO date (YYYY-MM-DD) or datetime (YYYY-MM-DDTHH:MM)
+    status: str = "open"            # open | completed
+    customer_id: str = ""
+    lead_id: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -223,6 +239,10 @@ class Backend(Protocol):
     def preview_campaign(self, segment_id: str, template: str,
                          variables: dict[str, str] | None = None) -> dict[str, Any]: ...
     def find_loyalty_member(self, name: str) -> dict[str, Any]: ...
+    def find_leads(self, stage: str | None = None,
+                   name: str | None = None) -> dict[str, Any]: ...
+    def list_tasks(self, status: str | None = None) -> dict[str, Any]: ...
+    def get_insights(self, days: int = 7) -> dict[str, Any]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -245,6 +265,20 @@ class Backend(Protocol):
     def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
                             publish_at: str | None = None,
                             dry_run: bool = False) -> dict[str, Any]: ...
+    def create_customer(self, name: str, phone: str | None = None, email: str | None = None,
+                        tags: list[str] | None = None,
+                        note: str | None = None) -> dict[str, Any]: ...
+    def update_customer(self, customer_id: str, name: str | None = None,
+                        add_tags: list[str] | None = None, remove_tags: list[str] | None = None,
+                        note: str | None = None) -> dict[str, Any]: ...
+    def create_lead(self, name: str, phone: str | None = None, email: str | None = None,
+                    estimated_value: float | None = None, tags: list[str] | None = None,
+                    note: str | None = None) -> dict[str, Any]: ...
+    def set_lead_stage(self, lead_id: str, stage: str) -> dict[str, Any]: ...
+    def add_lead_note(self, lead_id: str, note: str) -> dict[str, Any]: ...
+    def create_task(self, title: str, due_date: str, customer_id: str | None = None,
+                    lead_id: str | None = None) -> dict[str, Any]: ...
+    def complete_task(self, task_id: str) -> dict[str, Any]: ...
     def report(self) -> dict[str, Any]: ...
 
 
@@ -386,6 +420,17 @@ _MESSAGE_PREVIEWS = (
 )
 _LEAD_SOURCES = ("Instagram", "WhatsApp", "Tavsiye", "Google")
 _SUMMARY_WINDOW_DAYS = 7
+_LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
+# Seed funnel spread (index-derived, no RNG: must not shift the seeded streams below).
+_CRM_SEED_STAGES = ("new", "new", "contacted", "new", "qualified", "contacted", "proposal",
+                    "new", "won", "contacted", "lost", "qualified")
+_CRM_SEED_VALUES = {"qualified": 3500.0, "proposal": 6000.0, "won": 9000.0, "lost": 2500.0}
+
+
+def _already_registered(kind: str, name: str, rid: str) -> str:
+    """409 customer_exists / lead_exists, surfaced in Turkish with the existing record."""
+    noun = "müşteri" if kind == "customer" else "lead"
+    return f"Bu {noun} zaten kayıtlı: {name} ({rid}). Var olan kayıtla devam edebilirsin."
 
 
 def _seed_summary(rng: random.Random, items_cfg: list, customers: list[Customer],
@@ -400,14 +445,25 @@ def _seed_summary(rng: random.Random, items_cfg: list, customers: list[Customer]
             _t, name, price, cat, _d, _dur = rng.choice(items_cfg)
             revenue.append(RevenueEntry(f"r{len(revenue) + 1:04d}", day, cat, float(price), name))
         for _ in range(rng.randint(0, 2)):
+            stage = _CRM_SEED_STAGES[len(leads) % len(_CRM_SEED_STAGES)]
             leads.append(Lead(f"l{len(leads) + 1:03d}", f"{rng.choice(_FIRST)} {rng.choice(_LAST)}", day,
-                              rng.choice(_LEAD_SOURCES), rng.choice(tags)))
+                              rng.choice(_LEAD_SOURCES), rng.choice(tags), stage=stage,
+                              last_contact=day if stage != "new" else None,
+                              value=_CRM_SEED_VALUES.get(stage)))
         if back <= 1:
             for _ in range(rng.randint(1, 3)):
                 messages.append(InboxMessage(f"m{len(messages) + 1:03d}", day, rng.choice(customers).name,
                                              rng.choice(_MESSAGE_PREVIEWS), rng.randint(5, 480)))
     for c in rng.sample(customers, k=min(5, len(customers))):
         c.created = (today - timedelta(days=rng.randint(0, 2))).isoformat()
+    # A previous revenue week for insights comparisons. Separate stream, appended after the
+    # 7-day seeds: existing draws and ids are untouched.
+    hist = random.Random(f"crm-prev-week|{today.isoformat()}|{len(customers)}")
+    for back in range(13, _SUMMARY_WINDOW_DAYS - 1, -1):
+        day = (today - timedelta(days=back)).isoformat()
+        for _ in range(hist.randint(2, 5)):
+            _t, name, price, cat, _d, _dur = hist.choice(items_cfg)
+            revenue.append(RevenueEntry(f"r{len(revenue) + 1:04d}", day, cat, float(price), name))
     return revenue, leads, messages
 
 
@@ -416,7 +472,7 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 5  # 5: social_posts (task 14)
+    SCHEMA = 6  # 6: CRM leads/tasks + insights history (task 26)
 
     PREVIEW_TTL_S = 15 * 60
 
@@ -459,6 +515,17 @@ class MockBackend:
         s_rng = random.Random(seed + 7)   # own stream: summary seeds must not shift the existing ones
         self.revenue_entries, self.leads, self.messages = _seed_summary(
             s_rng, cfg["items"], self.customers, self.today, cfg["tags"])
+        first_lead = self.leads[0].id if self.leads else ""
+        self.tasks: list[TaskItem] = [
+            TaskItem("t001", "Geri arama yap",
+                     (self.today - timedelta(days=1)).isoformat(), customer_id=self.customers[0].id),
+            TaskItem("t002", "Teklifleri gözden geçir", f"{self.today.isoformat()}T10:00",
+                     lead_id=first_lead),
+            TaskItem("t003", "Vitrin düzeni", (self.today + timedelta(days=3)).isoformat(),
+                     status="completed"),
+            TaskItem("t004", "Memnuniyet araması", (self.today + timedelta(days=2)).isoformat(),
+                     customer_id=self.customers[1].id),
+        ]
         self.appointment_changes: list[dict[str, Any]] = []
         self._rng = random.Random(seed + 1)
         self._counter = 100
@@ -493,6 +560,25 @@ class MockBackend:
             if c.id == campaign_id:
                 return c
         raise ValueError(f"Reklam bulunamadı: {campaign_id}")
+
+    def _lead(self, lead_id: str) -> Lead:
+        for l in self.leads:
+            if l.id == lead_id:
+                return l
+        raise ValueError(f"Lead bulunamadı: {lead_id}")
+
+    def _task(self, task_id: str) -> TaskItem:
+        for t in self.tasks:
+            if t.id == task_id:
+                return t
+        raise ValueError(f"Görev bulunamadı: {task_id}")
+
+    @staticmethod
+    def _checked_name(name: Any, what: str) -> str:
+        clean = str(name or "").strip()
+        if not 2 <= len(clean) <= 80:
+            raise ValueError(f"{what} 2-80 karakter olmalı")
+        return clean
 
     @staticmethod
     def _parse_starts(starts: str) -> datetime:
@@ -539,6 +625,7 @@ class MockBackend:
             "social_posts": [asdict(p) for p in self.social_posts],
             "revenue_entries": [asdict(e) for e in self.revenue_entries],
             "leads": [asdict(l) for l in self.leads],
+            "tasks": [asdict(t) for t in self.tasks],
             "messages": [asdict(m) for m in self.messages],
             "appointment_changes": self.appointment_changes,
         }
@@ -931,6 +1018,176 @@ class MockBackend:
                              "(pause | resume | increase_budget | decrease_budget)")
         return asdict(campaign)
 
+    # -- CRM + daily work (task 26): leads, tasks, insights ------------------------ #
+    @staticmethod
+    def _lead_shape(lead: Lead) -> dict[str, Any]:
+        return {"id": lead.id, "name": lead.name, "source": lead.source, "stage": lead.stage,
+                "last_contact": lead.last_contact, "value": lead.value}
+
+    def find_leads(self, stage: str | None = None, name: str | None = None) -> dict[str, Any]:
+        """Leads by funnel stage and/or accent-insensitive name. Display names only."""
+        q = _fold_name(name or "")
+        out = [l for l in self.leads
+               if (not stage or l.stage == stage) and (not q or q in _fold_name(l.name))]
+        return {"leads": [self._lead_shape(l) for l in out[:20]], "truncated": len(out) > 20}
+
+    def _task_shape(self, t: TaskItem) -> dict[str, Any]:
+        names_c = {c.id: c.name for c in self.customers}
+        names_l = {l.id: l.name for l in self.leads}
+        return {"id": t.id, "title": t.title, "due_date": t.due_date, "status": t.status,
+                "overdue": t.status == "open" and t.due_date[:10] < self.today.isoformat(),
+                "customer_id": t.customer_id or None, "customer_name": names_c.get(t.customer_id),
+                "lead_id": t.lead_id or None, "lead_name": names_l.get(t.lead_id)}
+
+    def list_tasks(self, status: str | None = None) -> dict[str, Any]:
+        """Tasks by status (open includes overdue ones); default open."""
+        shapes = [self._task_shape(t) for t in self.tasks]
+        want = status or "open"
+        if want == "open":
+            shapes = [s for s in shapes if s["status"] == "open"]
+        elif want == "overdue":
+            shapes = [s for s in shapes if s["overdue"]]
+        elif want == "completed":
+            shapes = [s for s in shapes if s["status"] == "completed"]
+        elif want != "all":
+            raise ValueError(f"durum anlaşılmadı: {status!r} (open | overdue | completed | all)")
+        return {"tasks": shapes[:30], "truncated": len(shapes) > 30}
+
+    def get_insights(self, days: int = 7) -> dict[str, Any]:
+        """Revenue vs the previous window, top items, funnel snapshot, appointment load."""
+        try:
+            n = int(days)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            n = 7
+        n = max(1, min(90, n))
+        to_ = self.today
+        from_ = to_ - timedelta(days=n - 1)
+        prev_to = from_ - timedelta(days=1)
+        prev_from = prev_to - timedelta(days=n - 1)
+        lo, hi = from_.isoformat(), to_.isoformat()
+        plo, phi = prev_from.isoformat(), prev_to.isoformat()
+        cur = [e for e in self.revenue_entries if lo <= e.day <= hi]
+        prev = [e for e in self.revenue_entries if plo <= e.day <= phi]
+        paid = round(sum(e.amount for e in cur), 2)
+        prev_paid = round(sum(e.amount for e in prev), 2)
+        by_item: dict[str, list[float]] = {}
+        for e in cur:
+            row = by_item.setdefault(e.item_name, [0.0, 0.0])
+            row[0] += e.amount
+            row[1] += 1
+        top = sorted(by_item.items(), key=lambda kv: -kv[1][0])[:5]
+        funnel = {s: 0 for s in _LEAD_STAGES}
+        for l in self.leads:
+            funnel[l.stage] = funnel.get(l.stage, 0) + 1
+        appts = [a for a in self.appointments if lo <= a.starts[:10] <= hi]
+        done = [a for a in appts if a.status == "confirmed" and a.starts[:10] < hi]
+        cancelled = [a for a in appts if a.status == "cancelled"]
+        booked_min = sum((datetime.fromisoformat(a.ends) - datetime.fromisoformat(a.starts)
+                          ).total_seconds() // 60 for a in appts if a.status == "confirmed")
+
+        def _mins(t: str) -> int:
+            h, m = t.split(":")
+            return int(h) * 60 + int(m)
+
+        hours = self.profile["business_hours"]
+        avail = (_mins(hours["close"]) - _mins(hours["open"])) * n * max(1, len(self.profile["staff"]))
+        return {
+            "days": n,
+            "period": {"from": lo, "to": hi},
+            "prev_period": {"from": plo, "to": phi},
+            "revenue": {"paid_total": paid, "paid_count": len(cur),
+                        "prev_paid_total": prev_paid, "diff": round(paid - prev_paid, 2)},
+            "top_items": [{"name": name, "revenue": round(rev, 2), "count": int(cnt)}
+                          for name, (rev, cnt) in top],
+            "new_customers": sum(1 for c in self.customers if lo <= (c.created or "") <= hi),
+            "funnel": funnel,
+            "appointments": {"total": len(appts), "completed": len(done), "cancelled": len(cancelled),
+                             "occupancy_pct": round(100 * booked_min / avail, 1) if avail else 0.0},
+        }
+
+    def create_customer(self, name: str, phone: str | None = None, email: str | None = None,
+                        tags: list[str] | None = None, note: str | None = None) -> dict[str, Any]:
+        """Register a customer. Marketing consent is always false (like the gateway)."""
+        clean = self._checked_name(name, "müşteri adı")
+        for c in self.customers:
+            if c.name.strip().casefold() == clean.casefold() or (phone and c.phone == phone):
+                raise ValueError(_already_registered("customer", c.name, c.id))
+        c = Customer(self._next_id("c"), clean, phone or "", self.today.isoformat(), 0, 0.0,
+                     tags=list(tags or []), marketing_consent=False,
+                     created=self.today.isoformat(), note=note or "")
+        self.customers.append(c)
+        return {"id": c.id, "name": c.name}
+
+    def update_customer(self, customer_id: str, name: str | None = None,
+                        add_tags: list[str] | None = None, remove_tags: list[str] | None = None,
+                        note: str | None = None) -> dict[str, Any]:
+        c = self._customer(customer_id)
+        if name is not None:
+            c.name = self._checked_name(name, "müşteri adı")
+        tags = [t for t in c.tags if t not in (remove_tags or [])]
+        for t in add_tags or []:
+            if t not in tags:
+                tags.append(t)
+        c.tags = tags
+        if note is not None:
+            c.note = note
+        return {"id": c.id, "name": c.name, "tags": list(c.tags)}
+
+    def create_lead(self, name: str, phone: str | None = None, email: str | None = None,
+                    estimated_value: float | None = None, tags: list[str] | None = None,
+                    note: str | None = None) -> dict[str, Any]:
+        """Register a lead. Contact details go to the gateway vault; the mock keeps names only."""
+        clean = self._checked_name(name, "lead adı")
+        for l in self.leads:
+            if l.name.strip().casefold() == clean.casefold():
+                raise ValueError(_already_registered("lead", l.name, l.id))
+        value = None
+        if estimated_value is not None:
+            try:
+                value = float(estimated_value)
+            except (TypeError, ValueError):
+                raise ValueError(f"tahmini değer sayı olmalı: {estimated_value!r}") from None
+            if value < 0:
+                raise ValueError("tahmini değer negatif olamaz")
+        lead = Lead(self._next_id("l"), clean, self.today.isoformat(), tags=list(tags or []),
+                    value=value)
+        if note:
+            lead.notes.append({"id": f"{lead.id}-n1", "note": note, "day": self.today.isoformat()})
+            lead.last_contact = self.today.isoformat()
+        self.leads.append(lead)
+        return {"id": lead.id, "name": lead.name}
+
+    def set_lead_stage(self, lead_id: str, stage: str) -> dict[str, Any]:
+        lead = self._lead(lead_id)
+        if stage not in _LEAD_STAGES:
+            raise ValueError(f"aşama anlaşılmadı: {stage!r} ({' | '.join(_LEAD_STAGES)})")
+        prev = lead.stage
+        lead.stage = stage
+        return {"id": lead.id, "stage": stage, "prev_stage": prev}
+
+    def add_lead_note(self, lead_id: str, note: str) -> dict[str, Any]:
+        lead = self._lead(lead_id)
+        nid = f"{lead.id}-n{len(lead.notes) + 1}"
+        lead.notes.append({"id": nid, "note": note, "day": self.today.isoformat()})
+        lead.last_contact = self.today.isoformat()
+        return {"id": lead.id, "note_id": nid}
+
+    def create_task(self, title: str, due_date: str, customer_id: str | None = None,
+                    lead_id: str | None = None) -> dict[str, Any]:
+        if customer_id:
+            self._customer(customer_id)
+        if lead_id:
+            self._lead(lead_id)
+        t = TaskItem(self._next_id("t"), title, due_date,
+                     customer_id=customer_id or "", lead_id=lead_id or "")
+        self.tasks.append(t)
+        return {"id": t.id, "title": t.title, "due_date": t.due_date, "status": t.status}
+
+    def complete_task(self, task_id: str) -> dict[str, Any]:
+        t = self._task(task_id)
+        t.status = "completed"
+        return {"id": t.id, "status": t.status}
+
     def report(self) -> dict[str, Any]:
         return {
             "backend": self.name,
@@ -1109,12 +1366,27 @@ class KeddBackend:
         code, msg = body.get("error", ""), body.get("message") or ""
         if status == 409 and code in _IDEMPOTENCY_CONFLICT_TR:
             text = _IDEMPOTENCY_CONFLICT_TR[code]
-            return KeddError(f"{text} ({msg})" if msg else text)
-        if msg:
-            return KeddError(msg)
-        if code:
-            return KeddError(f"KEDD hatası: {code} (HTTP {status})")
-        return KeddError(f"KEDD bağlantısı hata verdi (HTTP {status})")
+            err = KeddError(f"{text} ({msg})" if msg else text)
+        elif msg:
+            err = KeddError(msg)
+        elif code:
+            err = KeddError(f"KEDD hatası: {code} (HTTP {status})")
+        else:
+            err = KeddError(f"KEDD bağlantısı hata verdi (HTTP {status})")
+        err.payload = body  # 409 exists-handlers offer the conflicting record from here
+        return err
+
+    @staticmethod
+    def _exists_or_raise(err: KeddError, kind: str, name: str) -> KeddError:
+        """409 customer_exists / lead_exists → Turkish, offering the existing record."""
+        payload = getattr(err, "payload", {}) or {}
+        want = "customer_exists" if kind == "customer" else "lead_exists"
+        rid = payload.get("customer_id" if kind == "customer" else "lead_id", "")
+        if payload.get("error") == want and rid:
+            msg = payload.get("message") or ""
+            text = f"{msg} (mevcut kayıt: {rid})" if msg else _already_registered(kind, name, rid)
+            return KeddError(text)
+        return err
 
     @staticmethod
     def _error_payload(r) -> Any:
@@ -1609,6 +1881,49 @@ class KeddBackend:
                             "tier": m.get("tier") if isinstance(m.get("tier"), str) else None})
         return {"members": members}
 
+    # -- CRM + daily work (task 26; gateway K11, built against the brief's contract) -- #
+    def find_leads(self, stage: str | None = None, name: str | None = None) -> dict[str, Any]:
+        res = self._get("/agent/leads", stage=stage or "", name=name or "")
+        return {"leads": [{"id": l.get("id", ""), "name": l.get("name", ""),
+                           "source": l.get("source") or "", "stage": l.get("stage", ""),
+                           "last_contact": l.get("last_contact"), "value": self._f(l.get("value"))}
+                          for l in res.get("leads") or []],
+                "truncated": bool(res.get("truncated"))}
+
+    def list_tasks(self, status: str | None = None) -> dict[str, Any]:
+        res = self._get("/agent/tasks", status=status or "")
+        out = []
+        for t in res.get("tasks") or []:
+            out.append({"id": t.get("id", ""), "title": t.get("title", ""),
+                        "due_date": t.get("due_date", ""), "status": t.get("status", ""),
+                        "overdue": bool(t.get("overdue")),
+                        "customer_id": t.get("customer_id"), "customer_name": t.get("customer_name"),
+                        "lead_id": t.get("lead_id"), "lead_name": t.get("lead_name")})
+        return {"tasks": out, "truncated": bool(res.get("truncated"))}
+
+    def get_insights(self, days: int = 7) -> dict[str, Any]:
+        try:
+            n = int(days)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            n = 7
+        res = self._get("/agent/insights", days=max(1, min(90, n)))
+        rev, fun, ap = res.get("revenue") or {}, res.get("funnel") or {}, res.get("appointments") or {}
+        return {"days": res.get("days", n),
+                "period": res.get("period") or {"from": None, "to": None},
+                "prev_period": res.get("prev_period") or {"from": None, "to": None},
+                "revenue": {"paid_total": self._f(rev.get("paid_total")) or 0.0,
+                            "paid_count": rev.get("paid_count", 0),
+                            "prev_paid_total": self._f(rev.get("prev_paid_total")) or 0.0,
+                            "diff": self._f(rev.get("diff")) or 0.0},
+                "top_items": [{"name": i.get("name", ""),
+                               "revenue": self._f(i.get("revenue")) or 0.0,
+                               "count": i.get("count", 0)} for i in res.get("top_items") or []],
+                "new_customers": res.get("new_customers", 0),
+                "funnel": {s: fun.get(s, 0) for s in _LEAD_STAGES},
+                "appointments": {"total": ap.get("total", 0), "completed": ap.get("completed", 0),
+                                 "cancelled": ap.get("cancelled", 0),
+                                 "occupancy_pct": self._f(ap.get("occupancy_pct"))}}
+
     def adjust_loyalty(self, customer_id: str, points: int, reason: str,
                        idempotency_key: str | None = None) -> dict[str, Any]:
         # customer_id carries the member_id the planner resolved via find_loyalty_member
@@ -1694,6 +2009,71 @@ class KeddBackend:
         return {"campaign_id": res.get("id", ""),
                 "status": res.get("status") or ("scheduled" if publish_at else "published"),
                 "scheduled_for": res.get("scheduled_for", publish_at), "note": ""}
+
+    def create_customer(self, name: str, phone: str | None = None, email: str | None = None,
+                        tags: list[str] | None = None, note: str | None = None,
+                        idempotency_key: str | None = None) -> dict[str, Any]:
+        if phone and self._key_id == "demo":
+            # The gateway 400s demo-key customers with a phone; refuse before any network call.
+            raise ValueError("Demo anahtarla telefon numarası kaydedilemez; telefonsuz devam et.")
+        try:
+            res = self._post("/agent/customers",
+                             {"name": name, "phone": phone, "email": email,
+                              "tags": tags, "note": note},
+                             idempotency_key)
+        except KeddError as e:
+            raise self._exists_or_raise(e, "customer", name) from None
+        return {"id": res.get("id", ""), "name": res.get("name", name)}
+
+    def update_customer(self, customer_id: str, name: str | None = None,
+                        add_tags: list[str] | None = None, remove_tags: list[str] | None = None,
+                        note: str | None = None,
+                        idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/customers/update",
+                         {"customer_id": customer_id, "name": name, "add_tags": add_tags,
+                          "remove_tags": remove_tags, "note": note},
+                         idempotency_key)
+        return {"id": res.get("id", customer_id), "name": res.get("name", ""),
+                "tags": res.get("tags") or []}
+
+    def create_lead(self, name: str, phone: str | None = None, email: str | None = None,
+                    estimated_value: float | None = None, tags: list[str] | None = None,
+                    note: str | None = None,
+                    idempotency_key: str | None = None) -> dict[str, Any]:
+        try:
+            res = self._post("/agent/leads",
+                             {"name": name, "phone": phone, "email": email,
+                              "estimatedValue": estimated_value, "tags": tags, "note": note},
+                             idempotency_key)
+        except KeddError as e:
+            raise self._exists_or_raise(e, "lead", name) from None
+        return {"id": res.get("id", ""), "name": res.get("name", name)}
+
+    def set_lead_stage(self, lead_id: str, stage: str,
+                       idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/leads/stage", {"lead_id": lead_id, "stage": stage}, idempotency_key)
+        return {"id": res.get("id", lead_id), "stage": res.get("stage", stage),
+                "prev_stage": res.get("prev_stage")}
+
+    def add_lead_note(self, lead_id: str, note: str,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/leads/note", {"lead_id": lead_id, "note": note}, idempotency_key)
+        return {"id": res.get("id", lead_id), "note_id": res.get("note_id", "")}
+
+    def create_task(self, title: str, due_date: str, customer_id: str | None = None,
+                    lead_id: str | None = None,
+                    idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/tasks",
+                         {"title": title, "due_date": due_date,
+                          "customer_id": customer_id, "lead_id": lead_id},
+                         idempotency_key)
+        return {"id": res.get("id", ""), "title": res.get("title", title),
+                "due_date": res.get("due_date", due_date), "status": res.get("status", "")}
+
+    def complete_task(self, task_id: str,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/tasks/complete", {"task_id": task_id}, idempotency_key)
+        return {"id": res.get("id", task_id), "status": res.get("status", "")}
 
     def report(self) -> dict[str, Any]:
         self._get("/agent/report")  # usage counters have no mock counterpart; the call only checks liveness

@@ -72,6 +72,7 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
     out_dir = out_dir or settings.out_dir
     crops = {p.temp_id: p for p in ctx.products}
     id_map: dict[str, str] = {}          # temp_id / ref -> real catalog item id
+    crm_refs: dict[str, str] = {}        # ref -> real customer / lead / task id, created earlier
     visual_path: str | None = None
     steps: list[dict[str, Any]] = []
     actions = proposal["actions"]
@@ -192,6 +193,62 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                 res = backend.ads_action(a["campaign_id"], a["action"], a.get("delta_pct"), **idem)
                 record(a, "ok", {"campaign_id": res["id"], "status": res["status"],
                                  "daily_budget": res["daily_budget"], "label": a.get("label")})
+
+            elif t == "create_customer":
+                res = backend.create_customer(a["name"], phone=a.get("phone"), email=a.get("email"),
+                                              tags=a.get("tags"), note=a.get("note"), **idem)
+                if a.get("ref"):
+                    crm_refs[a["ref"]] = res["id"]
+                record(a, "ok", {"customer_id": res["id"], "name": res["name"],
+                                 "tags": list(a.get("tags") or [])})
+
+            elif t == "update_customer":
+                res = backend.update_customer(crm_refs.get(a["customer_id"], a["customer_id"]),
+                                              name=a.get("name"), add_tags=a.get("add_tags"),
+                                              remove_tags=a.get("remove_tags"), note=a.get("note"),
+                                              **idem)
+                record(a, "ok", {"customer_id": res["id"], "name": res["name"], "tags": res["tags"],
+                                 "added_tags": list(a.get("add_tags") or []),
+                                 "removed_tags": list(a.get("remove_tags") or []),
+                                 "note_added": a.get("note") is not None,
+                                 "renamed": a.get("name") is not None})
+
+            elif t == "create_lead":
+                res = backend.create_lead(a["name"], phone=a.get("phone"), email=a.get("email"),
+                                          estimated_value=a.get("estimated_value"),
+                                          tags=a.get("tags"), note=a.get("note"), **idem)
+                if a.get("ref"):
+                    crm_refs[a["ref"]] = res["id"]
+                record(a, "ok", {"lead_id": res["id"], "name": res["name"],
+                                 "value": a.get("estimated_value")})
+
+            elif t == "set_lead_stage":
+                res = backend.set_lead_stage(crm_refs.get(a["lead_id"], a["lead_id"]),
+                                             a["stage"], **idem)
+                record(a, "ok", {"lead_id": res["id"], "stage": res["stage"],
+                                 "prev_stage": res.get("prev_stage")})
+
+            elif t == "add_lead_note":
+                res = backend.add_lead_note(crm_refs.get(a["lead_id"], a["lead_id"]),
+                                            a["note"], **idem)
+                record(a, "ok", {"lead_id": res["id"], "note_id": res["note_id"],
+                                 "note": a.get("note")})
+
+            elif t == "create_task":
+                res = backend.create_task(a["title"], a["due_date"],
+                                          customer_id=crm_refs.get(a["customer_id"], a.get("customer_id"))
+                                          if a.get("customer_id") else None,
+                                          lead_id=crm_refs.get(a["lead_id"], a.get("lead_id"))
+                                          if a.get("lead_id") else None,
+                                          **idem)
+                if a.get("ref"):
+                    crm_refs[a["ref"]] = res["id"]
+                record(a, "ok", {"task_id": res["id"], "title": res["title"],
+                                 "due_date": res["due_date"], "status": res["status"]})
+
+            elif t == "complete_task":
+                res = backend.complete_task(crm_refs.get(a["task_id"], a["task_id"]), **idem)
+                record(a, "ok", {"task_id": res["id"], "status": res["status"]})
         except Exception as e:
             record(a, "failed", f"{type(e).__name__}: {e}")
             emit("failed", i + 1, steps[-1])

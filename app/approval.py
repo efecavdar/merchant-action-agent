@@ -16,6 +16,7 @@ _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_
 _NAME_CHARS = 60   # = the validator's name/variable limit: the owner sees everything a customer gets
 _DESC_CHARS = 120  # catalog descriptions show what will be written, so they get more room
 _PROMPT_CHARS = 80
+_NOTE_CHARS = 80   # lead notes show a preview; the full note is stored
 
 # Controls, Unicode line/paragraph separators, NEL and bidi/format characters (U+202E can reorder a line).
 # ZWJ stays so joined emoji survive.
@@ -35,7 +36,8 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
     """What the tools actually returned in this run. Card lines for ids are rendered from these facts and the
     action's own fields — never from model-written labels, so the owner approves what will really run."""
     f: dict[str, Any] = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
-                       "items": {}, "templates": {}, "campaign_previews": {}, "members": {}}
+                       "items": {}, "templates": {}, "campaign_previews": {}, "members": {},
+                       "leads": {}, "tasks": {}}
     for e in tool_log:
         r = e.get("result")
         if not isinstance(r, dict):
@@ -59,6 +61,13 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
         elif tool == "find_loyalty_member":
             f["members"].update({m["member_id"]: m for m in r.get("members") or []
                                  if isinstance(m, dict) and m.get("member_id")})
+        elif tool == "find_leads":
+            f["leads"].update({l["id"]: {"name": l.get("name", "?"), "stage": l.get("stage", "?")}
+                               for l in r.get("leads") or [] if isinstance(l, dict) and l.get("id")})
+        elif tool == "list_tasks":
+            f["tasks"].update({t["id"]: {"title": t.get("title", "?"),
+                                         "due_date": t.get("due_date", "?")}
+                               for t in r.get("tasks") or [] if isinstance(t, dict) and t.get("id")})
     return f
 
 
@@ -121,6 +130,55 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str = "tr") -
 
 _FACT_TYPES = {"apply_bulk_price", "adjust_loyalty", "ads_action", "create_appointment",
                "reschedule_appointment", "cancel_appointment"}
+_CRM_TYPES = {"create_customer", "update_customer", "create_lead", "set_lead_stage",
+              "add_lead_note", "create_task", "complete_task"}
+
+
+def _crm_name(value: Any, fmap: dict[str, Any], created: dict[str, dict[str, str]],
+              kind: str) -> str:
+    """Display name for a tool-seen id or a ref created earlier in this plan."""
+    if isinstance(value, str) and created.get(value, {}).get("kind") == kind:
+        return created[value]["name"]
+    entry = fmap.get(value)
+    if isinstance(entry, dict):
+        return entry.get("name") or entry.get("title") or "?"
+    return entry or "?"
+
+
+def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
+              created: dict[str, dict[str, str]]) -> str:
+    if t == "create_customer":
+        tags = ", ".join(str(x) for x in (a.get("tags") or []))
+        suffix = i18n.t("card.new_customer_tags", lang).format(tags=clean_display(tags)) if tags else ""
+        return i18n.t("card.new_customer", lang).format(name=clean_display(a.get("name")), tags=suffix)
+    if t == "update_customer":
+        name = _crm_name(a.get("customer_id"), f.get("customers", {}), created, "customer")
+        parts = i18n.update_parts(a.get("add_tags"), a.get("remove_tags"), a.get("note") is not None,
+                                  a.get("name") is not None, clean_display(a.get("name")), lang)
+        return i18n.t("card.customer_updated", lang).format(
+            name=clean_display(name), parts=", ".join(parts) or "—")
+    if t == "create_lead":
+        try:
+            amount = f"{float(a['estimated_value']):,.0f}"
+        except (KeyError, TypeError, ValueError):
+            amount = ""
+        suffix = i18n.t("card.lead_value", lang).format(amount=amount) if amount else ""
+        return i18n.t("card.new_lead", lang).format(name=clean_display(a.get("name")), value=suffix)
+    if t == "set_lead_stage":
+        name = _crm_name(a.get("lead_id"), f.get("leads", {}), created, "lead")
+        current = (f.get("leads", {}).get(a.get("lead_id")) or {}).get("stage")
+        if current is None and isinstance(a.get("lead_id"), str) and a["lead_id"] in created:
+            current = "new"  # a lead created earlier in this plan starts at "new"
+        prev = i18n.t(f"card.stage.{current}", lang, str(current))
+        new = i18n.t(f"card.stage.{a.get('stage')}", lang, str(a.get("stage")))
+        return i18n.t("card.lead_stage", lang).format(name=clean_display(name), prev=prev, new=new)
+    if t == "add_lead_note":
+        return i18n.t("card.lead_note", lang).format(note=clean_display(a.get("note"), _NOTE_CHARS))
+    if t == "create_task":
+        return i18n.t("card.task", lang).format(title=clean_display(a.get("title")),
+                                               when=i18n.format_task_due(a.get("due_date"), lang))
+    name = _crm_name(a.get("task_id"), f.get("tasks", {}), created, "task")
+    return i18n.t("card.task_done", lang).format(title=clean_display(name))
 
 
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int],
@@ -138,6 +196,12 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                 card = products.get(a.get("temp_id") or "")
                 new_items[handle] = a.get("name") or (card.name if card else "?")
     marker = i18n.t("card.customer_marker", lang)  # customer quotes stay Turkish, labelled as such
+    created: dict[str, dict[str, str]] = {}  # ref -> kind + display name, for lines below
+    for a in proposal["actions"]:
+        ref, kind = a.get("ref"), {"create_customer": "customer", "create_lead": "lead",
+                                   "create_task": "task"}.get(a.get("type") or "")
+        if isinstance(ref, str) and ref and kind:
+            created[ref] = {"kind": kind, "name": a.get("name") or a.get("title") or "?"}
     lines = [i18n.t("card.title", lang), ""]
     for a in proposal["actions"]:
         t = a["type"]; ic = _ICON.get(t, "•")
@@ -211,8 +275,12 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             lines.append(f"   “{a.get('caption')}” {marker}")  # verbatim: exactly what will be published
         elif t in _FACT_TYPES:
             lines.append(_fact_line(t, a, facts, lang))
+        elif t in _CRM_TYPES:
+            lines.append(_crm_line(t, a, facts, lang, created))
     for note in proposal.get("_social_notes") or []:
         lines.append(f"⚠️ {note}")
+    if any(a.get("type") == "create_customer" for a in proposal["actions"]):
+        lines.append(i18n.t("card.consent_note", lang))
     lines += ["", i18n.t("card.note", lang).format(note=proposal["summary_tr"].strip()), "",
               i18n.t("card.approve", lang)]
     return "\n".join(lines)
