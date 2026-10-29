@@ -131,11 +131,18 @@
           <input id="textInput" class="text" type="text" placeholder="Mesaj yaz…" autocomplete="off" aria-label="Mesaj yaz">
           <button id="sendBtn" class="icon-btn send" title="Gönder" aria-label="Gönder">➤</button>
         </div>
-        <div class="quick">
+        <div class="quick" id="quickMock"{{MOCK_HIDDEN}}>
           <button data-brief="1"><span class="chip-tr">☀️ Sabah özeti</span><span class="chip-en">Morning brief</span></button>
           <button data-fill="Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver"><span class="chip-tr">Butik demosu</span><span class="chip-en">Products + discount + win-back</span></button>
           <button data-fill="Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira."><span class="chip-tr">Salon demosu</span><span class="chip-en">Slots + offer + regulars</span></button>
           <button data-send="/kedd"><span class="chip-tr">🔗 KEDD</span><span class="chip-en">Live KEDD business</span></button>
+        </div>
+        <div class="quick" id="quickKedd"{{KEDD_HIDDEN}}>
+          <button data-brief="1"><span class="chip-tr">☀️ Sabah özeti</span><span class="chip-en">Morning brief</span></button>
+          <button data-fill="KEDD Pro'ya bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver"><span class="chip-tr">KEDD indirimi</span><span class="chip-en">Plan discount + win-back</span></button>
+          <button data-fill="Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla"><span class="chip-tr">Demo görüşmesi</span><span class="chip-en">Book a demo call</span></button>
+          <button data-fill="Yeni WhatsApp asistanımız için Instagram gönderisi hazırla"><span class="chip-tr">Instagram gönderisi</span><span class="chip-en">IG post draft (preview only on this page)</span></button>
+          <button data-fill="Ada Kafe'ye 100 tavsiye puanı ekle"><span class="chip-tr">Tavsiye puanı</span><span class="chip-en">Referral points</span></button>
         </div>
       </footer>
       </div>

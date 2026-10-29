@@ -7,10 +7,10 @@ Record the chat in Turkish; burn in the English subtitles below.
 
 Setup before recording: open the demo page at
 `https://efe-cavdar--cirak-demo.us-east.modal.run`, start a fresh chat
-(↺ reset), keep the *Live in KEDD* panel visible on the right. Have 2–3 product
-photos (bags/scarves) and the salon prompt ready to paste. Nothing here sends
-real messages: the demo runs on the KEDD demo business with customer-facing
-writes held as previews.
+(↺ reset), keep the *Live in KEDD* panel visible on the right. Have 2 photos
+(a KEDD brochure, a QRise table stand on a café counter) and the plan-discount
+prompt ready to paste. Nothing here sends real messages: the demo runs on the
+KEDD demo business with customer-facing writes held as previews.
 
 ## Scene 1 — Morning brief (0:00–0:30)
 
@@ -23,43 +23,45 @@ writes held as previews.
 - **Fallback if slow:** the brief is one model call; if it stalls, cut to the already
   loaded *Live in KEDD* panel and narrate over it, then cut the brief in when it lands.
 
-## Scene 2 — Photos + voice note → shop action (0:30–1:05)
+## Scene 2 — Photos + voice note → plan push (0:30–1:05)
 
-- **Send:** attach 2 product photos, then as a voice note (or paste as text):
-  `Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver`
-- **Subtitle:** "Add the new silk scarf collection at 850 lira each, 15% off this weekend, tell customers who haven't visited in a while."
+- **Send:** attach 2 photos (KEDD brochure, QRise table stand), then as a voice note
+  (or paste as text):
+  `QRise Menü Eklentisi'ni kataloğa ekle, Büyüme planına bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver`
+- **Subtitle:** "Add the QRise Menu add-on to the catalog, 20% off the Büyüme plan this weekend, tell customers who haven't visited in a while."
 - **Must be visible:** left — the "⏳ Bakıyorum…" status, then the approval card
-  (new catalog items with prices → weekend discount → win-back campaign with
+  (new catalog item → weekend plan discount → win-back campaign with
   recipient count); right — the panel's catalog sample still showing the old range.
-- **Expected card:** `*Çırak — onayına sunuyorum*` with 🛍️ items, 🏷️ %15 indirimi,
+- **Expected card:** `*Çırak — onayına sunuyorum*` with the 🛍️ add-on, 🏷️ %20 indirimi,
   📣 WhatsApp audience line. Reply **`evet`**.
 - **After evet:** the campaign visual appears (designed from the real product crops),
   then the "Hallettim" summary; the panel's *Recent writes* row updates.
-- **Voiceover:** "She talks; Çırak sees the products, plans the whole push, and waits for one word."
+- **Voiceover:** "He talks; Çırak sees the materials, plans the whole push, and waits for one word."
 - **Fallback if slow:** SAM + vision + planning takes ~30–60 s — record it once, then
   jump-cut from send to card ("a minute later…"). Never fast-forward the card itself.
 
-## Scene 3 — Salon slots + offer (1:05–1:35)
+## Scene 3 — Demo-call booking + offer (1:05–1:35)
 
 - **Send (type or paste, no photo):**
-  `Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.`
-- **Subtitle:** "I have openings tomorrow afternoon — 20% off hair coloring for loyal customers. Also add keratin treatment, 90 minutes, 2500 lira."
-- **Must be visible:** left — the card showing the read schedule (free afternoon slots),
-  the %20 discount, the loyal-customer campaign, and the new 90-minute service;
-  right — the panel's *Today's appointments* for the salon context.
-- **Expected card:** 🏷️ indirim + 📣 campaign + 🛍️ keratin service lines. Reply **`evet`**.
-- **Voiceover:** "No photos needed — Çırak reads the appointment book and sells the empty chairs."
+  `Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla. Büyüme planına bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver.`
+- **Subtitle:** "Book a demo call with Nar Kuaför for tomorrow 14:00. 20% off the Büyüme plan this weekend, tell customers who haven't visited in a while."
+- **Must be visible:** left — the card showing the resolved customer (Nar Kuaför —
+  Elif Kaya), the 30-minute Demo Görüşmesi at 14:00, the %20 plan discount and the
+  campaign; right — the panel's *Today's appointments* for the KEDD team calendar.
+- **Expected card:** 📅 appointment + 🏷️ indirim + 📣 campaign lines. Reply **`evet`**.
+- **Voiceover:** "No photos needed — Çırak reads the calendar and fills the empty slots."
 - **Fallback if slow:** this plan is text-only and usually fast; if the card lags,
-  narrate the schedule panel on the right while waiting.
+  narrate the appointments panel on the right while waiting.
 
-## Scene 4 — Instagram post, designed first (1:35–2:05)
+## Scene 4 — Instagram post on KEDD's account, designed first (1:35–2:05)
 
-- **Send:** `Fularlar için Instagram gönderisi hazırla`
-- **Subtitle:** "Draft an Instagram post for the scarves."
+- **Send:** `Yeni WhatsApp asistanımız için Instagram gönderisi hazırla`
+- **Subtitle:** "Draft an Instagram post for our new WhatsApp assistant."
 - **Must be visible:** left — the approval card **with the designed visual already on
   it** (the owner sees exactly what would go out), caption quoted verbatim.
 - **Expected card:** Instagram gönderisi + caption + preview image. Reply **`evet`** →
-  the outcome confirms it scheduled (demo: held as a preview, never published).
+  the outcome confirms it scheduled for KEDD's real account (on this demo page the
+  publish itself is held as a preview, never sent).
 - **Voiceover:** "The visual is designed before approval — what you see is what goes out."
 - **Fallback if slow:** image generation is the slowest step (~1 min). Pre-generate by
   sending the message once before recording, reset, and record the replay; or cut from

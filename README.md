@@ -12,7 +12,8 @@ A WhatsApp agent for small businesses: the merchant talks, Çırak plans, the me
 
 **https://efe-cavdar--cirak-demo.us-east.modal.run** — a WhatsApp-style web demo running on the live KEDD demo
 business (reads are live, customer-facing writes stay previews; it falls back to a mock salon if KEDD is down).
-Nothing is sent to real customers.
+The live business is a clone of KEDD itself — its plans, demo calls and onboarding in the catalog — with synthetic
+customers. Nothing is sent to real customers.
 
 What to type (or tap the quick prompts under the chat box):
 

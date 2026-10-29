@@ -825,7 +825,7 @@ def test_list_campaign_templates_tool_and_prompt(tmp_path):
     res = agent._run_tool("list_campaign_templates", {}, b, run)
     assert {t["name"] for t in res["templates"]} == set(run.templates) and len(run.templates) == 3
     assert "list_campaign_templates" in {t["name"] for t in agent.TOOLS}
-    assert "list_campaign_templates" in agent.SYSTEM_PROMPT and "FULAR15" in agent.SYSTEM_PROMPT
+    assert "list_campaign_templates" in agent.SYSTEM_PROMPT and "OZEL20" in agent.SYSTEM_PROMPT
     assert "{{1}}" in agent.SYSTEM_PROMPT
 
 
