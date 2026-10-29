@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image
 
@@ -59,23 +59,45 @@ def prepare_social_previews(proposal: dict[str, Any], ctx: MediaContext, run_dir
 
 
 def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
-            out_dir: Path | None = None) -> list[dict[str, Any]]:
+            out_dir: Path | None = None,
+            on_step: Callable[[str, int, int, dict[str, Any] | None], None] | None = None,
+            ) -> list[dict[str, Any]]:
+    """Run the approved actions in order, failing closed on the first error.
+
+    on_step(event, i, n, step) announces progress: ("start", 0, n, None) once, then one event
+    per action ("ok" | "failed", 1-based i) plus ("skipped", …) for actions never attempted
+    after a failure. The callback is best effort: its exceptions are swallowed and logged
+    (type only) and can never change what executes or what is returned.
+    """
     out_dir = out_dir or settings.out_dir
     crops = {p.temp_id: p for p in ctx.products}
     id_map: dict[str, str] = {}          # temp_id / ref -> real catalog item id
     visual_path: str | None = None
     steps: list[dict[str, Any]] = []
+    actions = proposal["actions"]
+    n = len(actions)
 
     def record(action: dict[str, Any], status: str, result: Any) -> None:
         steps.append({"action": action["type"], "status": status, "result": result})
         log.info("%s → %s", action["type"], status)
 
-    for i, a in enumerate(proposal["actions"]):
+    def emit(event: str, i: int, step: dict[str, Any] | None) -> None:
+        if on_step is None:
+            return
+        try:
+            on_step(event, i, n, step)
+        except Exception as e:  # noqa: BLE001 — progress must never affect execution
+            log.warning("progress callback failed: %s", type(e).__name__)
+
+    emit("start", 0, None)
+    failed_at: int | None = None
+    for i, a in enumerate(actions):
         t = a["type"]
         # Stable key per approved action: a retried delivery of the same approval reuses the
         # key, so the gateway answers from its stored result instead of running twice.
         # Only KeddBackend takes the key; the mock path is unaffected.
         idem = {"idempotency_key": f"{out_dir.name}-{i}"} if isinstance(backend, KeddBackend) else {}
+        marked = len(steps)
         try:
             if t == "add_catalog_item":
                 card = crops.get(a.get("temp_id") or "")
@@ -102,6 +124,7 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                     **idem,
                 )
                 record(a, "ok", {"discount_id": res["id"], "percent": res["percent"], "items": ids,
+                                 "starts": a["starts"], "ends": a["ends"],
                                  "sale_prices": res.get("sale_prices", {})})
 
             elif t == "generate_visual":
@@ -171,6 +194,15 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                                  "daily_budget": res["daily_budget"], "label": a.get("label")})
         except Exception as e:
             record(a, "failed", f"{type(e).__name__}: {e}")
+            emit("failed", i + 1, steps[-1])
             # Fail closed: do not continue sending things after an error.
+            failed_at = i
             break
+        else:
+            if len(steps) > marked:  # an unrecognized type records nothing and announces nothing
+                emit("ok", i + 1, steps[-1])
+    if failed_at is not None:
+        # Announced only: skipped actions ran nothing and leave no step record behind.
+        for j in range(failed_at + 1, n):
+            emit("skipped", j + 1, {"action": actions[j]["type"], "status": "skipped", "result": ""})
     return steps
