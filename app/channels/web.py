@@ -8,6 +8,7 @@ expiry/eviction, and a banner. Local behaviour is unchanged when the flag is off
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import secrets
@@ -228,6 +229,54 @@ def _business_name(session: core.Session) -> str:
 
 def _reply_json(r: core.Reply) -> dict[str, Any]:
     return {"text": r.text, "image_url": _image_url(r.image_path)}
+
+
+def _latest_trace_dir(sid: str) -> Path | None:
+    """Newest run dir of this session holding a readable tool_log.json, if any."""
+    runs = settings.out_dir / "runs" / sid[-4:]
+    if not runs.is_dir():
+        return None
+    try:
+        cands = sorted((d for d in runs.iterdir() if d.is_dir()), key=lambda d: d.name, reverse=True)
+    except OSError:
+        return None
+    for d in cands:
+        try:
+            entries = json.loads((d / "tool_log.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(entries, list):
+            return d
+    return None
+
+
+def _trace_json(run_dir: Path) -> dict[str, Any]:
+    """Tool names (+ segment counts) and model ids for the landing-page timeline.
+
+    Never args, results, names or message text: only what proves the run happened.
+    """
+    entries = json.loads((run_dir / "tool_log.json").read_text(encoding="utf-8"))
+    steps: list[dict[str, Any]] = []
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("tool"), str):
+            continue
+        step: dict[str, Any] = {"tool": e["tool"][:64]}
+        if e["tool"] == "find_customers":
+            res = e.get("result")
+            count = res.get("count") if isinstance(res, dict) else None
+            if isinstance(count, int) and not isinstance(count, bool):
+                step["count"] = count
+        steps.append(step)
+    models = [settings.orchestrator_model]  # tool_log.json exists only after a plan ran
+    try:
+        has_crops = any((run_dir / "crops").iterdir())
+    except OSError:
+        has_crops = False
+    if has_crops:  # crops on disk ⟺ SAM cut-outs + Spark vision both ran
+        models += [settings.sam_model, settings.vision_model]
+    if (run_dir / "campaign_visual.png").is_file():
+        models.append(settings.image_model)
+    return {"steps": steps, "models": list(dict.fromkeys(models))}
 
 
 def _log_result(endpoint: str, data: dict[str, Any], started: float) -> None:
@@ -539,6 +588,23 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
         data = await run_in_threadpool(_work)
         _log_result("reset", data, started)
         return _finalize(data, is_new, sid)
+
+    @app.get("/api/trace")
+    async def get_trace(request: Request) -> JSONResponse:
+        # Read-only and model-free: same session handling as `/`, burns no quota.
+        sid, session, is_new = _ensure(request)
+        if session is None:
+            return JSONResponse(status_code=429, content={"detail": _IP_LIMIT_MSG})
+        run_dir = _latest_trace_dir(sid)
+        if run_dir is None:
+            resp = JSONResponse(status_code=404, content={"detail": "No trace yet."})
+        else:
+            data = _trace_json(run_dir)
+            log.info("trace: steps=%d models=%d", len(data["steps"]), len(data["models"]))
+            resp = JSONResponse(data)
+        if is_new:
+            resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
+        return resp
 
     @app.get("/api/media/{rel_path:path}", response_model=None)
     async def get_media(request: Request, rel_path: str):  # type: ignore[no-untyped-def]

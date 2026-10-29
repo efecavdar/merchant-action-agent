@@ -1,43 +1,143 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Çırak</title>
+<title>Çırak — the apprentice that runs your shop from WhatsApp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<div class="page">
-  <div class="phone">
-    <header class="header">
-      <div class="avatar">Ç</div>
-      <div class="titles">
-        <div class="name">Çırak</div>
-        <div class="business"><span id="businessName">{{BUSINESS}}</span> <span id="badge" class="badge {{BADGE_CLASS}}">{{BADGE}}</span></div>
+<a class="skip" href="#phoneCol" data-i18n="skip">Skip to the live chat</a>
+<header class="topbar">
+  <span class="brand">Çırak <span class="brand-tag" data-i18n="brand.tag">for small business</span></span>
+  <div id="langToggle" class="langtoggle" role="group" aria-label="Language" data-i18n-aria="lang.label">
+    <button type="button" data-lang="tr">TR</button>
+    <button type="button" data-lang="en">EN</button>
+  </div>
+</header>
+{{BANNER}}
+<main class="layout">
+  <div class="story">
+    <section class="hero">
+      <h1 data-i18n="hero.title">Çırak — the apprentice that runs your shop from WhatsApp.</h1>
+      <p class="lede" data-i18n="hero.sub">Send a voice note or a photo. Çırak plans it, you approve with one word, it gets done in KEDD.</p>
+      <div class="hero-cta">
+        <button type="button" id="tryLive" class="btn-primary" data-i18n="hero.try">Try it live →</button>
+        <a class="btn-ghost" href="#safety" data-i18n="hero.safe">How it stays safe</a>
       </div>
-      <button id="resetBtn" class="icon-btn" title="Sıfırla">↺</button>
-    </header>
-    {{BANNER}}
-    <main id="chat" class="chat" aria-live="polite"></main>
-    <div id="preview" class="preview" hidden></div>
-    <footer class="footer">
-      <div class="composer">
-        <input id="fileInput" type="file" accept="image/jpeg,image/png" multiple hidden>
-        <button id="attachBtn" class="icon-btn" title="Fotoğraf ekle">📎</button>
-        <button id="micBtn" class="icon-btn" title="Basılı tut, konuş, bırak">🎙️</button>
-        <input id="textInput" class="text" type="text" placeholder="Mesaj yaz…" autocomplete="off">
-        <button id="sendBtn" class="icon-btn send" title="Gönder">➤</button>
-      </div>
-      <div class="quick">
-        <button data-brief="1">☀️ Sabah özeti</button>
-        <button data-fill="Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver">Butik demosu</button>
-        <button data-fill="Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.">Salon demosu</button>
-        <button data-send="/kedd">🔗 KEDD</button>
-      </div>
+      <p class="hackathon" data-i18n="hero.hackathon">Built for the Meta Global AI Developer Hackathon 2026</p>
+    </section>
+    <section class="how">
+      <h2 data-i18n="how.title">How it works</h2>
+      <ol class="stepper">
+        <li class="step">
+          <span class="step-n" aria-hidden="true">1</span>
+          <h3 data-i18n="how.s1t">Speak or snap</h3>
+          <p data-i18n="how.s1d">A voice note or product photos — no dashboard, no typing.</p>
+          <p class="models"><span class="model">Muse Voice Transcribe</span></p>
+        </li>
+        <li class="step">
+          <span class="step-n" aria-hidden="true">2</span>
+          <h3 data-i18n="how.s2t">It sees the products</h3>
+          <p data-i18n="how.s2d">Items are cut out of your photos and described as catalog cards.</p>
+          <p class="models"><span class="model">SAM 3.1</span> <span class="model">Muse Spark</span></p>
+        </li>
+        <li class="step">
+          <span class="step-n" aria-hidden="true">3</span>
+          <h3 data-i18n="how.s3t">You get a card</h3>
+          <p data-i18n="how.s3d">A plan built on live business data, shown for one-word approval.</p>
+          <p class="models"><span class="model">Muse Spark</span></p>
+        </li>
+        <li class="step">
+          <span class="step-n" aria-hidden="true">4</span>
+          <h3 data-i18n="how.s4t">Say “evet”, it’s done</h3>
+          <p data-i18n="how.s4d">Deterministic code executes; the visual is designed from your photos.</p>
+          <p class="models"><span class="model">Muse Image</span></p>
+        </li>
+      </ol>
+    </section>
+    <section class="safety" id="safety">
+      <h2 data-i18n="safe.title">The model proposes, code executes.</h2>
+      <p class="section-sub" data-i18n="safe.sub">Six guarantees, all enforced in code — not in prompts.</p>
+      <ul class="guarantees">
+        <li data-i18n="g1">Nothing runs without your “evet”.</li>
+        <li data-i18n="g2">The card is rendered from verified data, not from the model’s words.</li>
+        <li data-i18n="g3">Every ID must come from a real lookup in the same run.</li>
+        <li data-i18n="g4">Business limits are enforced twice: by the agent and by the KEDD server.</li>
+        <li data-i18n="g5">Every write is idempotent and audited.</li>
+        <li data-i18n="g6">No customer phone number ever reaches the model or the UI.</li>
+      </ul>
+    </section>
+    <section class="coverage-sec">
+      <h2 data-i18n="cov.title">What Çırak can do in KEDD</h2>
+      <p class="section-sub" data-i18n="cov.sub">Live today, and what’s next.</p>
+      <div id="coverage" class="coverage" aria-live="polite"></div>
+    </section>
+    <section class="trace-sec" id="trace">
+      <h2 data-i18n="trace.title">Behind the scenes</h2>
+      <p class="section-sub" data-i18n="trace.sub">What happened for your last message — tool names and counts only.</p>
+      <ol id="traceTimeline" class="timeline"></ol>
+      <p id="traceEmpty" class="trace-empty" data-i18n="trace.empty">Send the phone a message and the trace will appear here.</p>
+      <p class="trace-models"><span data-i18n="trace.models">Models</span>: <span id="traceModels">—</span></p>
+    </section>
+    <footer class="pagefoot">
+      <a href="https://github.com/efecavdar/merchant-action-agent" data-i18n="foot.repo">GitHub</a>
+      <span id="syntheticLine" class="synthetic" hidden data-i18n="foot.synthetic">Synthetic demo data · nothing is sent to real customers</span>
+      <a href="https://github.com/efecavdar/merchant-action-agent" data-i18n="foot.license">License</a>
+      <span data-i18n="foot.built">Built by Efe Çavdar for the Meta Global AI Developer Hackathon 2026</span>
     </footer>
   </div>
-</div>
+  <aside class="phonecol" id="phoneCol" aria-label="Live demo">
+    <div class="phone" id="phone">
+      <div class="notch" aria-hidden="true"></div>
+      <div class="statusbar">
+        <span id="phoneTime">09:41</span>
+        <span class="statusicons" aria-hidden="true">
+          <svg width="18" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx="0.5"/><rect x="5" y="5" width="3" height="7" rx="0.5"/><rect x="10" y="2" width="3" height="10" rx="0.5"/></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 10.2 6.4 8.4a2.6 2.6 0 0 1 3.2 0zM4.8 6.6a4.8 4.8 0 0 1 6.4 0l-1.2 1.2a3.1 3.1 0 0 0-4 0zM2.6 4.2a8 8 0 0 1 10.8 0L12.2 5.4a6.3 6.3 0 0 0-8.4 0z"/></svg>
+          <svg width="25" height="12" viewBox="0 0 25 12"><rect x="0.5" y="0.5" width="20" height="11" rx="3" fill="none" stroke-width="1.5"/><rect x="2.5" y="2.5" width="14" height="7" rx="1.5"/><rect x="22" y="4" width="2.5" height="4" rx="1"/></svg>
+        </span>
+      </div>
+      <div class="screen">
+      <header class="header">
+        <div class="avatar">Ç</div>
+        <div class="titles">
+          <div class="name">Çırak</div>
+          <div class="business"><span id="businessName">{{BUSINESS}}</span> <span id="badge" class="badge {{BADGE_CLASS}}">{{BADGE}}</span></div>
+        </div>
+        <button id="resetBtn" class="icon-btn" title="Sıfırla" aria-label="Sıfırla">↺</button>
+      </header>
+      <main id="chat" class="chat" aria-live="polite"></main>
+      <div id="preview" class="preview" hidden></div>
+      <footer class="footer">
+        <div class="composer">
+          <input id="fileInput" type="file" accept="image/jpeg,image/png" multiple hidden>
+          <button id="attachBtn" class="icon-btn" title="Fotoğraf ekle" aria-label="Fotoğraf ekle">📎</button>
+          <button id="micBtn" class="icon-btn" title="Basılı tut, konuş, bırak" aria-label="Sesli mesaj kaydet">🎙️</button>
+          <input id="textInput" class="text" type="text" placeholder="Mesaj yaz…" autocomplete="off" aria-label="Mesaj yaz">
+          <button id="sendBtn" class="icon-btn send" title="Gönder" aria-label="Gönder">➤</button>
+        </div>
+        <div class="quick">
+          <button data-brief="1"><span class="chip-tr">☀️ Sabah özeti</span><span class="chip-en">Morning brief</span></button>
+          <button data-fill="Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver"><span class="chip-tr">Butik demosu</span><span class="chip-en">Products + discount + win-back</span></button>
+          <button data-fill="Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira."><span class="chip-tr">Salon demosu</span><span class="chip-en">Slots + offer + regulars</span></button>
+          <button data-send="/kedd"><span class="chip-tr">🔗 KEDD</span><span class="chip-en">Live KEDD business</span></button>
+        </div>
+      </footer>
+      </div>
+    </div>
+    <details class="tracedrawer" id="traceDrawer">
+      <summary data-i18n="drawer.title">Behind the scenes</summary>
+      <ol id="traceMini" class="timeline mini"></ol>
+      <p id="traceMiniEmpty" class="trace-empty" data-i18n="trace.empty">Send the phone a message and the trace will appear here.</p>
+    </details>
+  </aside>
+</main>
 <div id="lightbox" class="lightbox" hidden><img id="lightboxImg" alt="Büyütülmüş görsel"></div>
+<script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

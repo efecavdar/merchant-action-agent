@@ -480,3 +480,78 @@ def test_l7_secure_cookie_only_in_public_mode(cfg, tmp_path):
     assert "secure" not in TestClient(webchan.create_app()).get("/").headers.get("set-cookie", "").lower()
     cfg("public_demo", True)
     assert "secure" in TestClient(webchan.create_app()).get("/").headers.get("set-cookie", "").lower()
+
+
+# --------------------------------------------------------------------------- #
+# task 16: landing page + read-only trace
+# --------------------------------------------------------------------------- #
+
+def _seed_run(out_dir, sid_tail, entries):
+    run = out_dir / "runs" / sid_tail / "20260101-000000-abcdef"
+    run.mkdir(parents=True, exist_ok=True)
+    import json
+    (run / "tool_log.json").write_text(json.dumps(entries), encoding="utf-8")
+    return run
+
+
+_TRACE_LOG = [
+    {"tool": "get_store_profile", "args": {}, "result": {"business_name": "Nar Butik"}},
+    {"tool": "find_customers", "args": {"inactive_days": 60},
+     "result": {"segment_id": "s1", "count": 23, "sample": ["Ayşe", "905321234567"]}},
+    {"tool": "propose_actions", "errors": []},
+]
+
+
+def test_t16_trace_returns_only_tool_names_and_counts(cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    run = _seed_run(tmp_path, "aaa1", _TRACE_LOG)
+    (run / "crops").mkdir()
+    (run / "crops" / "tmp1.png").write_bytes(b"x")
+    (run / "campaign_visual.png").write_bytes(b"x")
+    c = TestClient(webchan.create_app())
+    c.cookies.set("cirak_sid", "aaaaaaa1")
+    r = c.get("/api/trace")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["steps"] == [{"tool": "get_store_profile"},
+                             {"tool": "find_customers", "count": 23},
+                             {"tool": "propose_actions"}]
+    assert body["models"] == list(dict.fromkeys([settings.orchestrator_model, settings.sam_model,
+                                                 settings.vision_model, settings.image_model]))
+    raw = r.text
+    assert "args" not in raw and "result" not in raw
+    assert "905321234567" not in raw and "Ayşe" not in raw and "Nar Butik" not in raw
+
+
+def test_t16_trace_404_before_any_run(cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    c = TestClient(webchan.create_app())
+    assert c.get("/api/trace").status_code == 404
+
+
+def test_t16_trace_isolated_per_session(cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    _seed_run(tmp_path, "aaa1", _TRACE_LOG)
+    app_obj = webchan.create_app()
+    a = TestClient(app_obj)
+    a.cookies.set("cirak_sid", "aaaaaaa1")
+    assert a.get("/api/trace").status_code == 200
+    b = TestClient(app_obj)
+    b.cookies.set("cirak_sid", "bbbbbbb2")
+    assert b.get("/api/trace").status_code == 404
+
+
+def test_t16_coverage_json_shape():
+    import json
+    items = json.loads((webchan.STATIC_DIR / "coverage.json").read_text(encoding="utf-8"))
+    assert isinstance(items, list) and len(items) >= 10
+    for it in items:
+        assert {"area", "what_en", "what_tr", "status"} <= set(it)
+        assert it["status"] in ("live", "soon")
+    assert any(it["status"] == "live" for it in items)
+    assert any(it["status"] == "soon" for it in items)
+
+
+def test_t16_index_has_toggle_and_coverage(client):
+    assert 'id="langToggle"' in client.get("/").text
+    assert 'id="coverage"' in client.get("/").text
