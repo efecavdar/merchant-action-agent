@@ -1,0 +1,3 @@
+{"dry_run": true, "template": "marketing_reengagement_promo_tr", "segment_id": "seg-9",
+ "recipients": 23, "sent": 0, "skipped": {"no_consent": 4}, "failed": 0, "failed_by_code": {},
+ "template_text": "Merhaba Ayşe Y.! Hafta sonu %15 seni bekliyor, kodun: FULAR15."}

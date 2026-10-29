@@ -41,6 +41,7 @@ is a sale-price window on catalog items.
 | GET | `/agent/catalog` | `type` (optional) | catalog items: id, type, name, price, currency, category, description, image, duration (services), sale window |
 | GET | `/agent/schedule` | `day` (YYYY-MM-DD) | that day's confirmed appointments plus free slots per staff member |
 | GET | `/agent/customers` | `name` | up to 10 matches: id, name, last visit, visit count. No phone numbers |
+| GET | `/agent/loyalty/members` | `name` | up to 10 matches: `{members: [{member_id, name, points, tier?}], truncated}`. No phone numbers. Gateway K5.1 — agreed shape, pending deploy |
 | GET | `/agent/daily-summary` | `day` | appointments, revenue total + by category, new customers/leads, unanswered messages, campaigns sent, catalog changes |
 | GET | `/agent/appointments` | `customer_name`, `day` (optional) | appointments: id, customer, service, staff, start/end, status |
 | GET | `/agent/ads/performance` | `days` (default 7) | ad campaigns with spend/impressions/clicks/results/cost-per-result, plus totals |
@@ -56,13 +57,13 @@ is a sale-price window on catalog items.
 |---|---|---|---|
 | POST | `/agent/catalog` | `{type, name, price, category, description, image_path, duration_minutes}` | the created item |
 | POST | `/agent/discounts` | `{name, percent, item_ids, starts, ends}` | the discount plus the resulting sale prices |
-| POST | `/agent/campaigns` | `{name, segment_id, template, variables}` or `{name, segment_id, message, visual_path}` | the sent campaign, incl. recipient count |
+| POST | `/agent/campaigns` | `{segment_id, template, variables: {code?, advantage?, discount?}, dry_run?}` | `{dry_run, template, segment_id, recipients, sent, skipped: {reason: count}, failed, failed_by_code, template_text?}`. `template_text` only on dry runs (`{{1}}` filled with the first customer's name). A segment can be sent once; a retry with the same Idempotency-Key returns the stored result |
 | POST | `/agent/appointments` | `{customer_id, item_id, staff, starts}` | the booked appointment; overbooking and out-of-hours slots fail |
 | POST | `/agent/appointments/reschedule` | `{appointment_id, starts, staff?}` | the moved appointment |
 | POST | `/agent/appointments/cancel` | `{appointment_id, reason?}` | the cancelled appointment |
 | POST | `/agent/catalog/bulk-price` | `{preview_id}` | applied rows `{id, old_price, new_price}`; unknown/expired previews fail |
-| POST | `/agent/loyalty/adjust` | `{customer_id, points, reason}` | `{customer_id, name, old_points, points, delta, reason}` |
-| POST | `/agent/ads/action` | `{campaign_id, action, delta_pct?}` (`pause` \| `resume` \| `increase_budget` \| `decrease_budget`) | the updated campaign |
+| POST | `/agent/loyalty/adjust` | `{member_id, delta (int, non-zero, |Δ| ≤ 1000), reason?}` | `{member_id, delta, points_before, points_after}` |
+| POST | `/agent/ads/action` | `{campaign_id, action: "pause" \| "resume" \| "set_budget", budget? (absolute, only with `set_budget`), reason (required)}` | `{campaign_id, action, budget_before?, budget_after?}`. Server limits: budget step ≤ ±20 %, ≤ 3× the original, ≤ 2 budget changes per business per day (409 `too_many_budget_ops`) |
 
 Writes re-validate every limit server-side (discount caps, recipient caps, slot clashes,
 business hours) and never trust the client's checks.
@@ -76,11 +77,14 @@ closed: after a failed step, later steps (like sending messages) do not run.
 | Status | `error` | Meaning |
 |---|---|---|
 | 400 | `idempotency_key_required`, `invalid_request` | missing/unusable key, or the request fails validation |
+| 400 | `invalid_variable` | a campaign variable the template does not declare |
 | 401 | `unauthorized` | bad/missing signature, timestamp outside the 300 s window, replayed signature |
 | 403 | `forbidden`, `suspended` | unknown/disabled phone, suspended business, or missing role/module |
 | 404 | `not_found` | unregistered path |
 | 409 | `in_progress` | this key is being executed right now — it may already be running, do not retry |
 | 409 | `unknown_outcome` | this key's execution ended ambiguously — it may already have run, do not retry automatically |
+| 409 | `segment_drift`, `segment_used`, `quiet_hours`, `quota_exceeded` | the campaign segment changed, was already sent, is in quiet hours, or the quota is spent |
+| 409 | `too_many_budget_ops` | more than 2 ad budget changes for this business today |
 | 415 | `unsupported_media_type` | POST without `Content-Type: application/json` |
 | 429 | `rate_limited` | per-business read/write caps exceeded |
 | 503 | `disabled` | the gateway is switched off (globally or for this merchant) |

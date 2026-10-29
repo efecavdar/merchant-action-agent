@@ -54,7 +54,9 @@ def _kb(*fixtures: str, **overrides) -> KeddBackend:
     for name in fixtures:
         method = "POST" if name in {"segments", "bulk_preview", "catalog_create", "bulk_apply",
                                     "discounts", "appointment_create", "appointment_reschedule",
-                                    "appointment_cancel", "social_post"} else "GET"
+                                    "appointment_cancel", "social_post", "campaigns_dryrun",
+                                    "campaigns_send", "loyalty_adjust", "ads_action",
+                                    "ads_pause"} else "GET"
         routes[(method, _PATHS[name])] = _load(name)
     routes.update(overrides)
     kb = KeddBackend(BASE, "s3cret", "+905321")
@@ -82,6 +84,12 @@ _PATHS = {
     "appointment_reschedule": "/agent/appointments/reschedule",
     "appointment_cancel": "/agent/appointments/cancel",
     "social_post": "/agent/social/post",
+    "campaigns_dryrun": "/agent/campaigns",
+    "campaigns_send": "/agent/campaigns",
+    "loyalty_members": "/agent/loyalty/members",
+    "loyalty_adjust": "/agent/loyalty/adjust",
+    "ads_action": "/agent/ads/action",
+    "ads_pause": "/agent/ads/action",
 }
 
 
@@ -195,6 +203,30 @@ CASES = [
      lambda m: m.publish_social_post("Yeni #sezon", _tiny_png(), ["instagram"], "2026-11-01T10:00"),
      lambda k: k.publish_social_post("Yeni #sezon", _tiny_png(), ["instagram"], "2026-11-01T10:00"),
      ["campaign_id"]),
+    ("preview_campaign", ["campaign_templates", "campaigns_dryrun"],
+     lambda m: m.preview_campaign(m.find_customers(min_visits=1)["segment_id"],
+                                  "marketing_reengagement_promo_tr", {"2": "F", "3": "x"}),
+     lambda k: k.preview_campaign("seg-9", "marketing_reengagement_promo_tr",
+                                  {"2": "F", "3": "x"}),
+     ["template_text"]),
+    ("find_loyalty_member", ["loyalty_members"],
+     lambda m: m.find_loyalty_member(m.customers[0].name.split()[0]),
+     lambda k: k.find_loyalty_member("Ayşe"), ["members"]),
+    ("send_campaign", ["campaign_templates", "campaigns_send"],
+     lambda m: m.send_campaign("T", m.find_customers(min_visits=1)["segment_id"],
+                               template="marketing_reengagement_promo_tr",
+                               variables={"2": "F", "3": "x"}),
+     lambda k: k.send_campaign("T", "seg-9", template="marketing_reengagement_promo_tr",
+                               variables={"2": "F", "3": "x"}), []),
+    ("adjust_loyalty", ["loyalty_adjust"],
+     lambda m: m.adjust_loyalty(m.customers[0].id, 200, "doğum günü"),
+     lambda k: k.adjust_loyalty("m-1", 200, "doğum günü"), []),
+    ("ads_action_pause", ["ads_performance", "ads_pause"],
+     lambda m: m.ads_action(m.ads[0].id, "pause"),
+     lambda k: k.ads_action("ad-2", "pause"), []),
+    ("ads_action_budget", ["ads_performance", "ads_action"],
+     lambda m: m.ads_action(m.ads[0].id, "increase_budget", 10),
+     lambda k: k.ads_action("ad-1", "increase_budget", 10), []),
 ]
 
 
@@ -274,16 +306,14 @@ def test_cancel_posts_id_only():
     assert kb._s.calls[0][3] == {"appointment_id": "appt-1"}
 
 
-@pytest.mark.parametrize("call", [
-    lambda k: k.send_campaign("Kış", "seg9", template="marketing_reengagement_promo_tr",
-                              variables={"2": "X"}),
-    lambda k: k.send_campaign("Eski", "seg9", "merhaba", ""),
-    lambda k: k.adjust_loyalty("c-1", 100, "doğum günü"),
-    lambda k: k.ads_action("ad-1", "pause"),
+@pytest.mark.parametrize("call,reason", [
+    (lambda k: k.send_campaign("Eski", "seg9", "merhaba", ""), "şablon ister"),
+    (lambda k: k.adjust_loyalty("c-1", 0, ""), "puan 0 olamaz"),
+    (lambda k: k.ads_action("ad-1", "increase_budget", 25), "%20"),
 ])
-def test_unimplemented_writes_raise_before_any_http(call):
+def test_invalid_writes_raise_before_any_http(call, reason):
     kb = _kb()
-    with pytest.raises(ValueError, match="henüz bağlı değil"):
+    with pytest.raises(ValueError, match=reason):
         call(kb)
     assert kb._s.calls == []
 

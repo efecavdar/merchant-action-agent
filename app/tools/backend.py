@@ -220,6 +220,9 @@ class Backend(Protocol):
     def ads_performance(self, days: int = 7) -> dict[str, Any]: ...
     def ads_suggestions(self) -> dict[str, Any]: ...
     def campaign_templates(self) -> list[dict[str, Any]]: ...
+    def preview_campaign(self, segment_id: str, template: str,
+                         variables: dict[str, str] | None = None) -> dict[str, Any]: ...
+    def find_loyalty_member(self, name: str) -> dict[str, Any]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -593,6 +596,16 @@ class MockBackend:
         return [{"id": c.id, "name": c.name, "last_visit": c.last_visit, "visit_count": c.visit_count}
                 for c in self.customers if q in _fold_name(c.name)][:10]
 
+    def find_loyalty_member(self, name: str) -> dict[str, Any]:
+        """Resolve a spoken name to loyalty members with current points. member_id is the
+        customer id (same identity the gateway uses for members)."""
+        q = _fold_name(name or "")
+        if not q:
+            return {"members": []}
+        return {"members": [{"member_id": c.id, "name": c.name, "points": c.loyalty_points,
+                             "tier": None}
+                            for c in self.customers if q in _fold_name(c.name)][:10]}
+
     def get_schedule(self, day: str) -> dict[str, Any]:
         """Appointments and free slots for one day (per staff member)."""
         d = date.fromisoformat(day)
@@ -741,6 +754,25 @@ class MockBackend:
         """Approved templates {name, body, variables}; {{1}} is always the customer name."""
         return [{"name": t["name"], "body": t["body"],
                  "variables": [dict(v) for v in t["variables"]]} for t in _CAMPAIGN_TEMPLATES]
+
+    def preview_campaign(self, segment_id: str, template: str,
+                         variables: dict[str, str] | None = None) -> dict[str, Any]:
+        """Dry-run a template campaign: masked template text plus eligible/skipped counts."""
+        if segment_id not in self.segments:
+            raise ValueError(f"unknown segment {segment_id}")
+        bodies = {t["name"]: t["body"] for t in _CAMPAIGN_TEMPLATES}
+        if template not in bodies:
+            raise ValueError(f"unknown template {template}")
+        names = [c.name for cid in self.segments[segment_id]
+                 for c in self.customers if c.id == cid]
+        first = names[0] if names else "Müşteri"
+        rendered = render_campaign_template(
+            bodies[template], {"1": first, **{str(k): v for k, v in (variables or {}).items()
+                                              if isinstance(v, str)}})
+        return {"segment_id": segment_id, "template": template,
+                "template_text": _mask_customer_name(rendered, names),
+                "recipients": len(self.segments[segment_id]),
+                "skipped": {"no_consent": 0, "other": 0}, "dry_run": True}
 
     # -- write tools (only called by the executor AFTER human approval) ------ #
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -958,6 +990,38 @@ _WRITE_CAPABILITIES = frozenset({
     "discounts.create", "campaigns.send",
 })
 
+#: Placeholder shown wherever a customer name would otherwise leak to the model or the card.
+MASKED_NAME = "‹müşteri adı›"
+
+
+def _mask_customer_name(text: str, names: list[str]) -> str:
+    """Mask a filled-in customer name in a gateway-rendered template text.
+
+    The gateway fills {{1}} with the first eligible customer's real name, so the
+    preview replaces it — full name and first token both, since either form may
+    arrive — plus any leftover {{1}} for gateways that leave it unfilled.
+    Over-masking errs private; a masked preview never leaks a name.
+    """
+    out = text
+    for n in names:
+        if n and len(n) > 1:
+            out = out.replace(n, MASKED_NAME)
+            first = n.split()[0]
+            if len(first) > 1 and first != n:
+                out = out.replace(first, MASKED_NAME)
+    return out.replace("{{1}}", MASKED_NAME)
+
+
+def _as_int(v: Any) -> int | None:
+    """JSON number → int (bools and non-integral floats are garbage, not numbers)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return None
+
 
 class KeddBackend:
     """Adapter onto KEDD's agent gateway (a handful of signed HTTPS endpoints).
@@ -980,7 +1044,7 @@ class KeddBackend:
     name = "kedd"
     # Same staleness contract as MockBackend: a session pickled before a shape change
     # is re-seeded instead of crashing halfway through an approved plan.
-    SCHEMA = 3  # 3: scoped demo credential (key id travels with the backend)
+    SCHEMA = 4  # 4: segment sample names cached for preview masking
 
     def __init__(self, base_url: str, secret: str, merchant_phone: str, key_id: str = "main"):
         import requests  # local import keeps mock mode dependency-light
@@ -989,6 +1053,7 @@ class KeddBackend:
         self._secret = secret.encode()
         self._phone = merchant_phone
         self._key_id = key_id  # "main" or "demo": selects the secret server-side (contract §1)
+        self._seg_names: dict[str, list[str]] = {}  # segment_id -> sample names (preview masking)
         self._schema = self.SCHEMA
 
     def __repr__(self) -> str:
@@ -1011,6 +1076,7 @@ class KeddBackend:
         self._key_id = key_id
         secret = settings.kedd_demo_secret if key_id == "demo" else settings.kedd_agent_secret
         self._secret = secret.encode()
+        self._seg_names = state.get("_seg_names", {})
 
     def _unused_timestamp(self, signed: tuple[str, ...]) -> str:
         # The gateway rejects any signature it has already seen (replay guard), and two identical reads in
@@ -1241,13 +1307,19 @@ class KeddBackend:
                        tags: list[str] | None = None) -> dict[str, Any]:
         res = self._post("/agent/segments", {"inactive_days": inactive_days,
                                              "min_visits": min_visits, "tags": tags})
+        seg_id = res.get("segment_id", "")
+        sample = [{"name": e.get("name", ""), "last_visit": e.get("lastVisit"),
+                   "visit_count": None, "loyalty": None} for e in res.get("examples") or []]
+        # Sample names mask the filled-in {{1}} in a later campaign preview of this segment.
+        self._seg_names[seg_id] = [s["name"] for s in sample if s["name"]]
+        if len(self._seg_names) > 50:
+            self._seg_names.pop(next(iter(self._seg_names)))
         return {
-            "segment_id": res.get("segment_id", ""),
+            "segment_id": seg_id,
             "criteria": {"inactive_days": inactive_days, "min_visits": min_visits, "tags": tags},
             "count": res.get("count", 0),
             "excluded_no_consent": None,
-            "sample": [{"name": e.get("name", ""), "last_visit": e.get("lastVisit"),
-                        "visit_count": None, "loyalty": None} for e in res.get("examples") or []],
+            "sample": sample,
         }
 
     def get_schedule(self, day: str) -> dict[str, Any]:
@@ -1331,9 +1403,14 @@ class KeddBackend:
             results = c.get("results")
             results = int(results) if isinstance(results, (int, float)) and not isinstance(
                 results, bool) else None
+            budget = None
+            for key in ("dailyBudget", "daily_budget", "budget"):  # wire name still unconfirmed
+                budget = self._f(c.get(key))
+                if budget is not None:
+                    break
             campaigns.append({
                 "id": c.get("id", ""), "name": c.get("name", ""), "platform": None,
-                "status": c.get("status", ""), "daily_budget": None, "spend": spend,
+                "status": c.get("status", ""), "daily_budget": budget, "spend": spend,
                 "impressions": int(c.get("impressions") or 0), "clicks": int(c.get("clicks") or 0),
                 "results": results,
                 "cost_per_result": round(spend / results, 2) if results else None})
@@ -1391,6 +1468,50 @@ class KeddBackend:
         return {"id": f"dsc-{start_day}-{digest}", "name": name, "percent": percent,
                 "item_ids": item_ids, "starts": start_day, "ends": end_day, "sale_prices": sale_prices}
 
+    def _template_body_and_vars(self, template: str,
+                                    variables: dict[str, str] | None) -> tuple[str, dict[str, str]]:
+        """Translate plan variables ({"2": ...}) to gateway names ({"code": ...}).
+
+        Number→name comes from the template metadata itself, so a renamed variable can
+        never silently fill the wrong slot. Unknown templates or slots fail closed.
+        """
+        metas = {t.get("name"): t for t in self.campaign_templates()
+                 if isinstance(t, dict)}
+        tmpl = metas.get(template)
+        if tmpl is None:
+            raise ValueError(f"şablon bulunamadı: {template}")
+        num2name = {str(v.get("number")): v.get("name") for v in tmpl.get("variables") or []}
+        named = {}
+        for k, v in (variables or {}).items():
+            name = num2name.get(str(k))
+            if not name or not isinstance(v, str):
+                raise ValueError(f"şablon değişkeni anlaşılmadı: {template}[{k}]")
+            named[name] = v
+        return str(tmpl.get("body", "")), named
+
+    @staticmethod
+    def _skipped_counts(skipped: Any) -> dict[str, int]:
+        raw = skipped if isinstance(skipped, dict) else {}
+        no_consent = _as_int(raw.get("no_consent")) or 0
+        other = sum(n for n in (_as_int(v) for k, v in raw.items() if k != "no_consent") if n)
+        return {"no_consent": no_consent, "other": other}
+
+    def preview_campaign(self, segment_id: str, template: str,
+                         variables: dict[str, str] | None = None) -> dict[str, Any]:
+        """Dry-run a template campaign: masked template text plus eligible/skipped counts.
+
+        Read-only (dry_run is hardcoded true — there is no parameter to flip it), so the
+        demo key may call it: the preview IS the demo's campaign experience.
+        """
+        body, named = self._template_body_and_vars(template, variables)
+        res = self._post("/agent/campaigns", {"segment_id": segment_id, "template": template,
+                                              "variables": named, "dry_run": True})
+        text = _mask_customer_name(str(res.get("template_text") or ""),
+                                   self._seg_names.get(segment_id, []))
+        return {"segment_id": segment_id, "template": template, "template_text": text,
+                "recipients": _as_int(res.get("recipients")) or 0,
+                "skipped": self._skipped_counts(res.get("skipped")), "dry_run": True}
+
     def send_campaign(self, name: str, segment_id: str, message: str = "",
                       visual_path: str = "", template: str | None = None,
                       variables: dict[str, str] | None = None,
@@ -1399,7 +1520,28 @@ class KeddBackend:
             # Preview-only demo: refuse before touching the network (the gateway's demo
             # policy is the second lock). The approval card already showed the preview.
             raise ValueError("Demo işletmede kampanya gönderimi kapalı; karttaki önizlemeyle yetin.")
-        raise ValueError("KEDD'ye kampanya gönderimi henüz bağlı değil.")
+        if not template:
+            raise ValueError("KEDD kampanya gönderimi şablon ister (şablonsuz mesaj gönderilemez)")
+        body, named = self._template_body_and_vars(template, variables)
+        res = self._post("/agent/campaigns", {"segment_id": segment_id, "template": template,
+                                              "variables": named, "dry_run": False},
+                         idempotency_key)
+        sent = _as_int(res.get("sent")) or 0
+        failed = _as_int(res.get("failed")) or 0
+        skipped = self._skipped_counts(res.get("skipped"))
+        note = f"{sent} gönderildi"
+        if skipped["no_consent"] + skipped["other"]:
+            note += f" · {skipped['no_consent'] + skipped['other']} atlandı"
+        if failed:
+            note += f" · {failed} başarısız"
+        return {"id": "", "name": name, "segment_id": segment_id,
+                "message": render_campaign_template(
+                    body, {"1": MASKED_NAME, **{str(k): v for k, v in (variables or {}).items()
+                                               if isinstance(v, str)}}),
+                "visual_path": "", "recipients": _as_int(res.get("recipients")) or 0,
+                "template": template, "variables": dict(variables or {}), "status": "sent",
+                "replies": None, "conversions": None, "day": date.today().isoformat(),
+                "note": note}
 
     def create_appointment(self, customer_id: str, item_id: str, staff: str,
                            starts: str, idempotency_key: str | None = None) -> dict[str, Any]:
@@ -1447,14 +1589,81 @@ class KeddBackend:
         return {"preview_id": res.get("preview_id", preview_id), "items": [],
                 "count": res.get("applied", 0)}
 
+    def find_loyalty_member(self, name: str) -> dict[str, Any]:
+        """Loyalty members matching a (partial) name. Built against the brief's fixture
+        shape — GET /agent/loyalty/members is not deployed yet (gateway K5.1)."""
+        res = self._get("/agent/loyalty/members", name=name)
+        members = []
+        for m in res.get("members") or []:
+            if not isinstance(m, dict):
+                continue
+            members.append({"member_id": m.get("member_id", ""),
+                            "name": m.get("name", ""),
+                            "points": _as_int(m.get("points")) or 0,
+                            "tier": m.get("tier") if isinstance(m.get("tier"), str) else None})
+        return {"members": members}
+
     def adjust_loyalty(self, customer_id: str, points: int, reason: str,
                        idempotency_key: str | None = None) -> dict[str, Any]:
-        raise ValueError("KEDD puan işlemi henüz bağlı değil.")
+        # customer_id carries the member_id the planner resolved via find_loyalty_member
+        # (same identity). Loyalty is a reversible write, so the demo key may call it.
+        delta = _as_int(points)
+        if delta is None:
+            raise ValueError(f"puan sayı olmalı: {points!r}")
+        if delta == 0:
+            raise ValueError("puan 0 olamaz (eklemek için pozitif, düşmek için negatif yaz)")
+        if abs(delta) > 1000:
+            raise ValueError(f"puan tek seferde en fazla 1000 olabilir: {delta}")
+        res = self._post("/agent/loyalty/adjust", {"member_id": customer_id, "delta": delta,
+                                                  "reason": reason},
+                         idempotency_key)
+        return {"customer_id": res.get("member_id", customer_id), "name": None,
+                "old_points": _as_int(res.get("points_before")) or 0,
+                "points": _as_int(res.get("points_after")) or 0, "delta": delta, "reason": reason}
 
     def ads_action(self, campaign_id: str, action: str,
                    delta_pct: int | None = None,
-                   idempotency_key: str | None = None) -> dict[str, Any]:
-        raise ValueError("KEDD reklam işlemi henüz bağlı değil.")
+                   idempotency_key: str | None = None,
+                   reason: str | None = None) -> dict[str, Any]:
+        if self._key_id == "demo":
+            # Ads stay refused on the demo key, before any network call.
+            raise ValueError("Demo işletmede reklam işlemi kapalı.")
+        if action not in ("pause", "resume", "increase_budget", "decrease_budget"):
+            raise ValueError(f"reklam işlemi anlaşılmadı: {action!r} "
+                             "(pause | resume | increase_budget | decrease_budget)")
+        if action in ("increase_budget", "decrease_budget"):
+            if _as_int(delta_pct) is None:
+                raise ValueError("bütçe değişimi için delta_pct gerekli (1..20)")
+            if abs(_as_int(delta_pct) or 0) > 20:  # checked before any network call
+                raise ValueError(f"bütçe tek seferde en fazla %20 değişebilir: {delta_pct}")
+        perf = {c["id"]: c for c in self.ads_performance(7).get("campaigns") or []}
+        camp = perf.get(campaign_id)
+        if camp is None:
+            raise ValueError(f"Reklam bulunamadı: {campaign_id}")
+        why = (reason or "Çırak planı (sahibi onayladı)").strip()[:200]
+        if action in ("pause", "resume"):
+            res = self._post("/agent/ads/action", {"campaign_id": campaign_id, "action": action,
+                                                  "reason": why}, idempotency_key)
+            status = {"pause": "paused", "resume": "active"}[action]
+            after = self._f(res.get("budget_after"))
+            budget = camp.get("daily_budget") if after is None else after
+        else:
+            if camp.get("status") != "active":
+                raise ValueError(f"Duraklatılmış kampanyanın bütçesi değiştirilemez: {camp['name']}")
+            old = camp.get("daily_budget")
+            if not isinstance(old, (int, float)) or isinstance(old, bool):
+                raise ValueError(f"kampanyanın bütçe bilgisi alınamadı: {camp['name']}")
+            new = round(old * (1 + (_as_int(delta_pct) or 0) / 100
+                                 * (1 if action == "increase_budget" else -1)), 2)
+            res = self._post("/agent/ads/action", {"campaign_id": campaign_id,
+                                                  "action": "set_budget", "budget": new,
+                                                  "reason": why}, idempotency_key)
+            after = self._f(res.get("budget_after"))
+            status, budget = camp.get("status", ""), new if after is None else after
+        return {"id": res.get("campaign_id", campaign_id), "name": camp["name"], "platform": None,
+                "status": status, "daily_budget": budget,
+                "spend": camp.get("spend"), "impressions": camp.get("impressions"),
+                "clicks": camp.get("clicks"), "results": camp.get("results")}
 
     def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
                             publish_at: str | None = None,
