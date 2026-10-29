@@ -13,3 +13,17 @@ _OFFLINE = {
 }
 for _k, _v in _OFFLINE.items():
     os.environ[_k] = _v
+
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+
+from app.tools.backend import KeddBackend  # noqa: E402  (env above is pinned first)
+
+REAL_UNUSED_TIMESTAMP = KeddBackend._unused_timestamp
+
+
+@pytest.fixture(autouse=True)
+def _no_replay_wait(monkeypatch):
+    # Fake gateways have no replay guard; skip the real one-second wait (tested on its own).
+    monkeypatch.setattr(KeddBackend, "_unused_timestamp", lambda self, signed: str(int(time.time())))

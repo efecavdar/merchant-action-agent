@@ -1225,3 +1225,19 @@ def test_t14_mock_scheduling_and_dry_run(tmp_path):
     n = len(b.social_posts)
     r3 = b.publish_social_post("önizleme", "/tmp/x.png", ["instagram"], dry_run=True)
     assert r3["status"] == "preview" and len(b.social_posts) == n  # dry run stores nothing
+
+
+def test_identical_reads_in_one_second_never_reuse_a_signature(monkeypatch):
+    # The gateway's replay guard refuses a repeated signature: the client must wait for a fresh second.
+    import app.tools.backend as backend_mod
+    clock = iter([100.0, 100.0, 100.2, 100.6, 101.0, 101.0])
+    monkeypatch.setattr(backend_mod.time, "time", lambda: next(clock))
+    monkeypatch.setattr(backend_mod.time, "sleep", lambda s: None)
+    from tests.conftest import REAL_UNUSED_TIMESTAMP
+    monkeypatch.setattr(KeddBackend, "_unused_timestamp", REAL_UNUSED_TIMESTAMP)
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905000000000")
+    first = kb._headers("GET", "/agent/catalog", "")
+    second = kb._headers("GET", "/agent/catalog", "")
+    assert first["X-Agent-Timestamp"] == "100" and second["X-Agent-Timestamp"] == "101"
+    assert first["X-Agent-Signature"] != second["X-Agent-Signature"]
+    assert "_recent" not in pickle.loads(pickle.dumps(kb)).__dict__

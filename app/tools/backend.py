@@ -990,7 +990,8 @@ class KeddBackend:
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state.pop("_s", None)       # a requests.Session cannot be pickled; recreated on load
-        state.pop("_secret", None)  # never persist the HMAC secret with a session; re-read from config on load
+        state.pop("_secret", None)
+        state.pop("_recent", None)  # never persist the HMAC secret with a session; re-read from config on load
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -1004,10 +1005,21 @@ class KeddBackend:
         secret = settings.kedd_demo_secret if key_id == "demo" else settings.kedd_agent_secret
         self._secret = secret.encode()
 
+    def _unused_timestamp(self, signed: tuple[str, ...]) -> str:
+        # The gateway rejects any signature it has already seen (replay guard), and two identical reads in
+        # the same second sign identically. Wait for the next second instead of being refused.
+        while True:
+            ts = str(int(time.time()))
+            recent = {r for r in getattr(self, "_recent", set()) if r[0] == ts}
+            if (ts, *signed) not in recent:
+                self._recent = recent | {(ts, *signed)}
+                return ts
+            time.sleep(0.05)
+
     def _headers(self, method: str, path: str, body: str, idempotency_key: str = "") -> dict[str, str]:
         # Phone and Idempotency-Key are inside the signature: a captured request cannot be replayed
         # for another merchant or under another key (gateway K1.2; the old format is rejected).
-        ts = str(int(time.time()))
+        ts = self._unused_timestamp((method, path, idempotency_key, body))
         msg = f"{ts}.{method}.{path}.{self._phone}.{idempotency_key}.{body}".encode()
         sig = hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
         headers = {"X-Agent-Phone": self._phone, "X-Agent-Timestamp": ts, "X-Agent-Signature": sig,
