@@ -8,6 +8,8 @@ names/descriptions) is always Turkish and never goes through this module.
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
+from typing import Any
 
 TR = "tr"
 EN = "en"
@@ -141,6 +143,58 @@ STRINGS: dict[str, dict[str, str]] = {
     "fact.appt_cancel": {"tr": "❌ Randevu iptal: {base}", "en": "❌ Appointment cancelled: {base}"},
     # -- brief.py -----------------------------------------------------------------
     "brief.greeting": {"tr": "Günaydın ☀️ ", "en": "Good morning ☀️ "},
+    # -- executor progress lines (facts only: numbers, names, dates from the step record) --
+    "progress.start": {"tr": "▶️ Başlıyorum — {n} {unit}", "en": "▶️ Starting — {n} {unit}"},
+    "progress.step_one": {"tr": "adım", "en": "step"},
+    "progress.step_many": {"tr": "adım", "en": "steps"},
+    "progress.item_added": {"tr": "✅ {i}/{n} Ürün eklendi: {name} — {price} ₺",
+                            "en": "✅ {i}/{n} Item added: {name} — {price} ₺"},
+    "progress.service_added": {"tr": "✅ {i}/{n} Hizmet eklendi: {name} — {price} ₺",
+                               "en": "✅ {i}/{n} Service added: {name} — {price} ₺"},
+    "progress.discount": {"tr": "✅ {i}/{n} İndirim planlandı: %{p}, {dates}",
+                          "en": "✅ {i}/{n} Discount created: {p}%, {dates}"},
+    "progress.visual": {"tr": "✅ {i}/{n} Kampanya görseli hazır",
+                            "en": "✅ {i}/{n} Campaign visual ready"},
+    "progress.campaign": {"tr": "✅ {i}/{n} Kampanya: {k} kişiye gitti",
+                          "en": "✅ {i}/{n} Campaign: sent to {k} people"},
+    "progress.post_scheduled": {"tr": "✅ {i}/{n} {plats}: {day} {hm}{suffix} yayında",
+                                "en": "✅ {i}/{n} {plats}: going live {day} at {hm}"},
+    "progress.post_now": {"tr": "✅ {i}/{n} {plats}: paylaşıldı", "en": "✅ {i}/{n} {plats}: published"},
+    "progress.appt_created": {"tr": "✅ {i}/{n} Randevu oluşturuldu: {when}",
+                              "en": "✅ {i}/{n} Appointment created: {when}"},
+    "progress.appt_moved": {"tr": "✅ {i}/{n} Randevu taşındı: {when}",
+                            "en": "✅ {i}/{n} Appointment moved: {when}"},
+    "progress.appt_cancelled": {"tr": "✅ {i}/{n} Randevu iptal edildi",
+                                "en": "✅ {i}/{n} Appointment cancelled"},
+    "progress.bulk": {"tr": "✅ {i}/{n} Toplu fiyat: {k} {unit} güncellendi",
+                      "en": "✅ {i}/{n} Bulk prices: {k} {unit} updated"},
+    "progress.loyalty": {"tr": "✅ {i}/{n} Puan: {delta} (toplam {total})",
+                         "en": "✅ {i}/{n} Points: {delta} (total {total})"},
+    "progress.ad": {"tr": "✅ {i}/{n} Reklam güncellendi", "en": "✅ {i}/{n} Ad updated"},
+    "progress.failed": {"tr": "⛔ {i}/{n} {verb}{msg}{stop}", "en": "⛔ {i}/{n} {verb}{msg}{stop}"},
+    "progress.failed_msg": {"tr": ": {msg}", "en": ": {msg}"},
+    "progress.failed_stop": {"tr": " — kalan adımları durdurdum",
+                                 "en": " — I stopped the remaining steps"},
+    "progress.fail.add_catalog_item": {"tr": "Kataloga eklenemedi", "en": "Couldn't add to catalog"},
+    "progress.fail.create_discount": {"tr": "İndirim yapılamadı", "en": "Couldn't create the discount"},
+    "progress.fail.generate_visual": {"tr": "Görsel üretilemedi", "en": "Couldn't generate the visual"},
+    "progress.fail.send_campaign": {"tr": "Kampanya gönderilemedi", "en": "Couldn't send the campaign"},
+    "progress.fail.publish_social_post": {"tr": "Gönderi paylaşılamadı",
+                                              "en": "Couldn't publish the post"},
+    "progress.fail.create_appointment": {"tr": "Randevu oluşturulamadı",
+                                         "en": "Couldn't create the appointment"},
+    "progress.fail.reschedule_appointment": {"tr": "Randevu taşınamadı",
+                                             "en": "Couldn't move the appointment"},
+    "progress.fail.cancel_appointment": {"tr": "Randevu iptal edilemedi",
+                                         "en": "Couldn't cancel the appointment"},
+    "progress.fail.apply_bulk_price": {"tr": "Toplu fiyat güncellenemedi", "en": "Couldn't update prices"},
+    "progress.fail.adjust_loyalty": {"tr": "Puan güncellenemedi", "en": "Couldn't update points"},
+    "progress.fail.ads_action": {"tr": "Reklam güncellenemedi", "en": "Couldn't update the ad"},
+    "progress.today": {"tr": "bugün", "en": "today"},
+    "progress.tomorrow": {"tr": "yarın", "en": "tomorrow"},
+    # -- core.py: KEDD panel note appended to the final report ------------------------
+    "kedd.panel_note": {"tr": "🔔 Hepsi KEDD panelinde bildirimlerde.",
+                        "en": "🔔 It's all in the KEDD panel notifications."},
 }
 
 
@@ -152,6 +206,156 @@ def t(key: str, lang: str = TR, default: str | None = None) -> str:
             return default
         raise KeyError(key)
     return entry.get(lang) or entry[TR]
+
+
+# --------------------------------------------------------------------------- #
+# Execution progress lines. Rendered from the step record's facts only (action
+# type, numbers, names, dates) — never model prose — so they are safe to show
+# live on every channel. render_progress returns "" for events the owner need
+# not see (skipped steps are already covered by the failed line's suffix).
+# --------------------------------------------------------------------------- #
+
+_TR_MONTHS = ("", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
+_EN_MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_TR_TIME_SUFFIX = {"0": "'da", "1": "'de", "2": "'de", "3": "'te", "4": "'de", "5": "'te",
+                   "6": "'da", "7": "'de", "8": "'de", "9": "'da"}  # "10:00'da", "14:05'te"
+_WS_RE = re.compile(r"\s+")
+_PHONE_RE = re.compile(r"\d{10,}")
+_NAME_CHARS = 60
+_MSG_CHARS = 100
+
+
+def _clean(text: Any, max_chars: int) -> str:
+    """One display-safe line: whitespace collapsed, long digit runs masked (never a phone
+    number in the UI), WhatsApp markup stripped, truncated."""
+    s = _WS_RE.sub(" ", str(text or "")).strip()
+    s = _PHONE_RE.sub("‹tel›", s).replace("*", "").replace("_", "").replace("~", "")
+    return s if len(s) <= max_chars else s[:max_chars - 1].rstrip() + "…"
+
+
+def _when(iso: Any) -> str:
+    """2026-10-31T15:00 → 31.10 15:00 (unparseable values are shown as-is)."""
+    s = str(iso or "?")
+    return f"{s[8:10]}.{s[5:7]} {s[11:16]}" if len(s) >= 16 and s[10] == "T" else s
+
+
+def _day_month(iso: Any, lang: str) -> str:
+    """2026-11-01 → "1 Kas" / "Nov 1" (unparseable values are shown as-is)."""
+    try:
+        _y, m, d = str(iso)[:10].split("-")
+        mon = (_TR_MONTHS if lang != EN else _EN_MONTHS)[int(m)]
+        day = int(d)
+    except (ValueError, IndexError):
+        return str(iso)
+    return f"{day} {mon}" if lang != EN else f"{mon} {day}"
+
+
+def _date_range(starts: Any, ends: Any, lang: str) -> str:
+    """"2026-11-01".."2026-11-02" → "1–2 Kas" / "Nov 1–2"; other shapes stay explicit."""
+    s, e = str(starts or ""), str(ends or "")
+    if len(s) >= 10 and len(e) >= 10 and s[:7] == e[:7]:
+        try:
+            d1, d2, m = int(s[8:10]), int(e[8:10]), int(s[5:7])
+            mon = (_TR_MONTHS if lang != EN else _EN_MONTHS)[m]
+            return f"{d1}–{d2} {mon}" if lang != EN else f"{mon} {d1}–{d2}"
+        except (ValueError, IndexError):
+            pass
+    return f"{_day_month(s, lang)}–{_day_month(e, lang)}"
+
+
+def _money(value: Any) -> str:
+    try:
+        return f"{float(value):,.0f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _relative_day(iso: Any, today: str | None, lang: str) -> str:
+    """ISO date → "bugün"/"yarın" (or "today"/"tomorrow") when it matches `today`, else "5 Kas"."""
+    s = str(iso or "")[:10]
+    if today:
+        try:
+            d, base = date.fromisoformat(s), date.fromisoformat(today[:10])
+            if d == base:
+                return t("progress.today", lang)
+            if d == base + timedelta(days=1):
+                return t("progress.tomorrow", lang)
+        except ValueError:
+            pass
+    return _day_month(s, lang)
+
+
+def _failed_line(i: int, n: int, step: dict[str, Any], lang: str) -> str:
+    verb = t(f"progress.fail.{step.get('action')}", lang, str(step.get("action")))
+    raw = step.get("result")
+    s = raw if isinstance(raw, str) else str(raw or "")
+    head, sep, tail = s.partition(": ")
+    # Strip the "ValueError: " style prefix the executor prepends; keep anything else verbatim.
+    msg = _clean(tail if sep and re.fullmatch(r"[A-Za-z_][\w.]*", head) else s, _MSG_CHARS)
+    msg_part = t("progress.failed_msg", lang).format(msg=msg) if msg else ""
+    stop = t("progress.failed_stop", lang) if i < n else ""
+    return t("progress.failed", lang).format(i=i, n=n, verb=verb, msg=msg_part, stop=stop)
+
+
+def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
+                    lang: str = TR, today: str | None = None) -> str:
+    """One owner-facing progress line for an executor event, or "" when silent.
+
+    `today` is an ISO date ("YYYY-MM-DD") used only to say "bugün/yarın".
+    """
+    if event == "start":
+        unit = t("progress.step_one" if n == 1 else "progress.step_many", lang)
+        return t("progress.start", lang).format(n=n, unit=unit)
+    if event == "failed":
+        return _failed_line(i, n, step or {}, lang)
+    if event != "ok" or not step:
+        return ""
+    r = step.get("result") if isinstance(step.get("result"), dict) else {}
+    head = {"i": i, "n": n}
+    kind = step.get("action")
+    if kind == "add_catalog_item":
+        key = "progress.service_added" if r.get("type") == "service" else "progress.item_added"
+        return t(key, lang).format(**head, name=_clean(r.get("name"), _NAME_CHARS),
+                                   price=_money(r.get("price")))
+    if kind == "create_discount":
+        return t("progress.discount", lang).format(
+            **head, p=r.get("percent"), dates=_date_range(r.get("starts"), r.get("ends"), lang))
+    if kind == "generate_visual":
+        return t("progress.visual", lang).format(**head)
+    if kind == "send_campaign":
+        k = r.get("recipients")
+        return t("progress.campaign", lang).format(**head, k="?" if k is None else k)
+    if kind == "publish_social_post":
+        plats = ", ".join(str(p)[:1].upper() + str(p)[1:] for p in (r.get("platforms") or [])) or "?"
+        sched = str(r.get("scheduled_for") or "")
+        hm = sched[11:16] if len(sched) >= 16 and sched[10] in "T " else ""
+        if not sched:
+            return t("progress.post_now", lang).format(**head, plats=plats)
+        suffix = _TR_TIME_SUFFIX.get(hm[-1:], "") if lang != EN else ""
+        line = t("progress.post_scheduled", lang).format(
+            **head, plats=plats, day=_relative_day(sched, today, lang), hm=hm, suffix=suffix)
+        return " ".join(line.split())
+    if kind == "create_appointment":
+        return t("progress.appt_created", lang).format(**head, when=_when(r.get("starts")))
+    if kind == "reschedule_appointment":
+        return t("progress.appt_moved", lang).format(**head, when=_when(r.get("starts")))
+    if kind == "cancel_appointment":
+        return t("progress.appt_cancelled", lang).format(**head)
+    if kind == "apply_bulk_price":
+        k = r.get("updated")
+        unit = t("card.item_one" if k == 1 else "card.item_many", lang)
+        return t("progress.bulk", lang).format(**head, k="?" if k is None else k, unit=unit)
+    if kind == "adjust_loyalty":
+        try:
+            delta = f"{int(r.get('delta')):+d}"  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            delta = str(r.get("delta"))
+        total = r.get("points")
+        return t("progress.loyalty", lang).format(**head, delta=delta,
+                                                 total="?" if total is None else total)
+    if kind == "ads_action":
+        return t("progress.ad", lang).format(**head)
+    return f"✅ {i}/{n} {kind}"
 
 
 # --------------------------------------------------------------------------- #

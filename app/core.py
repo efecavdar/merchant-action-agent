@@ -18,12 +18,13 @@ import logging
 import time
 import uuid
 from dataclasses import MISSING, dataclass, field, fields
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
 from . import agent, approval, executor, i18n, pipeline, report
 from .config import settings
-from .tools.backend import Backend, get_backend
+from .tools.backend import Backend, KeddBackend, get_backend
 
 log = logging.getLogger(__name__)
 
@@ -287,7 +288,15 @@ def _execute_pending(session: Session, notify: Notify,
     notify(i18n.t("notify.approved", lang))
     backend = session.get_backend()
     run_dir = Path(p["run_dir"])
-    steps = executor.execute(p["proposal"], p["ctx"], backend, out_dir=run_dir)
+    world_today = getattr(backend, "today", None)
+    today_iso = world_today.isoformat() if isinstance(world_today, date) else date.today().isoformat()
+
+    def _announce(event: str, i: int, n: int, step: dict[str, Any] | None) -> None:
+        line = i18n.render_progress(event, i, n, step, lang, today=today_iso)
+        if line:
+            notify(line)
+
+    steps = executor.execute(p["proposal"], p["ctx"], backend, out_dir=run_dir, on_step=_announce)
     # From here on things HAVE happened. A failing report must never turn into "nothing was done".
     try:
         rep = report.build_report(steps, backend)
@@ -296,6 +305,8 @@ def _execute_pending(session: Session, notify: Notify,
     except Exception:  # noqa: BLE001
         log.exception("report failed after execution; falling back to the step list")
         summary = _plain_summary(steps, lang)
+    if isinstance(backend, KeddBackend):
+        summary += "\n" + i18n.t("kedd.panel_note", lang)
     failed = [s for s in steps if s["status"] != "ok"]
     if failed:
         summary += i18n.t("report.failed", lang).format(err=str(failed[0]["result"])[:200])

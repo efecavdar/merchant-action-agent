@@ -70,6 +70,8 @@ KEDD_DEMO_PHONE = "kedd-demo"
 CAP_APPROVED_HOUR_MAX = 3
 KEDD_STATE_CACHE_S = 10
 KEDD_STATE_TIMEOUT_S = 10
+# Live progress (task 25): last rendered status lines per session for /api/progress.
+PROGRESS_KEEP = 50
 
 _KEDD_REFUSAL = "Bu demo yalnız örnek işletmelerle çalışır."
 _IP_LIMIT_MSG = ("Hız sınırına takıldın, biraz sonra tekrar dener misin? ⏳ "
@@ -261,6 +263,18 @@ def _reply_json(r: core.Reply) -> dict[str, Any]:
     return {"text": r.text, "image_url": _image_url(r.image_path)}
 
 
+class _TeeList(list):  # type: ignore[type-arg]
+    """A status list that also records every line into the live progress buffer."""
+
+    def __init__(self, on_append):  # type: ignore[no-untyped-def]
+        super().__init__()
+        self._on_append = on_append
+
+    def append(self, line):  # type: ignore[no-untyped-def]
+        super().append(line)
+        self._on_append(line)
+
+
 def _latest_trace_dir(sid: str) -> Path | None:
     """Newest run dir of this session holding a readable tool_log.json, if any."""
     runs = settings.out_dir / "runs" / sid[-4:]
@@ -425,7 +439,25 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
     kedd_cache: dict[str, Any] = {"at": 0.0, "key": "", "data": None}
     glob: Any = daily_counts if daily_counts is not None else {"day": "", "count": 0}
     guard = threading.Lock()
+    # Live progress: sid -> {"seq": int, "lines": [(seq, text)]}. Its own lock on purpose:
+    # the poller must never wait on a session lock that a running request holds.
+    progress: dict[str, dict[str, Any]] = {}
+    progress_guard = threading.Lock()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _progress_append(sid: str, text: str) -> None:
+        with progress_guard:
+            buf = progress.setdefault(sid, {"seq": 0, "lines": []})
+            buf["seq"] += 1
+            buf["lines"].append((buf["seq"], text))
+            del buf["lines"][:-PROGRESS_KEEP]
+
+    def _progress_since(sid: str, since: int) -> tuple[list[tuple[int, str]], int]:
+        with progress_guard:
+            buf = progress.get(sid)
+            if buf is None:
+                return [], 0
+            return [e for e in buf["lines"] if e[0] > since], buf["seq"]
 
     def _ensure(request: Request) -> tuple[str, core.Session | None, bool]:
         sid = request.cookies.get(COOKIE, "")
@@ -433,6 +465,9 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
         with guard:
             if settings.public_demo:
                 _drop_expired(sessions, last_seen, locks, now)
+                with progress_guard:
+                    for dead in [s for s in progress if s not in sessions]:
+                        progress.pop(dead, None)
             if sid and _valid_sid(sid) and sid in sessions:
                 last_seen[sid] = now
                 return sid, sessions[sid], False
@@ -448,6 +483,8 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                     sessions.pop(oldest, None)
                     locks.pop(oldest, None)
                     last_seen.pop(oldest, None)
+                    with progress_guard:
+                        progress.pop(oldest, None)
             is_new = sid not in sessions
             sess = core.Session(sender=f"web-{sid}")
             if settings.public_demo and _demo_creds_ready():
@@ -656,7 +693,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                         return
                     reply.image_path = str(dest)
 
-                status: list[str] = []
+                status: list[str] = _TeeList(lambda line: _progress_append(sid, line))
                 replies: list[core.Reply] = []
                 for name, content in uploads:
                     replies.extend(_safe_handle(session, "image", "", _store(name, content, "image.jpg"),
@@ -754,6 +791,22 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
         if is_new:
             resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
         return resp
+
+    @app.get("/api/progress")
+    async def get_progress(request: Request) -> JSONResponse:
+        # Live status lines while a request runs, polled by the UI. Read-only and model-free
+        # like /api/trace: burns no quota, takes no session lock (the running request holds it),
+        # and returns rendered lines only — never raw records, never another session's lines.
+        sid = request.cookies.get(COOKIE, "")
+        try:
+            since = max(0, int(request.query_params.get("since", "0") or 0))
+        except ValueError:
+            since = 0
+        if not sid or not _valid_sid(sid):
+            return JSONResponse({"lines": [], "next": 0})
+        lines, nxt = _progress_since(sid, since)
+        return JSONResponse({"lines": [{"seq": seq, "text": text} for seq, text in lines],
+                             "next": nxt})
 
     @app.get("/api/kedd-state")
     async def get_kedd_state(request: Request) -> JSONResponse:

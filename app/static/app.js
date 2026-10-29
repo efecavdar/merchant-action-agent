@@ -189,9 +189,45 @@
   // before reading the card, so it must never approve it (a word list here drifted from core.YES).
   let cardArrived = false;
 
+  // Live progress: while a request runs, the session's rendered status lines are polled
+  // so each execution step appears as it happens. Lines already shown live are skipped
+  // when the final response arrives (same strings, same order).
+  let progressSeq = 0, progressTimer = null, progressLive = 0, progressBusy = false;
+
+  async function pollProgress() {
+    if (progressBusy) return;
+    progressBusy = true;
+    try {
+      const r = await fetch("/api/progress?since=" + progressSeq);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (!progressTimer) return;   // the request finished while this poll was in flight
+      for (const l of data.lines || []) {
+        addStatus(l.text || "");
+        progressLive++;
+      }
+      if (typeof data.next === "number") progressSeq = data.next;
+    } catch (e) { /* a missed tick just shows up on the next one */ }
+    finally { progressBusy = false; }
+  }
+
+  function startProgress() {
+    progressLive = 0;
+    if (progressTimer) return;
+    progressTimer = setInterval(pollProgress, 700);
+  }
+
+  function stopProgress() {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+  }
+
   function renderResponse(data) {
     cardArrived = false;
-    for (const s of data.status || []) addStatus(s);
+    for (const s of (data.status || []).slice(progressLive)) addStatus(s);
+    progressLive = 0;
     for (const rep of data.replies || []) {
       addBubble("them", rep.text || "", rep.image_url || null);
       if (isCard(rep.text)) cardArrived = true;
@@ -233,6 +269,7 @@
   async function runMessage({ text, audioBlob, images, pendingEl }) {
     setBusy(true);
     showTyping();
+    startProgress();
     if (pendingEl) {
       pendingEl.classList.remove("pending");   // the grey bubble turns into the sent one
     } else if (text) {
@@ -247,10 +284,13 @@
     for (const f of images) fd.append("images[]", f, f.name);
     if (audioBlob) fd.append("audio", audioBlob, "voice.webm");
     try {
-      renderResponse(await postForm("/api/message", fd));
+      const data = await postForm("/api/message", fd);
+      stopProgress();
+      renderResponse(data);
     } catch (e) {
       addStatus("Bağlantı koptu, tekrar dener misin?");
     } finally {
+      stopProgress();
       hideTyping();
       setBusy(false);
       drainQueue();
@@ -260,13 +300,17 @@
   async function runBrief(pendingEl) {
     setBusy(true);
     showTyping();
+    startProgress();
     if (pendingEl) pendingEl.classList.remove("pending");
     else addBubble("me", "☀️ Sabah özeti", null);
     try {
-      renderResponse(await postForm("/api/brief", null));
+      const data = await postForm("/api/brief", null);
+      stopProgress();
+      renderResponse(data);
     } catch (e) {
       addStatus("Bağlantı koptu, tekrar dener misin?");
     } finally {
+      stopProgress();
       hideTyping();
       setBusy(false);
       drainQueue();
