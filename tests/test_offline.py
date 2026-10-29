@@ -612,25 +612,23 @@ def test_kedd_paths_and_bodies():
     kb.ads_performance(30)
     kb.ads_suggestions()
     kb.apply_bulk_price("pv101")
-    kb.adjust_loyalty("c001", 200, "doğum günü")
-    kb.ads_action("ad2", "increase_budget", 15)
     calls = kb._s.calls
     assert [(m, u) for m, u, _h, _b in calls] == [
         ("POST", "https://kedd.example/agent/catalog/bulk-price/preview"),
         ("GET", "https://kedd.example/agent/ads/performance?days=30"),
         ("GET", "https://kedd.example/agent/ads/suggestions"),
         ("POST", "https://kedd.example/agent/catalog/bulk-price"),
-        ("POST", "https://kedd.example/agent/loyalty/adjust"),
-        ("POST", "https://kedd.example/agent/ads/action"),
     ]
-    assert calls[0][3] == {"item_type": None, "category": "çanta", "item_ids": None,
-                           "mode": "percent", "value": 10}
+    assert calls[0][3] == {"percent": 10, "category": "çanta"}
     assert calls[3][3] == {"preview_id": "pv101"}
-    assert calls[4][3] == {"customer_id": "c001", "points": 200, "reason": "doğum günü"}
-    assert calls[5][3] == {"campaign_id": "ad2", "action": "increase_budget", "delta_pct": 15}
     for _m, _u, headers, _b in calls:
         assert {"X-Agent-Phone", "X-Agent-Timestamp", "X-Agent-Signature"} <= set(headers)
         assert headers["X-Agent-Phone"] == "905321"
+    with pytest.raises(ValueError, match="henüz bağlı değil"):
+        kb.adjust_loyalty("c001", 200, "doğum günü")
+    with pytest.raises(ValueError, match="henüz bağlı değil"):
+        kb.ads_action("ad2", "increase_budget", 15)
+    assert len(kb._s.calls) == 4  # unimplemented writes never touch HTTP
 
 
 # --------------------------------------------------------------------------- #
@@ -800,16 +798,14 @@ def test_kedd_template_paths_and_bodies():
     kb = KeddBackend("https://kedd.example", "s3cret", "905321")
     kb._s = _FakeSession()
     kb.campaign_templates()
-    kb.send_campaign("Kış", "seg9", template="marketing_reengagement_promo_tr",
-                     variables={"2": "FULAR15", "3": "hafta sonu %15"})
-    kb.send_campaign("Eski", "seg9", "merhaba", "")
     calls = kb._s.calls
     assert calls[0][:2] == ("GET", "https://kedd.example/agent/campaign-templates")
-    assert calls[1][:2] == ("POST", "https://kedd.example/agent/campaigns")
-    assert calls[1][3] == {"name": "Kış", "segment_id": "seg9",
-                           "template": "marketing_reengagement_promo_tr",
-                           "variables": {"2": "FULAR15", "3": "hafta sonu %15"}}
-    assert calls[2][3] == {"name": "Eski", "segment_id": "seg9", "message": "merhaba", "visual_path": ""}
+    with pytest.raises(ValueError, match="henüz bağlı değil"):
+        kb.send_campaign("Kış", "seg9", template="marketing_reengagement_promo_tr",
+                         variables={"2": "FULAR15", "3": "hafta sonu %15"})
+    with pytest.raises(ValueError, match="henüz bağlı değil"):
+        kb.send_campaign("Eski", "seg9", "merhaba", "")
+    assert len(calls) == 1  # the gateway has no campaign endpoint yet (K4)
 
 
 def test_list_campaign_templates_tool_and_prompt(tmp_path):

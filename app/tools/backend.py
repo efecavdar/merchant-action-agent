@@ -905,6 +905,12 @@ class KeddBackend:
       * writes carry an Idempotency-Key so a retry can never send a campaign twice
       * customer phone numbers never leave KEDD: segments come back as counts + samples
     The platform itself is proprietary and not included; with BACKEND=mock nothing here runs.
+
+    Shape contract (task 11): every method returns exactly what MockBackend returns for the
+    same method — same keys, same wrapping — mapped from the gateway's real responses.
+    Fields the gateway cannot provide come back as None (scalars) or [] (lists); request
+    arguments the gateway cannot express raise ValueError with a Turkish reason instead of
+    silently changing meaning. No phone number ever passes through.
     """
 
     name = "kedd"
@@ -978,7 +984,9 @@ class KeddBackend:
 
     def _post(self, path: str, body: dict, idempotency_key: str | None = None):
         import requests  # local import keeps mock mode dependency-light
-        payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        # The gateway reads absent and null identically; dropping Nones keeps bodies exact.
+        payload = json.dumps({k: v for k, v in body.items() if v is not None},
+                             ensure_ascii=False, separators=(",", ":"))
         headers = {**self._headers("POST", path, payload),
                    "Idempotency-Key": idempotency_key or str(uuid.uuid4())}
         try:
@@ -989,65 +997,380 @@ class KeddBackend:
             raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()
 
-    def store_profile(self): return self._get("/agent/profile")
-    def list_catalog(self, item_type=None): return self._get("/agent/catalog", type=item_type or "")
-    def find_customers(self, inactive_days=None, min_visits=1, tags=None):
-        return self._post("/agent/segments", {"inactive_days": inactive_days,
-                                              "min_visits": min_visits, "tags": tags})
-    def get_schedule(self, day): return self._get("/agent/schedule", day=day)
-    def find_customer(self, name): return self._get("/agent/customers", name=name)
-    def daily_summary(self, day): return self._get("/agent/daily-summary", day=day)
-    def find_appointments(self, customer_name=None, day=None):
-        return self._get("/agent/appointments", customer_name=customer_name or "", day=day or "")
-    def preview_bulk_price(self, item_type=None, category=None, item_ids=None, mode=None, value=None):
-        return self._post("/agent/catalog/bulk-price/preview",
-                          {"item_type": item_type, "category": category, "item_ids": item_ids,
-                           "mode": mode, "value": value})
-    def ads_performance(self, days=7):
-        return self._get("/agent/ads/performance", days=days)
-    def ads_suggestions(self):
-        return self._get("/agent/ads/suggestions")
-    def campaign_templates(self):
+    # -- shape helpers (all static; gateway truth enters only through these) -- #
+
+    @staticmethod
+    def _f(v: Any) -> float | None:
+        """JSON number → float; anything else (null included) → None."""
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    @staticmethod
+    def _tr(iso: Any) -> datetime | None:
+        """Gateway ISO instant → aware Europe/Istanbul datetime; unparseable → None."""
+        if not isinstance(iso, str) or not iso:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        from zoneinfo import ZoneInfo  # local import keeps mock mode dependency-light
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZoneInfo("Europe/Istanbul"))
+
+    @classmethod
+    def _tr_minutes(cls, iso: Any) -> str | None:
+        dt = cls._tr(iso)
+        return dt.strftime("%Y-%m-%dT%H:%M") if dt else None
+
+    @classmethod
+    def _tr_hhmm(cls, iso: Any) -> str | None:
+        dt = cls._tr(iso)
+        return dt.strftime("%H:%M") if dt else None
+
+    @staticmethod
+    def _map_status(status: Any) -> Any:
+        # The mock calls an upcoming booking "confirmed"; the gateway calls it "pending".
+        return "confirmed" if status == "pending" else status
+
+    @staticmethod
+    def _weekday_name(day: str) -> str:
+        try:
+            return ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")[
+                date.fromisoformat(day).weekday()]
+        except ValueError:
+            return ""
+
+    @classmethod
+    def _day_hours(cls, hours: Any, day: str) -> dict[str, Any]:
+        """Weekly opening-hours blob + ISO day → mock-shaped {"open", "close"} (None when unknown)."""
+        entries = hours.get("hours") if isinstance(hours, dict) else None
+        want = cls._weekday_name(day)
+        if isinstance(entries, list) and want:
+            for h in entries:
+                if isinstance(h, dict) and h.get("dayOfWeek") == want and h.get("isOpen"):
+                    return {"open": h.get("openTime"), "close": h.get("closeTime")}
+        return {"open": None, "close": None}
+
+    @staticmethod
+    def _slots_to_gaps(slots: Any) -> list[dict[str, str]]:
+        """Flat [{time, available}] → merged [{"from", "to"}] ranges over consecutive open slots."""
+        def mins(t: str) -> int | None:
+            try:
+                h, m = t.split(":")
+                v = int(h) * 60 + int(m)
+                return v if 0 <= v < 24 * 60 else None
+            except (ValueError, AttributeError):
+                return None
+        open_mins = sorted({m for s in (slots or []) if isinstance(s, dict) and s.get("available")
+                            for m in [mins(s.get("time", ""))] if m is not None})
+        if not open_mins:
+            return []
+        diffs = [b - a for a, b in zip(open_mins, open_mins[1:]) if b - a > 0]
+        step = min(diffs) if diffs else 30
+        gaps, start, prev = [], open_mins[0], open_mins[0]
+        for m in open_mins[1:] + [None]:
+            if m is not None and m - prev == step:
+                prev = m
+                continue
+            gaps.append({"from": f"{start // 60:02d}:{start % 60:02d}",
+                         "to": f"{min(prev + step, 24 * 60 - 1) // 60:02d}:"
+                               f"{min(prev + step, 24 * 60 - 1) % 60:02d}"})
+            start = prev = m  # type: ignore[assignment]
+        return gaps
+
+    @staticmethod
+    def _date_part(s: Any) -> str:
+        return str(s).split("T")[0]
+
+    @staticmethod
+    def _parse_starts(starts: str) -> datetime:
+        """Agent-side ISO start → naive TR datetime (mirrors MockBackend's Turkish error)."""
+        try:
+            dt = datetime.fromisoformat(starts)
+        except (ValueError, TypeError):
+            raise ValueError(f"Tarih anlaşılmadı: {starts} (örn. 2026-10-28T15:00)") from None
+        if dt.tzinfo is not None:
+            from zoneinfo import ZoneInfo  # local import keeps mock mode dependency-light
+            dt = dt.astimezone(ZoneInfo("Europe/Istanbul")).replace(tzinfo=None)
+        return dt
+
+    def _staff_id(self, staff: str) -> str:
+        """Resolve a staff NAME to the gateway's staff id via the profile's staff list."""
+        res = self._get("/agent/profile")
+        ids = {s.get("name"): s.get("id") for s in res.get("staff") or [] if isinstance(s, dict)}
+        if staff not in ids or not ids[staff]:
+            raise ValueError(f"Çalışan bulunamadı: {staff or '—'}")
+        return ids[staff]
+
+    # -- read tools (mock shapes, gateway truth) -- #
+
+    def store_profile(self) -> dict[str, Any]:
+        res = self._get("/agent/profile")
+        biz = res.get("business") or {}
+        today = res.get("today") or ""
+        try:
+            items = self._get("/agent/catalog").get("items") or []
+            counts = {t: sum(1 for i in items if i.get("type") == t) for t in ("product", "service")}
+        except ValueError:
+            counts = {"product": None, "service": None}  # e.g. the business has no catalog module
+        try:
+            weekday = date.fromisoformat(today).strftime("%A")
+        except ValueError:
+            weekday = ""
+        return {
+            "business_name": biz.get("name") or "",
+            "city": biz.get("city") or "",
+            "sector": biz.get("sector") or "",
+            "channels": ["WhatsApp"],
+            "tone": None,
+            "currency": "TRY",
+            "business_hours": self._day_hours(biz.get("hours"), today),
+            "staff": [s.get("name", "") for s in res.get("staff") or [] if isinstance(s, dict)],
+            "today": today,
+            "weekday": weekday,
+            "customer_count": None,
+            "customers_by_loyalty": None,
+            "catalog_count": counts,
+        }
+
+    def list_catalog(self, item_type: str | None = None) -> list[dict[str, Any]]:
+        res = self._get("/agent/catalog", type=item_type or "")
+        out = []
+        for it in res.get("items") or []:
+            out.append({
+                "id": it.get("id", ""), "type": it.get("type", ""), "name": it.get("name", ""),
+                "price": self._f(it.get("price")), "currency": "TRY",
+                "category": it.get("category") or "", "description": "", "image_path": "",
+                "duration_minutes": it.get("durationMinutes"), "sale_price": self._f(it.get("salePrice")),
+                "sale_starts": None, "sale_ends": None, "active": True, "added": "",
+            })
+        return out
+
+    def find_customers(self, inactive_days: int | None = None, min_visits: int = 1,
+                       tags: list[str] | None = None) -> dict[str, Any]:
+        res = self._post("/agent/segments", {"inactive_days": inactive_days,
+                                             "min_visits": min_visits, "tags": tags})
+        return {
+            "segment_id": res.get("segment_id", ""),
+            "criteria": {"inactive_days": inactive_days, "min_visits": min_visits, "tags": tags},
+            "count": res.get("count", 0),
+            "excluded_no_consent": None,
+            "sample": [{"name": e.get("name", ""), "last_visit": e.get("lastVisit"),
+                        "visit_count": None, "loyalty": None} for e in res.get("examples") or []],
+        }
+
+    def get_schedule(self, day: str) -> dict[str, Any]:
+        res = self._get("/agent/schedule", day=day)
+        try:
+            hours = (self._get("/agent/profile").get("business") or {}).get("hours")
+        except ValueError:
+            hours = None
+        appts = []
+        for a in res.get("appointments") or []:
+            if (a.get("status") or "") == "cancelled":
+                continue
+            sh, eh = self._tr_hhmm(a.get("starts")), self._tr_hhmm(a.get("ends"))
+            appts.append({"time": f"{sh or '?'}–{eh or '?'}", "service": a.get("service") or "?",
+                          "staff": a.get("staff") or "", "customer": a.get("customer") or ""})
+        return {"day": res.get("day", day), "business_hours": self._day_hours(hours, day),
+                "appointments": appts, "free_slots": {"-": self._slots_to_gaps(res.get("slots"))}}
+
+    def find_customer(self, name: str) -> list[dict[str, Any]]:
+        res = self._get("/agent/customers", name=name)
+        return [{"id": m.get("id", ""), "name": m.get("name", ""), "last_visit": m.get("lastVisit"),
+                 "visit_count": m.get("visitCount", 0)} for m in res.get("items") or []]
+
+    def daily_summary(self, day: str) -> dict[str, Any]:
+        res = self._get("/agent/daily-summary", day=day)
+        ap, rev, oc = res.get("appointments") or {}, res.get("revenue") or {}, \
+            res.get("outboundCampaigns") or {}
+        by_status = ap.get("byStatus") or {}
+        return {
+            "day": res.get("day", day),
+            "business": None,
+            "appointments": {"count": ap.get("total", 0), "completed": by_status.get("completed", 0),
+                             "upcoming": by_status.get("pending", 0),
+                             "no_shows": by_status.get("no_show", 0),
+                             "cancelled": by_status.get("cancelled", 0)},
+            "revenue": {"total": self._f(rev.get("paidTotal")) or 0.0, "by_category": None,
+                        "currency": "TRY"},
+            "new_customers": res.get("newCustomers", 0),
+            "new_leads": res.get("newLeads", 0),
+            "unanswered_messages": {"count": res.get("missedWhatsapp", 0), "messages": []},
+            "campaigns_sent": {"count": oc.get("sent", 0), "recipients": None},
+            "catalog_changes": {"count": None, "items": []},
+        }
+
+    def find_appointments(self, customer_name: str | None = None,
+                          day: str | None = None) -> list[dict[str, Any]]:
+        res = self._get("/agent/appointments", customer_name=customer_name or "", day=day or "")
+        return [{"id": a.get("id", ""), "customer": a.get("customer") or "",
+                 "service": a.get("service") or "?", "staff": a.get("staff") or "",
+                 "starts": self._tr_minutes(a.get("starts")), "ends": self._tr_minutes(a.get("ends")),
+                 "status": self._map_status(a.get("status"))} for a in res.get("appointments") or []]
+
+    def preview_bulk_price(self, item_type: str | None = None, category: str | None = None,
+                           item_ids: list[str] | None = None, mode: str | None = None,
+                           value: float | None = None) -> dict[str, Any]:
+        if mode != "percent":
+            raise ValueError("KEDD toplu fiyat yalnız yüzde (percent) ile çalışır")
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"değer sayı olmalı: {value!r}")
+        if item_ids:
+            raise ValueError("KEDD önizleme kalem seçmez; tür/kategori ile daralt")
+        res = self._post("/agent/catalog/bulk-price/preview",
+                         {"percent": value, "type": item_type or None, "category": category or None})
+        return {"preview_id": res.get("preview_id", ""),
+                "items": [{"id": i.get("id", ""), "name": i.get("name", ""),
+                           "old_price": self._f(i.get("before")), "new_price": self._f(i.get("after"))}
+                          for i in res.get("items") or []],
+                "count": res.get("count", 0)}
+
+    def ads_performance(self, days: int = 7) -> dict[str, Any]:
+        if days is None:
+            days = 7
+        try:
+            days = int(days)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(f"gün sayısı anlaşılmadı: {days!r}") from None
+        res = self._get("/agent/ads/performance", days=days)
+        campaigns = []
+        for c in res.get("campaigns") or []:
+            spend = self._f(c.get("spend")) or 0.0
+            results = c.get("results")
+            results = int(results) if isinstance(results, (int, float)) and not isinstance(
+                results, bool) else None
+            campaigns.append({
+                "id": c.get("id", ""), "name": c.get("name", ""), "platform": None,
+                "status": c.get("status", ""), "daily_budget": None, "spend": spend,
+                "impressions": int(c.get("impressions") or 0), "clicks": int(c.get("clicks") or 0),
+                "results": results,
+                "cost_per_result": round(spend / results, 2) if results else None})
+        totals: dict[str, Any] = {
+            "spend": round(sum(x["spend"] for x in campaigns), 2),
+            "impressions": sum(x["impressions"] for x in campaigns),
+            "clicks": sum(x["clicks"] for x in campaigns),
+            "results": None if any(x["results"] is None for x in campaigns)
+            else sum(x["results"] for x in campaigns),
+        }
+        totals["cost_per_result"] = (round(totals["spend"] / totals["results"], 2)
+                                    if totals["results"] else None)
+        return {"campaigns": campaigns, "totals": totals}
+
+    def ads_suggestions(self) -> dict[str, Any]:
+        res = self._get("/agent/ads/suggestions")
+        return {"suggestions": [{"campaign_id": s.get("campaignId"), "kind": None,
+                                 "text": s.get("title", "")} for s in res.get("suggestions") or []]}
+
+    def campaign_templates(self) -> list[dict[str, Any]]:
         res = self._get("/agent/campaign-templates")
         return res if isinstance(res, list) else res.get("templates", [])
-    def add_catalog_item(self, item_type, name, price, category, description, image_path="",
-                         duration_minutes=None, idempotency_key=None):
-        return self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
-                                             "category": category, "description": description,
-                                             "image_path": image_path,
-                                             "duration_minutes": duration_minutes}, idempotency_key)
-    def create_discount(self, name, percent, item_ids, starts, ends, idempotency_key=None):
-        return self._post("/agent/discounts", {"name": name, "percent": percent,
-                                               "item_ids": item_ids, "starts": starts,
-                                               "ends": ends}, idempotency_key)
-    def send_campaign(self, name, segment_id, message="", visual_path="", template=None,
-                      variables=None, idempotency_key=None):
-        if template:   # the gateway fills {{1}} (customer name) itself, per recipient
-            return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
-                                                   "template": template,
-                                                   "variables": variables or {}}, idempotency_key)
-        return self._post("/agent/campaigns", {"name": name, "segment_id": segment_id,
-                                               "message": message,
-                                               "visual_path": visual_path}, idempotency_key)
-    def create_appointment(self, customer_id, item_id, staff, starts, idempotency_key=None):
-        return self._post("/agent/appointments", {"customer_id": customer_id, "item_id": item_id,
-                                                  "staff": staff, "starts": starts}, idempotency_key)
-    def reschedule_appointment(self, appointment_id, starts, staff=None, idempotency_key=None):
-        return self._post("/agent/appointments/reschedule", {"appointment_id": appointment_id,
-                                                              "starts": starts,
-                                                              "staff": staff}, idempotency_key)
-    def cancel_appointment(self, appointment_id, reason="", idempotency_key=None):
-        return self._post("/agent/appointments/cancel", {"appointment_id": appointment_id,
-                                                         "reason": reason}, idempotency_key)
-    def apply_bulk_price(self, preview_id, idempotency_key=None):
-        return self._post("/agent/catalog/bulk-price", {"preview_id": preview_id}, idempotency_key)
-    def adjust_loyalty(self, customer_id, points, reason, idempotency_key=None):
-        return self._post("/agent/loyalty/adjust", {"customer_id": customer_id,
-                                                    "points": points, "reason": reason}, idempotency_key)
-    def ads_action(self, campaign_id, action, delta_pct=None, idempotency_key=None):
-        return self._post("/agent/ads/action", {"campaign_id": campaign_id, "action": action,
-                                                "delta_pct": delta_pct}, idempotency_key)
-    def report(self): return self._get("/agent/report")
+
+    # -- write tools (only called by the executor AFTER human approval) -- #
+
+    def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
+                         description: str, image_path: str = "",
+                         duration_minutes: int | None = None,
+                         idempotency_key: str | None = None) -> dict[str, Any]:
+        # image_path has no gateway field; the item is created without the photo.
+        res = self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
+                                            "category": category, "description": description,
+                                            "duration_minutes": duration_minutes}, idempotency_key)
+        return {"id": res.get("id", ""), "type": res.get("type", item_type),
+                "name": res.get("name", name), "price": self._f(res.get("price", price)) or 0.0,
+                "currency": "TRY", "category": category, "description": description, "image_path": "",
+                "duration_minutes": duration_minutes, "sale_price": None, "sale_starts": None,
+                "sale_ends": None, "active": True, "added": date.today().isoformat()}
+
+    def create_discount(self, name: str, percent: int, item_ids: list[str],
+                        starts: str, ends: str,
+                        idempotency_key: str | None = None) -> dict[str, Any]:
+        # The gateway prices one item per call; a retried approval reuses the same keys.
+        item_ids = list(item_ids or [])
+        start_day, end_day = self._date_part(starts), self._date_part(ends)
+        base_key = idempotency_key or uuid.uuid4().hex
+        sale_prices = {}
+        for i, item_id in enumerate(item_ids):
+            key = base_key if len(item_ids) == 1 else f"{base_key}#{i}"
+            res = self._post("/agent/discounts", {"item_id": item_id, "percent": percent,
+                                                  "start_day": start_day, "end_day": end_day}, key)
+            sale_prices[item_id] = self._f(res.get("sale_price"))
+        digest = hashlib.sha1(f"{start_day}|{end_day}|{','.join(sorted(item_ids))}".encode()
+                              ).hexdigest()[:8]
+        return {"id": f"dsc-{start_day}-{digest}", "name": name, "percent": percent,
+                "item_ids": item_ids, "starts": start_day, "ends": end_day, "sale_prices": sale_prices}
+
+    def send_campaign(self, name: str, segment_id: str, message: str = "",
+                      visual_path: str = "", template: str | None = None,
+                      variables: dict[str, str] | None = None,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        raise ValueError("KEDD'ye kampanya gönderimi henüz bağlı değil.")
+
+    def create_appointment(self, customer_id: str, item_id: str, staff: str,
+                           starts: str, idempotency_key: str | None = None) -> dict[str, Any]:
+        start = self._parse_starts(starts)
+        staff_id = self._staff_id(staff)
+        res = self._post("/agent/appointments", {"customer_id": customer_id, "catalog_item_id": item_id,
+                                                 "date": start.strftime("%Y-%m-%d"),
+                                                 "time": start.strftime("%H:%M"),
+                                                 "staff_id": staff_id}, idempotency_key)
+        dur = res.get("duration_minutes")
+        end = start + timedelta(minutes=dur if isinstance(dur, (int, float)) else 0)
+        return {"id": res.get("id", ""), "customer_id": customer_id, "item_id": item_id,
+                "staff": res.get("staff") or staff,
+                "starts": start.isoformat(timespec="minutes"), "ends": end.isoformat(timespec="minutes"),
+                "status": self._map_status(res.get("status"))}
+
+    def reschedule_appointment(self, appointment_id: str, starts: str,
+                               staff: str | None = None,
+                               idempotency_key: str | None = None) -> dict[str, Any]:
+        if staff is not None:
+            raise ValueError("KEDD randevu taşıma personeli değiştiremez")
+        start = self._parse_starts(starts)
+        res = self._post("/agent/appointments/reschedule", {"appointment_id": appointment_id,
+                                                             "date": start.strftime("%Y-%m-%d"),
+                                                             "time": start.strftime("%H:%M")},
+                         idempotency_key)
+        dur = res.get("duration_minutes")
+        end = start + timedelta(minutes=dur if isinstance(dur, (int, float)) else 0)
+        return {"id": res.get("id", appointment_id), "customer_id": None, "item_id": None,
+                "staff": None, "starts": start.isoformat(timespec="minutes"),
+                "ends": end.isoformat(timespec="minutes"), "status": "confirmed"}
+
+    def cancel_appointment(self, appointment_id: str, reason: str = "",
+                           idempotency_key: str | None = None) -> dict[str, Any]:
+        # reason has no gateway field; the cancellation itself is what matters.
+        res = self._post("/agent/appointments/cancel", {"appointment_id": appointment_id},
+                         idempotency_key)
+        return {"id": res.get("id", appointment_id), "customer_id": None, "item_id": None,
+                "staff": None, "starts": None, "ends": None,
+                "status": self._map_status(res.get("status", "cancelled"))}
+
+    def apply_bulk_price(self, preview_id: str,
+                         idempotency_key: str | None = None) -> dict[str, Any]:
+        res = self._post("/agent/catalog/bulk-price", {"preview_id": preview_id}, idempotency_key)
+        return {"preview_id": res.get("preview_id", preview_id), "items": [],
+                "count": res.get("applied", 0)}
+
+    def adjust_loyalty(self, customer_id: str, points: int, reason: str,
+                       idempotency_key: str | None = None) -> dict[str, Any]:
+        raise ValueError("KEDD puan işlemi henüz bağlı değil.")
+
+    def ads_action(self, campaign_id: str, action: str,
+                   delta_pct: int | None = None,
+                   idempotency_key: str | None = None) -> dict[str, Any]:
+        raise ValueError("KEDD reklam işlemi henüz bağlı değil.")
+
+    def report(self) -> dict[str, Any]:
+        self._get("/agent/report")  # usage counters have no mock counterpart; the call only checks liveness
+        try:
+            business = (self._get("/agent/profile").get("business") or {}).get("name")
+        except ValueError:
+            business = None
+        return {"backend": self.name, "business": business, "items_added": [],
+                "active_discounts": [], "campaigns": [], "appointments_changed": [],
+                "engagement_note": None}
 
 
 def get_backend(business: str | None = None, sender: str | None = None) -> Backend:

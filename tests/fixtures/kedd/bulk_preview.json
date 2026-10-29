@@ -1,0 +1,4 @@
+{"preview_id": "pv-fixture-1", "count": 2,
+ "items": [{"id": "item-1", "name": "Saç Kesimi", "before": 450.0, "after": 495.0},
+           {"id": "item-2", "name": "Şampuan", "before": 320, "after": 352}],
+ "excluded_no_price": 1, "expires_at": "2026-10-28T10:15:00.000Z"}

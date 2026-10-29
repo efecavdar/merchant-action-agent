@@ -36,6 +36,7 @@ def test_index_sets_session_cookie(client):
     assert "Çırak" in r.text
     assert "cirak_sid" in (r.cookies or client.cookies)
     assert "Butik" in r.text or "Nar" in r.text or "business" in r.text.lower()
+    assert 'id="badge" class="badge demo">demo<' in r.text
 
 
 def test_message_text_goes_through_core_handle(client, monkeypatch):
@@ -148,4 +149,49 @@ def test_second_request_waits_for_first(cfg, tmp_path, monkeypatch):
     t1.join(timeout=10)
     t2.join(timeout=10)
     assert order == ["first", "second"]
+    assert results["a"].status_code == 200 and results["b"].status_code == 200  # type: ignore[union-attr]
+
+
+def test_responses_carry_business_fields(client, monkeypatch):
+    monkeypatch.setattr(webchan.core, "handle", lambda *a, **k: [core.Reply("ok")])
+    monkeypatch.setattr(webchan, "build_morning_brief", lambda session: [core.Reply("brief")])
+    msg = client.post("/api/message", data={"text": "selam"}).json()
+    assert (msg["business"], msg["business_name"]) == ("butik", "Nar Butik")
+    brief = client.post("/api/brief").json()
+    assert (brief["business"], brief["business_name"]) == ("butik", "Nar Butik")
+    reset = client.post("/api/reset").json()
+    assert (reset["business"], reset["business_name"]) == ("butik", "Nar Butik")
+
+
+def test_different_sessions_do_not_block_each_other(cfg, tmp_path, monkeypatch):
+    cfg("out_dir", tmp_path)
+    app_obj = webchan.create_app()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_handle(session, kind, text="", media_path="", notify=None):
+        if text == "first":
+            entered.set()
+            assert release.wait(timeout=10)
+        return [core.Reply("ok")]
+
+    monkeypatch.setattr(webchan.core, "handle", fake_handle)
+    c1, c2 = TestClient(app_obj), TestClient(app_obj)
+    c1.get("/")                                    # two distinct sessions…
+    c2.get("/")
+    assert c1.cookies.get("cirak_sid") != c2.cookies.get("cirak_sid")
+    results: dict[str, object] = {}
+
+    def _post(client, name, text):
+        results[name] = client.post("/api/message", data={"text": text})
+
+    t1 = threading.Thread(target=_post, args=(c1, "a", "first"))
+    t1.start()
+    assert entered.wait(timeout=10)
+    t2 = threading.Thread(target=_post, args=(c2, "b", "second"))
+    t2.start()
+    t2.join(timeout=10)
+    assert not t2.is_alive()                       # …so the second is not serialized behind the first
+    release.set()
+    t1.join(timeout=10)
     assert results["a"].status_code == 200 and results["b"].status_code == 200  # type: ignore[union-attr]

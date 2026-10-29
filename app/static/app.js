@@ -7,9 +7,14 @@
   const micBtn = document.getElementById("micBtn");
   const resetBtn = document.getElementById("resetBtn");
   const preview = document.getElementById("preview");
-  const businessEl = document.getElementById("business");
+  const businessNameEl = document.getElementById("businessName");
+  const badgeEl = document.getElementById("badge");
+  const lightbox = document.getElementById("lightbox");
+  const lightboxImg = document.getElementById("lightboxImg");
   let picked = [];
   let busy = false;
+  let queued = null;   // at most one: {kind:"message",...} | {kind:"brief"}, each with .el
+  let typingEl = null;
 
   function scrollDown() { chat.scrollTop = chat.scrollHeight; }
 
@@ -22,9 +27,9 @@
     return esc(s).replace(/\*([^*\n]+?)\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
   }
 
-  function addBubble(side, text, imageUrl) {
+  function addBubble(side, text, imageUrl, extraClass) {
     const d = document.createElement("div");
-    d.className = "bubble " + side;
+    d.className = "bubble " + side + (extraClass ? " " + extraClass : "");
     if (imageUrl) {
       const img = document.createElement("img");
       img.src = imageUrl;
@@ -39,6 +44,7 @@
     }
     chat.appendChild(d);
     scrollDown();
+    return d;
   }
 
   function addStatus(text) {
@@ -47,6 +53,140 @@
     d.textContent = text;
     chat.appendChild(d);
     scrollDown();
+  }
+
+  function setBusiness(name, business) {
+    if (name) businessNameEl.textContent = name;
+    const kedd = business === "kedd";
+    badgeEl.textContent = kedd ? "KEDD" : "demo";
+    badgeEl.className = "badge " + (kedd ? "kedd" : "demo");
+  }
+
+  function showTyping() {
+    if (typingEl) return;
+    typingEl = document.createElement("div");
+    typingEl.className = "bubble them typing";
+    typingEl.setAttribute("aria-label", "Çırak yazıyor");
+    const label = document.createElement("span");
+    label.className = "typing-label";
+    label.textContent = "Çırak yazıyor…";
+    const dots = document.createElement("span");
+    dots.className = "dots";
+    dots.innerHTML = "<i></i><i></i><i></i>";
+    typingEl.appendChild(label);
+    typingEl.appendChild(dots);
+    chat.appendChild(typingEl);
+    scrollDown();
+  }
+
+  function hideTyping() {
+    if (typingEl) {
+      typingEl.remove();
+      typingEl = null;
+    }
+  }
+
+  function setBusy(on) {
+    busy = on;
+    sendBtn.classList.toggle("busy", on);
+  }
+
+  async function postForm(url, body) {
+    const r = await fetch(url, { method: "POST", body });
+    if (!r.ok) throw new Error("http " + r.status);
+    return r.json();
+  }
+
+  function renderResponse(data) {
+    for (const s of data.status || []) addStatus(s);
+    for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
+    setBusiness(data.business_name, data.business);
+  }
+
+  function drainQueue() {
+    if (!queued || busy) return;
+    const q = queued;
+    queued = null;
+    if (q.kind === "brief") runBrief(q.el);
+    else runMessage({ text: q.text, audioBlob: q.audioBlob, images: q.images, pendingEl: q.el });
+  }
+
+  // Returns false (after a system line) when the single queue slot is taken.
+  function enqueue(item) {
+    if (queued) {
+      addStatus("Bir önceki isteğini bitiriyorum…");
+      return false;
+    }
+    queued = item;
+    return true;
+  }
+
+  async function runMessage({ text, audioBlob, images, pendingEl }) {
+    setBusy(true);
+    showTyping();
+    if (pendingEl) {
+      pendingEl.classList.remove("pending");   // the grey bubble turns into the sent one
+    } else if (text) {
+      addBubble("me", text, null);
+    } else if (images.length) {
+      addBubble("me", `📷 ${images.length} fotoğraf`, null);
+    } else if (audioBlob) {
+      addBubble("me", "🎙️ Sesli not", null);
+    }
+    const fd = new FormData();
+    if (text) fd.append("text", text);
+    for (const f of images) fd.append("images[]", f, f.name);
+    if (audioBlob) fd.append("audio", audioBlob, "voice.webm");
+    try {
+      renderResponse(await postForm("/api/message", fd));
+    } catch (e) {
+      addStatus("Bağlantı koptu, tekrar dener misin?");
+    } finally {
+      hideTyping();
+      setBusy(false);
+      drainQueue();
+    }
+  }
+
+  async function runBrief(pendingEl) {
+    setBusy(true);
+    showTyping();
+    if (pendingEl) pendingEl.classList.remove("pending");
+    else addBubble("me", "☀️ Sabah özeti", null);
+    try {
+      renderResponse(await postForm("/api/brief", null));
+    } catch (e) {
+      addStatus("Bağlantı koptu, tekrar dener misin?");
+    } finally {
+      hideTyping();
+      setBusy(false);
+      drainQueue();
+    }
+  }
+
+  async function send({ text, audioBlob } = {}) {
+    text = (text ?? textInput.value).trim();
+    const images = [...picked];
+    if (!text && !audioBlob && images.length === 0) return;
+    picked = [];
+    renderPreview();
+    textInput.value = "";
+    if (busy) {
+      const label = text || (images.length ? `📷 ${images.length} fotoğraf` : "🎙️ Sesli not");
+      if (!enqueue({ kind: "message", text, audioBlob, images })) return;
+      queued.el = addBubble("me", label, null, "pending");
+      return;
+    }
+    await runMessage({ text, audioBlob, images, pendingEl: null });
+  }
+
+  async function requestBrief() {
+    if (busy) {
+      if (!enqueue({ kind: "brief" })) return;
+      queued.el = addBubble("me", "☀️ Sabah özeti", null, "pending");
+      return;
+    }
+    await runBrief(null);
   }
 
   function renderPreview() {
@@ -60,39 +200,6 @@
     }
   }
 
-  async function send({ text, audioBlob } = {}) {
-    if (busy) return;
-    text = (text ?? textInput.value).trim();
-    if (!text && !audioBlob && picked.length === 0) return;
-    busy = true;
-    const fd = new FormData();
-    if (text) {
-      fd.append("text", text);
-      addBubble("me", text, null);
-    }
-    for (const f of picked) fd.append("images[]", f, f.name);
-    if (picked.length && !text) addBubble("me", `📷 ${picked.length} fotoğraf`, null);
-    if (audioBlob) {
-      fd.append("audio", audioBlob, "voice.webm");
-      if (!text && !picked.length) addBubble("me", "🎙️ Sesli not", null);
-    }
-    picked = [];
-    renderPreview();
-    textInput.value = "";
-    try {
-      const r = await fetch("/api/message", { method: "POST", body: fd });
-      if (!r.ok) throw new Error("http " + r.status);
-      const data = await r.json();
-      for (const s of data.status || []) addStatus(s);
-      for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
-      if (data.business_name) businessEl.textContent = data.business_name;
-    } catch (e) {
-      addStatus("Bağlantı koptu, tekrar dener misin?");
-    } finally {
-      busy = false;
-    }
-  }
-
   sendBtn.addEventListener("click", () => send());
   textInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") send();
@@ -103,25 +210,14 @@
     fileInput.value = "";
     renderPreview();
   });
-  async function requestBrief() {
-    if (busy) return;
-    busy = true;
-    try {
-      const r = await fetch("/api/brief", { method: "POST" });
-      if (!r.ok) throw new Error("http " + r.status);
-      const data = await r.json();
-      for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
-      if (data.business_name) businessEl.textContent = data.business_name;
-    } catch (e) {
-      addStatus("Bağlantı koptu, tekrar dener misin?");
-    } finally {
-      busy = false;
-    }
-  }
   document.querySelectorAll(".quick button").forEach((b) => {
     b.addEventListener("click", () => {
       if (b.dataset.brief) {
         requestBrief();
+        return;
+      }
+      if (b.dataset.send) {
+        send({ text: b.dataset.send });
         return;
       }
       textInput.value = b.dataset.fill || "";
@@ -130,15 +226,33 @@
   });
   resetBtn.addEventListener("click", async () => {
     if (busy) return;
-    busy = true;
+    setBusy(true);
     try {
-      const r = await fetch("/api/reset", { method: "POST" });
-      const data = await r.json();
+      const data = await postForm("/api/reset", null);
       chat.innerHTML = "";
       for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
-      if (data.business_name) businessEl.textContent = data.business_name;
+      setBusiness(data.business_name, data.business);
     } finally {
-      busy = false;
+      setBusy(false);
+    }
+  });
+
+  // Images in bubbles open full size in a lightbox.
+  chat.addEventListener("click", (e) => {
+    const img = e.target && e.target.closest ? e.target.closest(".bubble img") : null;
+    if (img && img.src) {
+      lightboxImg.src = img.src;
+      lightbox.hidden = false;
+    }
+  });
+  lightbox.addEventListener("click", () => {
+    lightbox.hidden = true;
+    lightboxImg.removeAttribute("src");
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !lightbox.hidden) {
+      lightbox.hidden = true;
+      lightboxImg.removeAttribute("src");
     }
   });
 
@@ -146,7 +260,11 @@
   let recorder = null, chunks = [];
   async function startRec(e) {
     e.preventDefault();
-    if (busy || recorder) return;
+    if (recorder) return;
+    if (busy) {
+      addStatus("Bir önceki isteğini bitiriyorum…");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
@@ -156,7 +274,6 @@
       recorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunks, { type: "audio/webm" });
-        const rec = recorder;
         recorder = null;
         micBtn.classList.remove("rec");
         if (blob.size) send({ text: "", audioBlob: blob });

@@ -13,7 +13,7 @@
       <div class="avatar">Ç</div>
       <div class="titles">
         <div class="name">Çırak</div>
-        <div class="business" id="business">{{BUSINESS}}</div>
+        <div class="business"><span id="businessName">{{BUSINESS}}</span> <span id="badge" class="badge {{BADGE_CLASS}}">{{BADGE}}</span></div>
       </div>
       <button id="resetBtn" class="icon-btn" title="Sıfırla">↺</button>
     </header>
@@ -31,11 +31,12 @@
         <button data-brief="1">☀️ Sabah özeti</button>
         <button data-fill="Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver">Butik demosu</button>
         <button data-fill="Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.">Salon demosu</button>
-        <button data-fill="/salon">/salon</button>
+        <button data-send="/kedd">🔗 KEDD</button>
       </div>
     </footer>
   </div>
 </div>
+<div id="lightbox" class="lightbox" hidden><img id="lightboxImg" alt="Büyütülmüş görsel"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

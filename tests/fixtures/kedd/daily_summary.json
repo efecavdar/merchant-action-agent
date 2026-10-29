@@ -1,0 +1,5 @@
+{"day": "2026-10-28",
+ "appointments": {"total": 6, "byStatus": {"pending": 4, "completed": 1, "cancelled": 1}},
+ "revenue": {"paidTotal": 2450.0, "paidCount": 5},
+ "newCustomers": 2, "newLeads": 1, "missedWhatsapp": 3,
+ "outboundCampaigns": {"sent": 1, "byTrigger": {"manual": 1}}}
