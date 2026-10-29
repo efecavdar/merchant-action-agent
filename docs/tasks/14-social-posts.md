@@ -33,3 +33,6 @@ shows Meta's models producing content that goes out on Meta's channels, with a h
 `python -m pytest -q` green with tests for: validation rules, visual generated before the card (monkeypatched image
 call) and attached to the card reply, generation failure path, executor uses the stored image (not a new one),
 Kedd body shape + idempotency key, mock scheduling.
+
+**Public demo (task 17):** when `settings.public_demo` is on, never call `publish_social_post` on any backend;
+show the visual + caption as a preview. Task 17 wires this; build the action so a `dry_run` flag is easy to pass.

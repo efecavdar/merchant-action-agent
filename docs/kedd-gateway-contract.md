@@ -13,7 +13,11 @@ data, so everything below can be exercised without KEDD: `python -m pytest -q`.
   carries three headers plus `Content-Type: application/json`:
   * `X-Agent-Phone` — the merchant's WhatsApp number in E.164 (`+905…`).
   * `X-Agent-Timestamp` — unix seconds. Requests older or newer than 300 s are rejected.
-  * `X-Agent-Signature` — hex HMAC-SHA256(secret, `"<ts>.<METHOD>.<path?query>.<rawBody>"`).
+  * `X-Agent-Signature` — lowercase hex HMAC-SHA256(secret,
+    `"<ts>.<METHOD>.<path?query>.<X-Agent-Phone>.<Idempotency-Key or empty>.<rawBody>"`).
+  * `X-Agent-Key-Id` (optional) — `main` (default) or `demo`. Selects which secret the signature is checked
+    against. The `demo` key is bound server-side to one phone and one synthetic business, can read, and can only
+    make the reversible writes on an allow-list (no messages to customers, no social posts, no ads changes).
     `path?query` is the request target exactly as sent on the wire (query string included,
     e.g. `/agent/appointments?customer_name=Ay%C5%9Fe&day=2026-10-29`); `rawBody` is the exact
     request bytes (`""` for GET). Comparison is constant-time.
