@@ -635,11 +635,11 @@ def test_kedd_paths_and_bodies():
     for _m, _u, headers, _b in calls:
         assert {"X-Agent-Phone", "X-Agent-Timestamp", "X-Agent-Signature"} <= set(headers)
         assert headers["X-Agent-Phone"] == "905321"
-    with pytest.raises(ValueError, match="henüz bağlı değil"):
-        kb.adjust_loyalty("c001", 200, "doğum günü")
-    with pytest.raises(ValueError, match="henüz bağlı değil"):
-        kb.ads_action("ad2", "increase_budget", 15)
-    assert len(kb._s.calls) == 4  # unimplemented writes never touch HTTP
+    kb.adjust_loyalty("c001", 200, "doğum günü")
+    assert kb._s.calls[-1][:2] == ("POST", "https://kedd.example/agent/loyalty/adjust")
+    assert kb._s.calls[-1][3] == {"member_id": "c001", "delta": 200, "reason": "doğum günü"}
+    with pytest.raises(ValueError, match="bulunamadı"):
+        kb.ads_action("ad2", "pause")  # {"ok": True} carries no campaigns
 
 
 # --------------------------------------------------------------------------- #
@@ -811,12 +811,12 @@ def test_kedd_template_paths_and_bodies():
     kb.campaign_templates()
     calls = kb._s.calls
     assert calls[0][:2] == ("GET", "https://kedd.example/agent/campaign-templates")
-    with pytest.raises(ValueError, match="henüz bağlı değil"):
+    with pytest.raises(ValueError, match="şablon bulunamadı"):
         kb.send_campaign("Kış", "seg9", template="marketing_reengagement_promo_tr",
                          variables={"2": "FULAR15", "3": "hafta sonu %15"})
-    with pytest.raises(ValueError, match="henüz bağlı değil"):
+    with pytest.raises(ValueError, match="şablon ister"):
         kb.send_campaign("Eski", "seg9", "merhaba", "")
-    assert len(calls) == 1  # the gateway has no campaign endpoint yet (K4)
+    assert [c for c in calls if c[0] == "POST"] == []  # failed lookups never post
 
 
 def test_list_campaign_templates_tool_and_prompt(tmp_path):
@@ -946,7 +946,8 @@ def test_t15_card_discount_lists_item_names():
          "starts": "2026-11-01", "ends": "2026-11-02"},
     ]}
     facts = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
-             "items": {"i001": {"id": "i001", "name": "Deri Kemer"}}, "templates": {}}
+             "items": {"i001": {"id": "i001", "name": "Deri Kemer"}}, "templates": {},
+             "campaign_previews": {}, "members": {}}
     card = approval.render_card(prop, MediaContext("x", "text"), {}, facts)
     assert "İpek Fular" in card and "Deri Kemer" in card
     many = {"summary_tr": "özet", "actions": [
@@ -973,7 +974,8 @@ def test_t15_card_visual_attachment_and_prompt():
 
 def test_t15_card_sanitises_third_party_strings():
     facts = {"previews": {}, "customers": {"c1": "Ayşe\nYılmaz\x00*VIP*"}, "campaigns": {},
-             "appointments": {}, "items": {}, "templates": {
+             "appointments": {}, "items": {}, "campaign_previews": {}, "members": {},
+             "templates": {
                  "t": {"name": "t", "body": "Merhaba {{1}}, kodun {{2}}", "variables": [{"number": 2}]}}}
     prop = {"summary_tr": "özet", "actions": [
         {"type": "add_catalog_item", "item_type": "product", "ref": "n1",
@@ -1241,3 +1243,12 @@ def test_identical_reads_in_one_second_never_reuse_a_signature(monkeypatch):
     assert first["X-Agent-Timestamp"] == "100" and second["X-Agent-Timestamp"] == "101"
     assert first["X-Agent-Signature"] != second["X-Agent-Signature"]
     assert "_recent" not in pickle.loads(pickle.dumps(kb)).__dict__
+
+
+def test_template_campaign_cannot_promise_a_visual():
+    errors = validate_proposal({"summary": "s", "actions": [
+        {"type": "generate_visual", "visual_prompt": "fular", "item_refs": []},
+        {"type": "send_campaign", "name": "n", "segment_id": "seg1", "template": "t1", "attach_visual": True},
+    ]}, known_segments={"seg1"}, known_temp_ids=set(), catalog={},
+        known_templates={"t1": {"variables": []}}, requires_template=True)
+    assert any("attach_visual must be false with a template" in e for e in errors)

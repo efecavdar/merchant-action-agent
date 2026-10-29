@@ -1,0 +1,2 @@
+{"dry_run": false, "template": "marketing_reengagement_promo_tr", "segment_id": "seg-9",
+ "recipients": 23, "sent": 21, "skipped": {"no_consent": 2}, "failed": 0, "failed_by_code": {}}

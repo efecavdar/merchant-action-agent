@@ -363,6 +363,10 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             if a.get("attach_visual") and not has_visual:
                 errors.append(f"{where}: attach_visual=true but no generate_visual action before it")
             has_template = bool(a.get("template"))
+            if has_template and a.get("attach_visual"):
+                # Approved WhatsApp templates carry text only: the card must not promise a visual nobody gets.
+                errors.append(f"{where}: attach_visual must be false with a template "
+                              f"(template messages are text-only); keep generate_visual for the owner")
             if has_template and a.get("message"):
                 errors.append(f"{where}: message must be omitted when template is set "
                               f"(the template body is used)")

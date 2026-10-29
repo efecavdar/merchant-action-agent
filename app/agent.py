@@ -149,6 +149,22 @@ TOOLS: list[dict[str, Any]] = [
                     "{{n}} placeholders, variables. {{1}} is always the customer name (filled per "
                     "recipient); the plan only supplies the remaining variables.",
      "parameters": _NO_ARGS},
+    {"type": "function", "name": "preview_campaign",
+     "description": "Dry-run a template campaign over a segment: masked template text plus eligible "
+                    "and skipped counts. REQUIRED: call this before propose_actions whenever the plan "
+                    "contains send_campaign — the approval card is rendered from its result.",
+     "parameters": {"type": "object", "properties": {
+         "segment_id": {"type": "string", "description": "from find_customers"},
+         "template": {"type": "string", "description": "template name from list_campaign_templates"},
+         "variables": {"type": "object",
+                       "description": "template variables by number, e.g. {\"2\": \"FULAR15\"}"}},
+         "required": ["segment_id", "template"], "additionalProperties": False}},
+    {"type": "function", "name": "find_loyalty_member",
+     "description": "Resolve ONE customer by (partial) name to a loyalty member_id with current "
+                    "points. REQUIRED before adjust_loyalty; put the member_id in the action's "
+                    "customer_id.",
+     "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                    "required": ["name"], "additionalProperties": False}},
     {"type": "function", "name": "propose_actions",
      "description": "Submit the final plan for human approval. Call exactly once when done.",
      "parameters": PROPOSAL_SCHEMA},
@@ -219,6 +235,15 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         templates = backend.campaign_templates()
         run.templates.update({t["name"]: t for t in templates})
         return {"templates": templates}
+    if name == "preview_campaign":
+        return backend.preview_campaign(args["segment_id"], args["template"],
+                                        args.get("variables"))
+    if name == "find_loyalty_member":
+        res = backend.find_loyalty_member(args.get("name") or "")
+        # member_id is the customer id (same identity): the existing known_customers
+        # validation then enforces "resolved in this run" for adjust_loyalty.
+        run.customers.update(m["member_id"] for m in res.get("members") or [])
+        return res
     raise KeyError(name)
 
 

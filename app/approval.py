@@ -34,7 +34,7 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
     """What the tools actually returned in this run. Card lines for ids are rendered from these facts and the
     action's own fields — never from model-written labels, so the owner approves what will really run."""
     f: dict[str, Any] = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
-                       "items": {}, "templates": {}}
+                       "items": {}, "templates": {}, "campaign_previews": {}, "members": {}}
     for e in tool_log:
         r = e.get("result")
         if not isinstance(r, dict):
@@ -52,6 +52,12 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
             f["items"].update({i["id"]: i for i in r.get("items") or []})
         elif tool == "list_campaign_templates":
             f["templates"].update({t["name"]: t for t in r.get("templates") or []})
+        elif tool == "preview_campaign":
+            if r.get("segment_id") and r.get("template"):
+                f["campaign_previews"][(r["segment_id"], r["template"])] = r
+        elif tool == "find_loyalty_member":
+            f["members"].update({m["member_id"]: m for m in r.get("members") or []
+                                 if isinstance(m, dict) and m.get("member_id")})
     return f
 
 
@@ -74,8 +80,12 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
     if t == "adjust_loyalty":
         pts = a.get("points")
         sign = f"+{pts}" if isinstance(pts, int) and pts > 0 else f"{pts}"
-        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
         reason = f" ({clean_display(a['reason'])})" if a.get("reason") else ""
+        member = f["members"].get(a.get("customer_id")) or {}
+        old = member.get("points")
+        if member.get("name") and isinstance(old, int) and isinstance(pts, int):
+            return f"⭐ Puan: {clean_display(member['name'])} {old}→{old + pts}{reason}"
+        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
         return f"⭐ Puan: {who} {sign}{reason}"
     if t == "ads_action":
         c = f["campaigns"].get(a.get("campaign_id")) or {}
@@ -153,6 +163,20 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
         elif t == "send_campaign":
             n = segment_counts.get(a.get("segment_id"), "?")
             attach = " 📎 görsel eklenecek" if a.get("attach_visual") else ""
+            pv = facts["campaign_previews"].get((a.get("segment_id"), a.get("template")))
+            if pv and a.get("template"):
+                # Dry-run facts win over the planned counts: real eligible + skipped numbers.
+                rec = pv.get("recipients")
+                head = f"{rec} kişiye gidecek" if isinstance(rec, int) else "müşteriye gidecek"
+                sk = pv.get("skipped") or {}
+                nc, ot = sk.get("no_consent") or 0, sk.get("other") or 0
+                if nc:
+                    head += f", {nc} kişi izinsiz olduğu için atlanacak"
+                if ot:
+                    head += f", {ot} kişi başka nedenle atlanacak"
+                lines.append(f"{ic} WhatsApp: {head}{attach}")
+                lines.append(f"   “{pv.get('template_text', '')}”")
+                continue
             lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj{attach}")
             if a.get("template"):
                 tmpl = facts["templates"].get(a["template"])
