@@ -59,6 +59,7 @@ photos ─► SAM 3.1 ─► crops ─► Muse Spark (vision) ┘               
 | *"Tüm çantalara %10 zam yap"* | bulk price change with a before/after preview on the card (after approval) |
 | *"Ayşe Y.'ye 200 puan ekle, doğum günü"* | loyalty points adjusted (after approval) |
 | *"Reklamlar nasıl gidiyor?"* / *"En kötü reklamı durdur"* | ads performance + suggestions (answer only); pause and budget changes need approval |
+| *"Fularlar için Instagram gönderisi hazırla"* | scheduled social post; the visual is generated before approval so the owner sees exactly what goes out |
 
 ## Design choices
 

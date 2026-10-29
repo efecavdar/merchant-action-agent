@@ -18,8 +18,10 @@ Model notes (mirroring KEDD):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import io
 import json
 import random
 import time
@@ -112,6 +114,16 @@ class Campaign:
     replies: int = 0
     conversions: int = 0
     day: str = ""                       # ISO date the campaign was sent
+
+
+@dataclass
+class SocialPost:
+    id: str
+    caption: str
+    platforms: list[str]
+    image_path: str
+    publish_at: str | None = None   # ISO datetime when scheduled, else published now
+    status: str = "published"       # "published" | "scheduled" | "preview" (dry run)
 
 
 @dataclass
@@ -227,6 +239,9 @@ class Backend(Protocol):
     def adjust_loyalty(self, customer_id: str, points: int, reason: str) -> dict[str, Any]: ...
     def ads_action(self, campaign_id: str, action: str,
                    delta_pct: int | None = None) -> dict[str, Any]: ...
+    def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
+                            publish_at: str | None = None,
+                            dry_run: bool = False) -> dict[str, Any]: ...
     def report(self) -> dict[str, Any]: ...
 
 
@@ -398,7 +413,7 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 4
+    SCHEMA = 5  # 5: social_posts (task 14)
 
     PREVIEW_TTL_S = 15 * 60
 
@@ -436,6 +451,7 @@ class MockBackend:
         )
         self.discounts: list[Discount] = []
         self.campaigns: list[Campaign] = []
+        self.social_posts: list[SocialPost] = []
         self.segments: dict[str, list[str]] = {}
         s_rng = random.Random(seed + 7)   # own stream: summary seeds must not shift the existing ones
         self.revenue_entries, self.leads, self.messages = _seed_summary(
@@ -517,6 +533,7 @@ class MockBackend:
             "appointments": [asdict(a) for a in self.appointments],
             "discounts": [asdict(d) for d in self.discounts],
             "campaigns": [asdict(c) for c in self.campaigns],
+            "social_posts": [asdict(p) for p in self.social_posts],
             "revenue_entries": [asdict(e) for e in self.revenue_entries],
             "leads": [asdict(l) for l in self.leads],
             "messages": [asdict(m) for m in self.messages],
@@ -775,6 +792,18 @@ class MockBackend:
         self.campaigns.append(c)
         return {**asdict(c), "note": "mock backend: messages are NOT sent; engagement is simulated"}
 
+    def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
+                            publish_at: str | None = None,
+                            dry_run: bool = False) -> dict[str, Any]:
+        if dry_run:
+            return {"campaign_id": "", "status": "preview", "scheduled_for": publish_at,
+                    "note": "mock backend: dry run, nothing is stored"}
+        p = SocialPost(self._next_id("sp"), caption, list(platforms), image_path,
+                       publish_at=publish_at, status="scheduled" if publish_at else "published")
+        self.social_posts.append(p)
+        return {"campaign_id": p.id, "status": p.status, "scheduled_for": p.publish_at,
+                "note": "mock backend: social post is simulated, nothing is published"}
+
     def create_appointment(self, customer_id: str, item_id: str, staff: str,
                            starts: str) -> dict[str, Any]:
         """Book a service. Raises ValueError with a Turkish reason when the slot does not work."""
@@ -877,6 +906,7 @@ class MockBackend:
             "items_added": [asdict(i) for i in self.items[self._items_at_start:]],
             "active_discounts": [asdict(d) for d in self.discounts],
             "campaigns": [asdict(c) for c in self.campaigns],
+            "social_posts": [asdict(p) for p in self.social_posts],
             "appointments_changed": self.appointment_changes,
             "engagement_note": "simulated (mock backend)",
         }
@@ -885,6 +915,25 @@ class MockBackend:
 # --------------------------------------------------------------------------- #
 # KEDD adapter (private platform; HTTP only, no KEDD source code here)
 # --------------------------------------------------------------------------- #
+
+SOCIAL_JPG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _jpg_under_limit(raw: bytes, limit: int = SOCIAL_JPG_MAX_BYTES) -> bytes:
+    """Re-encode any image as JPEG under `limit`, shrinking only when needed."""
+    from PIL import Image
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:  # noqa: BLE001 — any undecodable payload is the same user error
+        raise ValueError("Gönderi görseli okunamadı, planı tekrar çalıştırır mısın?") from None
+    for quality, scale in ((85, 1.0), (75, 1.0), (75, 0.75), (65, 0.5), (60, 0.35), (55, 0.25)):
+        frame = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                           Image.LANCZOS) if scale != 1.0 else img
+        buf = io.BytesIO()
+        frame.save(buf, format="JPEG", quality=quality)
+        if len(buf.getvalue()) <= limit:
+            return buf.getvalue()
+    raise ValueError("Görsel 5 MB altına sığmadı, başka bir fotoğraf dener misin?")
 
 # A 409 means the gateway has seen this idempotency key before: the operation may already
 # have run, so it must never be retried automatically. Shown to the owner via the executor.
@@ -1368,6 +1417,25 @@ class KeddBackend:
                    idempotency_key: str | None = None) -> dict[str, Any]:
         raise ValueError("KEDD reklam işlemi henüz bağlı değil.")
 
+    def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
+                            publish_at: str | None = None,
+                            idempotency_key: str | None = None,
+                            dry_run: bool = False) -> dict[str, Any]:
+        if dry_run:
+            return {"campaign_id": "", "status": "preview", "scheduled_for": publish_at, "note": ""}
+        try:
+            image_bytes = Path(image_path).read_bytes()
+        except OSError:
+            raise ValueError("Gönderi görseli okunamadı, planı tekrar çalıştırır mısın?") from None
+        payload = base64.b64encode(_jpg_under_limit(image_bytes)).decode()
+        res = self._post("/agent/social/post",
+                         {"caption": caption, "platforms": list(platforms), "publish_at": publish_at,
+                          "image_base64": payload},
+                         idempotency_key)
+        return {"campaign_id": res.get("id", ""),
+                "status": res.get("status") or ("scheduled" if publish_at else "published"),
+                "scheduled_for": res.get("scheduled_for", publish_at), "note": ""}
+
     def report(self) -> dict[str, Any]:
         self._get("/agent/report")  # usage counters have no mock counterpart; the call only checks liveness
         try:
@@ -1375,8 +1443,8 @@ class KeddBackend:
         except ValueError:
             business = None
         return {"backend": self.name, "business": business, "items_added": [],
-                "active_discounts": [], "campaigns": [], "appointments_changed": [],
-                "engagement_note": None}
+                "active_discounts": [], "campaigns": [], "social_posts": [],
+                "appointments_changed": [], "engagement_note": None}
 
 
 def get_backend(business: str | None = None, sender: str | None = None) -> Backend:

@@ -9,7 +9,8 @@ from .pipeline import MediaContext
 from .tools.backend import render_campaign_template
 
 _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
-         "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌"}
+         "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌",
+         "publish_social_post": "📱"}
 
 _NAME_CHARS = 60   # = the validator's name/variable limit: the owner sees everything a customer gets
 _DESC_CHARS = 120  # catalog descriptions show what will be written, so they get more room
@@ -165,8 +166,15 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                     lines.append(f"   “⚠️ şablon bulunamadı: {a['template']}”")
             else:
                 lines.append(f"   “{a.get('message')}”")
+        elif t == "publish_social_post":
+            plats = ", ".join(p.capitalize() for p in (a.get("platforms") or []))
+            when = f" · {_when(a['publish_at'])}'de paylaşılacak" if a.get("publish_at") else ""
+            lines.append(f"{ic} {plats} gönderisi{when}")
+            lines.append(f"   “{a.get('caption')}”")  # verbatim: exactly what will be published
         elif t in _FACT_TYPES:
             lines.append(_fact_line(t, a, facts))
+    for note in proposal.get("_social_notes") or []:
+        lines.append(f"⚠️ {note}")
     lines += ["", f"Çırak'ın notu: {proposal['summary_tr'].strip()}", "",
                 "Onaylıyor musun? (evet / hayır)"]
     return "\n".join(lines)

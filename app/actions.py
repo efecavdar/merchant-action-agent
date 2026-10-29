@@ -7,7 +7,7 @@ these checks and (b) a human approves it. Business rules live here, in code.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .config import settings
@@ -20,7 +20,10 @@ MAX_CATEGORY_CHARS = 40
 
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
-                "apply_bulk_price", "adjust_loyalty", "ads_action"}
+                "apply_bulk_price", "adjust_loyalty", "ads_action", "publish_social_post"}
+SOCIAL_PLATFORMS = ("instagram", "facebook")
+MAX_CAPTION_CHARS = 2200
+MAX_HASHTAGS = 15
 APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment"}
 ADS_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
 
@@ -69,6 +72,15 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                                                  "{\"2\": \"FULAR15\", \"3\": \"hafta sonu %15\"}; "
                                                  "never \"1\""},
                     "attach_visual": {"type": "boolean"},
+                    # publish_social_post
+                    "caption": {"type": "string",
+                                "description": "post caption, Turkish, <= 2200 chars, <= 15 "
+                                               "hashtags, no URLs or phone numbers"},
+                    "platforms": {"type": "array", "items": {"type": "string"},
+                                  "description": "subset of instagram, facebook"},
+                    "publish_at": {"type": "string",
+                                   "description": "ISO datetime to schedule (optional; "
+                                                  "5 minutes to 30 days out, else publishes now)"},
                     # appointments
                     "customer_id": {"type": "string", "description": "from find_customer (create_appointment)"},
                     "item_ref": {"type": "string", "description": "service id from list_catalog (create_appointment)"},
@@ -125,14 +137,18 @@ _OFFER_WORDS_RE = re.compile(r"\bbedava|\bücretsiz\b(?!\s+kargo)|\byarı\s+fiya
                              re.I)
 
 
+def _contains_phone(text: str) -> bool:
+    return bool(_PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text)
+                or _PHONE_DIGITS_RE.search(re.sub(r"[()\s.-]", "", text)))
+
+
 def _check_no_contacts(where: str, what: str, text: str, errors: list[str]) -> None:
     """Customer-facing text must not smuggle out contact details or payment rails."""
     if _URL_RE.search(text):
         errors.append(f"{where}: {what} must not contain a URL")
     if _EMAIL_RE.search(text):
         errors.append(f"{where}: {what} must not contain an e-mail address")
-    if (_PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text)
-            or _PHONE_DIGITS_RE.search(re.sub(r"[()\s.-]", "", text))):
+    if _contains_phone(text):
         errors.append(f"{where}: {what} must not contain a phone number")
     if _IBAN_RE.search(text) or _IBAN_TR_RE.search(re.sub(r"\s+", "", text)):
         errors.append(f"{where}: {what} must not contain an IBAN")
@@ -382,6 +398,48 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 _check_promised_numbers(where, msg, plan_pcts, plan_prices, errors)
                 if _OFFER_WORDS_RE.search(msg):
                     offer_texts.append((where, msg))
+
+        elif t == "publish_social_post":
+            caption = a.get("caption") or ""
+            if not caption:
+                errors.append(f"{where}: caption is required (what the owner will read on the card)")
+            elif len(caption) > MAX_CAPTION_CHARS:
+                errors.append(f"{where}: caption too long ({len(caption)} > {MAX_CAPTION_CHARS} chars)")
+            else:
+                tags = len(re.findall(r"#\w", caption))
+                if tags > MAX_HASHTAGS:
+                    errors.append(f"{where}: too many hashtags ({tags} > {MAX_HASHTAGS})")
+                if _URL_RE.search(caption):
+                    errors.append(f"{where}: caption must not contain a URL")
+                if _contains_phone(caption):
+                    errors.append(f"{where}: caption must not contain a phone number")
+                _check_promised_numbers(where, caption, plan_pcts, plan_prices, errors)
+            plats = a.get("platforms")
+            if not isinstance(plats, list) or not plats:
+                errors.append(f"{where}: platforms is required "
+                              f"(a non-empty subset of {', '.join(SOCIAL_PLATFORMS)})")
+            else:
+                bad = [p for p in plats if p not in SOCIAL_PLATFORMS]
+                if bad:
+                    errors.append(f"{where}: unknown platforms {bad} "
+                                  f"(allowed: {', '.join(SOCIAL_PLATFORMS)})")
+            if a.get("publish_at"):
+                try:
+                    when = _iso_dt(a["publish_at"])
+                except (ValueError, TypeError):
+                    errors.append(f"{where}: publish_at must be an ISO datetime like 2026-11-01T10:00")
+                else:
+                    now = datetime.now()
+                    if when < now + timedelta(minutes=5):
+                        errors.append(f"{where}: publish_at must be at least 5 minutes in the future")
+                    elif when > now + timedelta(days=30):
+                        errors.append(f"{where}: publish_at must be within 30 days")
+            if not a.get("visual_prompt"):
+                errors.append(f"{where}: visual_prompt is required (the preview is generated pre-approval)")
+            refs = a.get("item_refs") or []
+            bad = [r for r in refs if r not in new_refs and r not in known_temp_ids and r not in catalog]
+            if bad:
+                errors.append(f"{where}: unknown item refs {bad} (add_catalog_item must come first)")
 
         elif t in APPOINTMENT_TYPES:
             if not a.get("label"):
