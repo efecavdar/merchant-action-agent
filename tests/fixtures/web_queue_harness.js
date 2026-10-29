@@ -5,8 +5,8 @@
 const fs = require("fs");
 
 const [appPath, scenario, queuedArg] = process.argv.slice(2, 5);
-const QUEUED_TEXT = queuedArg || (scenario === "hold" ? "evet" : "fiyat ne kadar");
-if (!appPath || !["hold", "pass"].includes(scenario)) {
+const QUEUED_TEXT = queuedArg || (scenario.startsWith("hold") ? "evet" : "fiyat ne kadar");
+if (!appPath || !["hold", "hold-en", "pass"].includes(scenario)) {
   console.error("usage: node web_queue_harness.js <app.js> <hold|pass>");
   process.exit(2);
 }
@@ -43,6 +43,7 @@ global.fetch = () => {
   return Promise.resolve({ ok: true, json: async () => ({ replies: [{ text: "tamam" }], status: [] }) });
 };
 
+const CARD_EN = "*Çırak — for your approval*\n🛍️ Product: Scarf — 850 ₺\n\nApprove? (yes / no)";
 const CARD = "*Çırak — onayına sunuyorum*\n🛍️ Ürün: Fular — 850 ₺\n\n"
   + "Onaylıyor musun? (evet / hayır)";
 
@@ -62,11 +63,11 @@ const CARD = "*Çırak — onayına sunuyorum*\n🛍️ Ürün: Fular — 850 �
   if (byId.textInput.value !== "") return fail("input was not cleared when queueing");
 
   releaseFirst({ ok: true, json: async () => (
-    { replies: [{ text: scenario === "hold" ? CARD : "Fular eklendi." }], status: [],
+    { replies: [{ text: scenario === "hold" ? CARD : scenario === "hold-en" ? CARD_EN : "Fular eklendi." }], status: [],
       business_name: "Nar Butik", business: "butik" }) });
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); // flush the async chain
 
-  if (scenario === "hold") {
+  if (scenario.startsWith("hold")) {
     if (fetchCalls.length !== 1) return fail(`queued approval was auto-sent (${fetchCalls.length} fetches)`);
     if (byId.textInput.value !== QUEUED_TEXT) {
       return fail(`queued text not restored (got ${JSON.stringify(byId.textInput.value)})`);

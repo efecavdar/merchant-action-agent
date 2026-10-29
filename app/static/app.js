@@ -37,8 +37,10 @@
     return esc(s).replace(/\*([^*\n]+?)\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
   }
 
+  // Card titles in every owner language (app/i18n.py "card.title"): the queue-hold guard depends on this.
+  const CARD_MARKERS = ["onayına sunuyorum", "for your approval"];
   function isCard(text) {
-    return text.includes("onayına sunuyorum");
+    return CARD_MARKERS.some((m) => (text || "").includes(m));
   }
 
   // Approval cards render as a real card with one-tap evet/hayır buttons. Everything is
@@ -192,7 +194,7 @@
     for (const s of data.status || []) addStatus(s);
     for (const rep of data.replies || []) {
       addBubble("them", rep.text || "", rep.image_url || null);
-      if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
+      if (isCard(rep.text)) cardArrived = true;
     }
     setBusiness(data.business_name, data.business);
     if (landingReady) {
@@ -424,6 +426,24 @@
     return n.toLowerCase().startsWith("tr") ? "tr" : "en";
   }
 
+  // Quick-prompt chips fill the composer in the page language. The Turkish fills live in
+  // index.html (data-fill); the English versions below swap in when the toggle is EN.
+  const QUICK_EN = new Map([
+    ["Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver",
+     "Add a new silk scarf collection, 850 lira each, 15% off this weekend, tell customers who haven't visited"],
+    ["Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.",
+     "I have free slots tomorrow afternoon, 20% off hair coloring, tell loyal customers. Also add keratin treatment, 90 minutes, 2500 lira."],
+  ]);
+
+  function paintQuick() {
+    for (const b of document.querySelectorAll(".quick button")) {
+      if (b.dataset.fill === undefined) continue;   // brief + /kedd chips carry no fill text
+      if (b.dataset.fillTr === undefined) b.dataset.fillTr = b.dataset.fill;
+      const tr = b.dataset.fillTr;
+      b.dataset.fill = (lang === "en" && QUICK_EN.has(tr)) ? QUICK_EN.get(tr) : tr;
+    }
+  }
+
   function applyLang(next) {
     if (!window.I18N) return;
     lang = next;
@@ -439,6 +459,7 @@
     }
     paintCoverage();
     paintKedd();
+    paintQuick();
   }
 
   function paintCoverage() {

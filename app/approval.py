@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from . import i18n
 from .pipeline import MediaContext
 from .tools.backend import render_campaign_template
 
@@ -67,16 +68,17 @@ def _when(iso: str | None) -> str:
     return f"{s[8:10]}.{s[5:7]} {s[11:16]}" if len(s) >= 16 and s[10] == "T" else s
 
 
-def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
+def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str = "tr") -> str:
     if t == "apply_bulk_price":
         p = f["previews"].get(a.get("preview_id"))
         if not p:
-            return "💸 Toplu fiyat: ⚠️ önizleme bulunamadı"
+            return i18n.t("fact.bulk_nopreview", lang)
         items = p.get("items") or []
         head = ", ".join(f"{clean_display(i['name'])} {i['old_price']:,.0f}→{i['new_price']:,.0f} ₺"
                          for i in items[:3])
-        more = f" (+{len(items) - 3} kalem daha)" if len(items) > 3 else ""
-        return f"💸 Toplu fiyat: {len(items)} kalem — {head}{more}"
+        more = i18n.t("fact.bulk_more", lang).format(k=len(items) - 3) if len(items) > 3 else ""
+        unit = i18n.t("card.item_one" if len(items) == 1 else "card.item_many", lang)
+        return i18n.t("fact.bulk", lang).format(n=len(items), unit=unit, head=head, more=more)
     if t == "adjust_loyalty":
         pts = a.get("points")
         sign = f"+{pts}" if isinstance(pts, int) and pts > 0 else f"{pts}"
@@ -84,9 +86,11 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
         member = f["members"].get(a.get("customer_id")) or {}
         old = member.get("points")
         if member.get("name") and isinstance(old, int) and isinstance(pts, int):
-            return f"⭐ Puan: {clean_display(member['name'])} {old}→{old + pts}{reason}"
-        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
-        return f"⭐ Puan: {who} {sign}{reason}"
+            who, change = clean_display(member["name"]), f"{old}→{old + pts}"
+        else:
+            who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+            change = sign
+        return i18n.t("fact.loyalty", lang).format(who=who, change=change, reason=reason)
     if t == "ads_action":
         c = f["campaigns"].get(a.get("campaign_id")) or {}
         name = clean_display(c.get("name") or a.get("campaign_id"))
@@ -94,22 +98,25 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
         if act in ("increase_budget", "decrease_budget") and isinstance(d, int):
             old = c.get("daily_budget")
             new = None if old is None else round(old * (1 + (d if act == "increase_budget" else -d) / 100))
-            verb = (f"günlük bütçe %{d} {'artacak' if act == 'increase_budget' else 'azalacak'}"
+            verb = (i18n.t("fact.ad_budget_up" if act == "increase_budget" else "fact.ad_budget_down",
+                            lang).format(d=d)
                     + (f" ({old:,.0f}→{new:,.0f} ₺)" if old is not None else ""))
         else:
-            verb = {"pause": "durdurulacak", "resume": "yeniden başlatılacak"}.get(act, str(act))
-        return f"📢 Reklam: {name} — {verb}"
+            verb = {"pause": i18n.t("fact.ad_pause", lang),
+                    "resume": i18n.t("fact.ad_resume", lang)}.get(act, str(act))
+        return i18n.t("fact.ad", lang).format(name=name, verb=verb)
     if t == "create_appointment":
         svc = clean_display((f["items"].get(a.get("item_ref")) or {}).get("name", a.get("item_ref")))
         who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
-        return f"📅 Randevu: {who} — {svc}, {clean_display(a.get('staff'))}, {_when(a.get('starts'))}"
+        return i18n.t("fact.appt", lang).format(who=who, svc=svc, staff=clean_display(a.get("staff")),
+                                               when=_when(a.get("starts")))
     ap = f["appointments"].get(a.get("appointment_id")) or {}
     base = (f"{clean_display(ap.get('customer', '?'))} — {clean_display(ap.get('service', '?'))}, "
             f"{_when(ap.get('starts'))}")
     if t == "reschedule_appointment":
         staff = f", {clean_display(a['staff'])}" if a.get("staff") else ""
-        return f"🔁 Randevu taşınıyor: {base} → {_when(a.get('starts'))}{staff}"
-    return f"❌ Randevu iptal: {base}"
+        return i18n.t("fact.appt_move", lang).format(base=base, when=_when(a.get("starts")), staff=staff)
+    return i18n.t("fact.appt_cancel", lang).format(base=base)
 
 
 _FACT_TYPES = {"apply_bulk_price", "adjust_loyalty", "ads_action", "create_appointment",
@@ -117,9 +124,10 @@ _FACT_TYPES = {"apply_bulk_price", "adjust_loyalty", "ads_action", "create_appoi
 
 
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int],
-                facts: dict[str, Any] | None = None) -> str:
+                facts: dict[str, Any] | None = None, lang: str = "tr") -> str:
     """The text the merchant sees (WhatsApp-style). Action lines first, then the model's note,
-    so the prose cannot frame what is actually about to run."""
+    so the prose cannot frame what is actually about to run. Labels follow `lang`; facts
+    (numbers, names, dates) and customer-facing quotes stay as they are."""
     facts = facts or card_facts([])
     products = {p.temp_id: p for p in ctx.products}
     new_items: dict[str, str] = {}  # temp_id / ref -> display name, for discounts below
@@ -129,11 +137,12 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             if handle:
                 card = products.get(a.get("temp_id") or "")
                 new_items[handle] = a.get("name") or (card.name if card else "?")
-    lines = ["*Çırak — onayına sunuyorum*", ""]
+    marker = i18n.t("card.customer_marker", lang)  # customer quotes stay Turkish, labelled as such
+    lines = [i18n.t("card.title", lang), ""]
     for a in proposal["actions"]:
         t = a["type"]; ic = _ICON.get(t, "•")
         if t == "add_catalog_item":
-            kind = "Hizmet" if a.get("item_type") == "service" else "Ürün"
+            kind = i18n.t("card.service" if a.get("item_type") == "service" else "card.product", lang)
             card = products.get(a.get("temp_id") or "")
             name = clean_display(a.get("name") or (card.name if card else "?"))
             # Same fallbacks the executor writes: explicit fields win, vision fills the gaps.
@@ -154,30 +163,33 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                         for r in refs]
             shown = ", ".join(resolved[:5])
             if len(resolved) > 5:
-                shown += f" +{len(resolved) - 5} kalem"
-            lines.append(f"{ic} İndirim: %{a.get('percent')} ({a.get('starts')} → {a.get('ends')}) — "
-                         f"{shown or f'{len(refs)} kalem'}")
+                unit = i18n.t("card.item_one" if len(resolved) - 5 == 1 else "card.item_many", lang)
+                shown += f" +{len(resolved) - 5} {unit}"
+            unit = i18n.t("card.item_one" if len(refs) == 1 else "card.item_many", lang)
+            lines.append(f"{ic} {i18n.t('card.discount_label', lang)}: %{a.get('percent')} "
+                         f"({a.get('starts')} → {a.get('ends')}) — {shown or f'{len(refs)} {unit}'}")
         elif t == "generate_visual":
             prompt = clean_display(a.get("visual_prompt"), _PROMPT_CHARS)
-            lines.append(f"{ic} Kampanya görseli üretilecek" + (f": “{prompt}”" if prompt else ""))
+            lines.append(f"{ic} {i18n.t('card.visual', lang)}" + (f": “{prompt}”" if prompt else ""))
         elif t == "send_campaign":
             n = segment_counts.get(a.get("segment_id"), "?")
-            attach = " 📎 görsel eklenecek" if a.get("attach_visual") else ""
+            attach = i18n.t("card.attach", lang) if a.get("attach_visual") else ""
             pv = facts["campaign_previews"].get((a.get("segment_id"), a.get("template")))
             if pv and a.get("template"):
                 # Dry-run facts win over the planned counts: real eligible + skipped numbers.
                 rec = pv.get("recipients")
-                head = f"{rec} kişiye gidecek" if isinstance(rec, int) else "müşteriye gidecek"
+                head = (i18n.t("card.going", lang).format(rec=rec) if isinstance(rec, int)
+                        else i18n.t("card.going_unknown", lang))
                 sk = pv.get("skipped") or {}
                 nc, ot = sk.get("no_consent") or 0, sk.get("other") or 0
                 if nc:
-                    head += f", {nc} kişi izinsiz olduğu için atlanacak"
+                    head += i18n.t("card.skip_consent", lang).format(nc=nc)
                 if ot:
-                    head += f", {ot} kişi başka nedenle atlanacak"
+                    head += i18n.t("card.skip_other", lang).format(ot=ot)
                 lines.append(f"{ic} WhatsApp: {head}{attach}")
-                lines.append(f"   “{pv.get('template_text', '')}”")
+                lines.append(f"   “{pv.get('template_text', '')}” {marker}")
                 continue
-            lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj{attach}")
+            lines.append(i18n.t("card.wa_message", lang).format(icon=ic, n=n, attach=attach))
             if a.get("template"):
                 tmpl = facts["templates"].get(a["template"])
                 if tmpl:
@@ -185,22 +197,24 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                                     for k, v in ((a.get("variables") or {}).items())}
                     rendered = render_campaign_template(
                         tmpl["body"], {"1": "‹müşteri adı›", **display_vars})
-                    lines.append(f"   “{rendered}”")
+                    lines.append(f"   “{rendered}” {marker}")
                 else:
-                    lines.append(f"   “⚠️ şablon bulunamadı: {a['template']}”")
+                    missing = i18n.t("card.template_missing", lang).format(name=a["template"])
+                    lines.append(f"   “{missing}”")
             else:
-                lines.append(f"   “{a.get('message')}”")
+                lines.append(f"   “{a.get('message')}” {marker}")
         elif t == "publish_social_post":
             plats = ", ".join(p.capitalize() for p in (a.get("platforms") or []))
-            when = f" · {_when(a['publish_at'])}'de paylaşılacak" if a.get("publish_at") else ""
-            lines.append(f"{ic} {plats} gönderisi{when}")
-            lines.append(f"   “{a.get('caption')}”")  # verbatim: exactly what will be published
+            when = (i18n.t("card.scheduled", lang).format(when=_when(a["publish_at"]))
+                    if a.get("publish_at") else "")
+            lines.append(i18n.t("card.post", lang).format(icon=ic, plats=plats, when=when))
+            lines.append(f"   “{a.get('caption')}” {marker}")  # verbatim: exactly what will be published
         elif t in _FACT_TYPES:
-            lines.append(_fact_line(t, a, facts))
+            lines.append(_fact_line(t, a, facts, lang))
     for note in proposal.get("_social_notes") or []:
         lines.append(f"⚠️ {note}")
-    lines += ["", f"Çırak'ın notu: {proposal['summary_tr'].strip()}", "",
-                "Onaylıyor musun? (evet / hayır)"]
+    lines += ["", i18n.t("card.note", lang).format(note=proposal["summary_tr"].strip()), "",
+              i18n.t("card.approve", lang)]
     return "\n".join(lines)
 
 

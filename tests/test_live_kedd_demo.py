@@ -72,7 +72,7 @@ def _default_routes(**overrides):
     return routes
 
 
-def _fake_plan(ctx, backend, max_revisions=2):
+def _fake_plan(ctx, backend, max_revisions=2, lang="tr"):
     seg = backend.find_customers(inactive_days=60)
     run = SimpleNamespace(turns=1, usage={}, segments={seg["segment_id"]}, answer=None,
                           tool_log=[{"tool": "find_customers", "args": {}, "result": seg}])
@@ -268,7 +268,7 @@ def test_t17_kedd_command_still_refused_in_public_with_demo_creds(pubapp, kedd_s
 
 def test_t17_kedd_down_mid_conversation_keeps_state_and_retries(pubapp, kedd_stub, monkeypatch):
     monkeypatch.setattr(agent, "plan", _fake_plan)
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     c = _client(pubapp)
     r = c.post("/api/message", data={"text": "Fular ekle 850"})
     assert "onayına sunuyorum" in r.json()["replies"][-1]["text"]
@@ -304,7 +304,7 @@ def _approve_cycle(c):
 
 def test_t17_cap_flips_session_to_mock_salon_on_fourth_approval(pubapp, kedd_stub, monkeypatch):
     monkeypatch.setattr(agent, "plan", _fake_plan)
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     c = _client(pubapp)
     for _ in range(3):
         r = _approve_cycle(c)
@@ -322,7 +322,7 @@ def test_t17_cap_flips_session_to_mock_salon_on_fourth_approval(pubapp, kedd_stu
 
 def test_t17_cap_is_per_ip(pubapp, kedd_stub, monkeypatch):
     monkeypatch.setattr(agent, "plan", _fake_plan)
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     a = _client(pubapp)
     b = _client(pubapp)
     b.headers["x-forwarded-for"] = "9.9.9.9"
