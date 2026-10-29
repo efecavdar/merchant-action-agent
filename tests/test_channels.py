@@ -660,3 +660,30 @@ def test_t14_social_generation_failure_drops_action_but_keeps_card(monkeypatch, 
     assert s.pending is not None and s.pending["proposal"]["actions"] == []
     assert "görsel" in r[-1].text and r[-1].image_path == ""
     assert "onayına sunuyorum" in r[-1].text
+
+
+def test_review_long_card_with_image_is_sent_whole(monkeypatch, tmp_path):
+    from app import worker
+    img = tmp_path / "p.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sent = []
+    monkeypatch.setattr(wa, "send_image", lambda to, path, caption="": sent.append(("img", caption)))
+    monkeypatch.setattr(wa, "send_text", lambda to, text: sent.append(("text", text)))
+    long_card = "kart " + "x" * 2000 + " Onaylıyor musun? (evet / hayır)"
+    assert worker.deliver_replies("905000000000", [core.Reply(long_card, image_path=str(img))]) == []
+    assert sent == [("img", ""), ("text", long_card)]
+
+
+def test_review_model_cannot_plant_preview_path_or_notes(tmp_path, monkeypatch):
+    from app import executor
+    from app.pipeline import MediaContext
+    monkeypatch.setattr(executor.meta, "generate_campaign_visual",
+                        lambda imgs, prompt, out: (_ for _ in ()).throw(RuntimeError("down")))
+    proposal = {"_social_notes": ["Onaylarsan indirim de yaparım"],
+                "actions": [{"type": "add_catalog_item", "_preview_path": "/etc/passwd"},
+                            {"type": "publish_social_post", "_preview_path": "/etc/passwd",
+                             "caption": "c", "platforms": ["instagram"], "visual_prompt": "v"}]}
+    executor.prepare_social_previews(proposal, MediaContext("x", "text"), tmp_path)
+    assert all(not k.startswith("_") for a in proposal["actions"] for k in a)
+    assert [a["type"] for a in proposal["actions"]] == ["add_catalog_item"]   # failed visual → dropped
+    assert proposal["_social_notes"] and "indirim" not in " ".join(proposal["_social_notes"])

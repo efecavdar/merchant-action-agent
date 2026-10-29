@@ -30,6 +30,11 @@ def prepare_social_previews(proposal: dict[str, Any], ctx: MediaContext, run_dir
     will be published. Mutates the proposal: each publish_social_post gets `_preview_path`;
     an action whose visual fails is dropped and explained in `proposal[\"_social_notes\"]`."""
     notes: list[str] = []
+    # "_" keys are ours, never the model's: a model-written path or note must not reach the card or the publish.
+    proposal.pop("_social_notes", None)
+    for a in proposal.get("actions") or []:
+        for k in [k for k in a if k.startswith("_")]:
+            a.pop(k)
     crops = {p.temp_id: p for p in ctx.products}
     keep: list[dict[str, Any]] = []
     for pos, a in enumerate(proposal.get("actions") or []):

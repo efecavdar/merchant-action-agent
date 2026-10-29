@@ -18,7 +18,10 @@ def deliver_replies(sender: str, replies: list[core.Reply]) -> list[Exception]:
     errors: list[Exception] = []
     for r in replies:
         try:
-            if r.image_path and Path(r.image_path).exists():
+            if r.image_path and Path(r.image_path).exists() and len(r.text) > wa.MAX_CAPTION:
+                wa.send_image(sender, r.image_path)      # a card longer than a caption must arrive whole
+                wa.send_text(sender, r.text)
+            elif r.image_path and Path(r.image_path).exists():
                 wa.send_image(sender, r.image_path, caption=r.text)
             elif r.text:
                 wa.send_text(sender, r.text)

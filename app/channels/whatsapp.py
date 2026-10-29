@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 MAX_TEXT = 4096
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+MAX_CAPTION = 1024   # WhatsApp image caption limit
 _TOO_BIG_TR = "Medya 16 MB'tan büyük, daha küçük bir dosya dener misin?"
 
 
@@ -169,7 +170,7 @@ def send_image(to: str, path: str | Path, caption: str = "") -> None:
     up.raise_for_status()
     img: dict[str, Any] = {"id": up.json()["id"]}
     if caption:
-        img["caption"] = caption[:1024]
+        img["caption"] = caption[:MAX_CAPTION]
     _post_message({"to": to, "type": "image", "image": img})
 
 
