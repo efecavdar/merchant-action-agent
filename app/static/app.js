@@ -11,6 +11,16 @@
   const badgeEl = document.getElementById("badge");
   const lightbox = document.getElementById("lightbox");
   const lightboxImg = document.getElementById("lightboxImg");
+  const tryLiveBtn = document.getElementById("tryLive");
+  const phoneColEl = document.getElementById("phoneCol");
+  const phoneTimeEl = document.getElementById("phoneTime");
+  const coverageEl = document.getElementById("coverage");
+  const traceTimelineEl = document.getElementById("traceTimeline");
+  const traceEmptyEl = document.getElementById("traceEmpty");
+  const traceModelsEl = document.getElementById("traceModels");
+  const traceMiniEl = document.getElementById("traceMini");
+  const traceMiniEmptyEl = document.getElementById("traceMiniEmpty");
+  const syntheticLineEl = document.getElementById("syntheticLine");
   let picked = [];
   let busy = false;
   let queued = null;   // at most one: {kind:"message",...} | {kind:"brief"}, each with .el
@@ -27,6 +37,77 @@
     return esc(s).replace(/\*([^*\n]+?)\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
   }
 
+  function isCard(text) {
+    return text.includes("onayına sunuyorum");
+  }
+
+  // Approval cards render as a real card with one-tap evet/hayır buttons. Everything is
+  // textContent (tool/model strings must never become HTML).
+  function renderCard(el, text) {
+    const card = document.createElement("div");
+    card.className = "card";
+    let title = "Çırak — onayına sunuyorum", note = "";
+    const rows = [];
+    let current = null;
+    for (const raw of text.split("\n")) {
+      const line = raw.trimEnd();
+      if (!line.trim()) continue;
+      if (line.startsWith("*") && line.endsWith("*") && line.length > 2) {
+        title = line.slice(1, -1);
+        continue;
+      }
+      if (line.startsWith("Çırak'ın notu:")) { note = line; continue; }
+      if (line.includes("Onaylıyor musun?")) continue;
+      if (/^\s/.test(raw)) {
+        if (current) current.sub = current.sub ? current.sub + "\n" + line.trim() : line.trim();
+        continue;
+      }
+      current = { main: line, sub: "" };
+      rows.push(current);
+    }
+    const t = document.createElement("div");
+    t.className = "card-title";
+    t.textContent = title;
+    card.appendChild(t);
+    const list = document.createElement("div");
+    list.className = "card-rows";
+    for (const r of rows) {
+      const d = document.createElement("div");
+      d.className = "card-row";
+      d.textContent = r.main;
+      if (r.sub) {
+        const s = document.createElement("span");
+        s.className = "sub";
+        s.textContent = r.sub;
+        d.appendChild(s);
+      }
+      list.appendChild(d);
+    }
+    card.appendChild(list);
+    if (note) {
+      const n = document.createElement("div");
+      n.className = "card-note";
+      n.textContent = note;
+      card.appendChild(n);
+    }
+    const acts = document.createElement("div");
+    acts.className = "card-actions";
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "approve";
+    ok.textContent = "Evet ✓";
+    ok.addEventListener("click", () => send({ text: "evet" }));
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "reject";
+    no.textContent = "Hayır";
+    no.addEventListener("click", () => send({ text: "hayır" }));
+    acts.appendChild(ok);
+    acts.appendChild(no);
+    card.appendChild(acts);
+    el.appendChild(card);
+  }
+
   function addBubble(side, text, imageUrl, extraClass) {
     const d = document.createElement("div");
     d.className = "bubble " + side + (extraClass ? " " + extraClass : "");
@@ -38,9 +119,13 @@
       d.appendChild(img);
     }
     if (text) {
-      const t = document.createElement("div");
-      t.innerHTML = markup(text);
-      d.appendChild(t);
+      if (side === "them" && isCard(text)) {
+        renderCard(d, text);
+      } else {
+        const t = document.createElement("div");
+        t.innerHTML = markup(text);
+        d.appendChild(t);
+      }
     }
     chat.appendChild(d);
     scrollDown();
@@ -109,6 +194,7 @@
       if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
     }
     setBusiness(data.business_name, data.business);
+    if (landingReady) refreshTrace();
   }
 
   function drainQueue() {
@@ -313,4 +399,169 @@
   micBtn.addEventListener("touchcancel", stopRec);
 
   addBubble("them", "Merhaba, ben Çırak 👋 Ne yapmak istersin? Yaz ya da sesli not bırak.", null);
+
+  /* ---- landing layer: i18n, coverage, trace. Wired on DOMContentLoaded so the chat
+   * core above stays dependency-free; renderResponse refreshes the trace once ready. */
+  let landingReady = false;
+  let lang = "en";
+  let coverageItems = [];
+
+  const STR = () => (window.I18N && (window.I18N[lang] || window.I18N.en)) || {};
+  function t(key) {
+    return STR()[key] || (window.I18N && window.I18N.en && window.I18N.en[key]) || key;
+  }
+
+  function getLang() {
+    try {
+      const s = localStorage.getItem("cirak-lang");
+      if (s === "tr" || s === "en") return s;
+    } catch (e) { /* private mode: fall through to the browser language */ }
+    const n = (typeof navigator !== "undefined" && navigator.language) || "en";
+    return n.toLowerCase().startsWith("tr") ? "tr" : "en";
+  }
+
+  function applyLang(next) {
+    if (!window.I18N) return;
+    lang = next;
+    try { localStorage.setItem("cirak-lang", lang); } catch (e) { /* private mode */ }
+    document.documentElement.lang = lang;
+    document.title = t("meta.title");
+    for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+    for (const el of document.querySelectorAll("[data-i18n-aria]")) {
+      el.setAttribute("aria-label", t(el.dataset.i18nAria));
+    }
+    for (const b of document.querySelectorAll("#langToggle button")) {
+      b.setAttribute("aria-pressed", b.dataset.lang === lang ? "true" : "false");
+    }
+    paintCoverage();
+  }
+
+  function paintCoverage() {
+    coverageEl.innerHTML = "";
+    for (const it of coverageItems) {
+      const card = document.createElement("div");
+      card.className = "cov-card";
+      const area = document.createElement("div");
+      area.className = "cov-area";
+      area.textContent = it.area || "";
+      const what = document.createElement("p");
+      what.className = "cov-what";
+      what.textContent = (lang === "tr" ? it.what_tr : it.what_en) || "";
+      const pill = document.createElement("span");
+      pill.className = "pill " + (it.status === "live" ? "live" : "soon");
+      pill.textContent = it.status === "live" ? t("cov.live") : t("cov.soon");
+      card.appendChild(area);
+      card.appendChild(what);
+      card.appendChild(pill);
+      coverageEl.appendChild(card);
+    }
+  }
+
+  async function loadCoverage() {
+    try {
+      const r = await fetch("/static/coverage.json");
+      if (!r.ok) throw new Error("coverage " + r.status);
+      coverageItems = await r.json();
+    } catch (e) {
+      coverageEl.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "trace-empty";
+      p.textContent = t("cov.fail");
+      coverageEl.appendChild(p);
+      return;
+    }
+    paintCoverage();
+  }
+
+  const TOOL_META = {
+    get_store_profile: ["🏪", "store profile"], list_catalog: ["📋", "catalog"],
+    find_customers: ["👥", "segment"], find_customer: ["👤", "customer"],
+    get_schedule: ["🗓", "schedule"], find_appointments: ["📅", "appointments"],
+    get_daily_summary: ["☀️", "daily summary"], preview_bulk_price: ["💸", "price preview"],
+    get_ads_performance: ["📢", "ads"], get_ads_suggestions: ["💡", "ad tips"],
+    list_campaign_templates: ["📝", "templates"], propose_actions: ["🗂", "plan"],
+    reply_only: ["💬", "answer"],
+  };
+
+  function shortModel(id) {
+    const s = String(id || "").toLowerCase();
+    if (s.includes("spark")) return "Muse Spark";
+    if (s.includes("sam")) return "SAM 3.1";
+    if (s.includes("image")) return "Muse Image";
+    if (s.includes("voice") || s.includes("transcrib") || s.includes("asr")) return "Muse Voice";
+    if (s.includes("llama")) return "Llama";
+    return String(id || "").slice(0, 32);
+  }
+
+  function paintTrace(ol, emptyEl, data) {
+    ol.innerHTML = "";
+    if (!data || !data.steps || !data.steps.length) {
+      emptyEl.hidden = false;
+      return;
+    }
+    emptyEl.hidden = true;
+    for (const step of data.steps) {
+      const li = document.createElement("li");
+      const [icon, label] = TOOL_META[step.tool] || ["•", step.tool];
+      const ico = document.createElement("span");
+      ico.className = "t-ico";
+      ico.textContent = icon;
+      li.appendChild(ico);
+      li.appendChild(document.createTextNode(label));
+      if (typeof step.count === "number") {
+        const c = document.createElement("span");
+        c.className = "t-count";
+        c.textContent = ` — ${step.count} customers`;
+        li.appendChild(c);
+      }
+      ol.appendChild(li);
+    }
+  }
+
+  function paintModels(data) {
+    traceModelsEl.innerHTML = "";
+    if (!data || !data.models || !data.models.length) {
+      traceModelsEl.textContent = "—";
+      return;
+    }
+    for (const m of data.models) {
+      const b = document.createElement("span");
+      b.className = "model";
+      b.textContent = shortModel(m);
+      traceModelsEl.appendChild(b);
+      traceModelsEl.appendChild(document.createTextNode(" "));
+    }
+  }
+
+  async function refreshTrace() {
+    let data = null;
+    try {
+      const r = await fetch("/api/trace");
+      if (r.ok) data = await r.json();
+    } catch (e) { /* offline or no run yet: keep the empty state */ }
+    paintTrace(traceTimelineEl, traceEmptyEl, data);
+    paintTrace(traceMiniEl, traceMiniEmptyEl, data);
+    paintModels(data);
+  }
+
+  function landingInit() {
+    if (landingReady) return;
+    landingReady = true;
+    applyLang(getLang());
+    for (const b of document.querySelectorAll("#langToggle button")) {
+      b.addEventListener("click", () => applyLang(b.dataset.lang));
+    }
+    tryLiveBtn.addEventListener("click", () => {
+      const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      phoneColEl.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+      textInput.focus({ preventScroll: true });
+    });
+    try {
+      phoneTimeEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch (e) { /* keep the static fallback */ }
+    if (document.querySelectorAll(".demobanner").length && syntheticLineEl) syntheticLineEl.hidden = false;
+    loadCoverage();
+    refreshTrace();
+  }
+  document.addEventListener("DOMContentLoaded", landingInit);
 })();
