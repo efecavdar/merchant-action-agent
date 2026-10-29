@@ -21,6 +21,7 @@ image = (
     .pip_install("fastapi[standard]")
     .env({"DATA_DIR": "/data", "OUT_DIR": "/data/out"})
     .add_local_python_source("app")
+    .add_local_dir("app/static", remote_path="/root/app/static")   # web UI assets (python_source copies .py only)
 )
 
 secret = modal.Secret.from_dotenv(__file__)
