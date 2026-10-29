@@ -58,7 +58,8 @@ ways to finish: `propose_actions` (a structured plan) or `reply_only` (a plain a
 
 Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows eleven action types:
 `add_catalog_item`, `create_discount`, `generate_visual`, `send_campaign`, `create_appointment`,
-`reschedule_appointment`, `cancel_appointment`, `apply_bulk_price`, `adjust_loyalty`, `ads_action`.
+`reschedule_appointment`, `cancel_appointment`, `apply_bulk_price`, `adjust_loyalty`, `ads_action`,
+`publish_social_post`.
 A proposal is validated in code, shown to the owner as a card, and only then executed by
 `app/executor.py` (`execute`), which maps each action to one backend call in a fixed order.
 The model never sends a message, sets a price, or books anything by itself.
@@ -109,7 +110,7 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | Check | Failure it prevents |
 |---|---|
 | Proposal is an object with `summary_tr` and a non-empty `actions` list | Empty or shapeless plans |
-| Every action type is one of the 10 known types; at most 12 actions per plan | Made-up or runaway write operations |
+| Every action type is one of the 11 known types; at most 12 actions per plan | Made-up or runaway write operations |
 | Catalog name/description, messages and template variables carry no URL, e-mail, phone or IBAN | Contact details smuggled to customers |
 | Offer words (`bedava`, `ücretsiz`, …) require a `create_discount` in the plan | Messages promising an unplanned deal |
 | `add_catalog_item`: `item_type` is product or service | Wrong catalog entity |
@@ -134,6 +135,10 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | `create_discount`: `starts` is today or later; `item_refs` de-duplicated | Backdated sales, double-counted items |
 | Appointment `starts` is in the future | Bookings in the past |
 | `generate_visual` refs include a photo crop | Visuals silently dropping catalog items |
+| `publish_social_post`: caption required, ≤ 2200 chars, ≤ 15 hashtags, no URL or phone | Unpostable or smuggling captions |
+| `publish_social_post`: `platforms` a non-empty subset of instagram/facebook | Posts to nowhere |
+| `publish_social_post`: `publish_at` 5 minutes–30 days out, else publishes now | Stale or far-future schedules |
+| `publish_social_post`: caption numbers must match planned prices/percents | Posts promising an unplanned deal |
 
 ## 3. Channel security (WhatsApp path)
 
@@ -182,11 +187,34 @@ Matches the README table; the "where" column points at the call sites.
 | `sam-3.1` | Responses API (stream) | `app/meta_client.py` (`segment`, `responses.stream`), via `app/pipeline.py` | Product segmentation (boxes → crops) |
 | `muse-image-1.0` | `POST /v1/images/edits` | `app/meta_client.py` (`generate_campaign_visual`), via `app/executor.py` | Campaign visual composed from the real crops |
 
-## 6. Known limitations
+## 6. Public demo and the Live-in-KEDD panel
 
-- Judges run `MockBackend`: two fictional businesses with synthetic customers, revenue, and messages.
-  The `KeddBackend` signed-HTTP adapter ships in `app/tools/backend.py` but no test or public run
-  exercises it — the KEDD platform itself is closed source and not in this repo.
+The Modal `demo` function (`modal_app.py`) serves the judges' web UI in public mode
+(`app/channels/web.py`, `PUBLIC_DEMO=true`). Sessions default to the live `kedd-demo` business,
+signed with a scoped demo credential (`KEDD_DEMO_SECRET` + key id `demo`, bound server-side to one
+synthetic business); the main key is never loaded there, `/kedd` is refused, and the session guard
+drops any backend that is not a demo-key `KeddBackend`.
+
+- **Reads are live, writes stay previews.** Demo `send_campaign` and `publish_social_post` are refused
+  client-side before touching the network, on top of the gateway's own demo policy. Reversible catalog
+  and appointment writes go through under the demo key.
+- **Fallback is visible, never silent.** When KEDD is unreachable or 5xxs, the chat keeps its
+  `kedd-demo` state and retries on the next message, while the panel (`GET /api/kedd-state`, cached
+  10 s) falls back to the mock salon with the triggering error and a retry button. No plan starts
+  while reads fail, and no code path swaps in a mock backend without telling the user.
+- **Abuse caps.** Per-IP and per-session message limits, a global daily counter, upload checks, and
+  3 approved plans per IP per hour on `kedd-demo` — the 4th approval flips the session one-way to
+  the mock salon with a banner instead of running.
+- **The panel is read-only and PII-free.** One endpoint serves the catalog sample, today's
+  appointments (time/service/staff — customer names dropped at the mapping edge) and the last-24h
+  agent writes per action from `GET /agent/report` (writes only, `appointments.*` merged). It burns
+  no quota and makes no model calls.
+
+## 7. Known limitations
+
+- Judges' chat runs on the live KEDD demo business (with the mock-salon fallback above); local runs
+  default to `MockBackend`, two fictional businesses with synthetic customers, revenue, and messages.
+  The KEDD platform itself is closed source and not in this repo.
 - The live SAM, Voice Transcribe, and Muse Image paths are exercised only through the
   `scripts/check_api.py` smoke script (`--audio`, `--image`, `--image-gen`); the offline suite
   covers parsing and the surrounding code, not the model calls.
