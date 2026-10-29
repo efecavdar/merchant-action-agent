@@ -135,7 +135,9 @@ platform through the small signed gateway (adapter only; the platform is not inc
 In this repo: the `KeddBackend` adapter (`app/tools/backend.py`) and the public contract it speaks,
 [docs/kedd-gateway-contract.md](docs/kedd-gateway-contract.md) — signed requests, per-merchant tenant resolution,
 idempotent writes. Built during the hackathon inside the closed-source KEDD codebase: the gateway itself, which
-implements that contract. Judges can run everything against the mock, which follows the same contract.
+implements that contract. Gateway health check (demo key only, reads + one campaign dry run, never prints customer
+data): `KEDD_API_URL=... KEDD_DEMO_SECRET=... KEDD_DEMO_PHONE=... python scripts/smoke_kedd.py`. Judges can run
+everything against the mock, which follows the same contract.
 
 ## Repository layout
 
