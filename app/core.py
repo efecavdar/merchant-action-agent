@@ -27,7 +27,8 @@ from .tools.backend import Backend, get_backend
 
 log = logging.getLogger(__name__)
 
-YES = {"evet", "e", "onay", "onaylıyorum", "tamam", "ok", "olur", "yes", "y", "gönder", "evet gönder"}
+# Only explicit approval words. "ok", "tamam", "olur", "e" are everyday chat and must never run a plan.
+YES = {"evet", "onay", "onayla", "onaylıyorum", "evet onaylıyorum", "evet gönder", "yes"}
 NO = {"hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur"}
 PENDING_TTL_S = 2 * 3600
 IMAGES_TTL_S = 30 * 60
@@ -113,8 +114,16 @@ def _new_run_dir(session: Session) -> Path:
 
 
 def handle(session: Session, kind: str, text: str = "", media_path: str = "",
-           notify: Notify | None = None) -> list[Reply]:
-    """Process one inbound message. Mutates `session`; returns replies to deliver."""
+           notify: Notify | None = None, *, sent_at: float | None = None, async_delivery: bool = False,
+           checkpoint: Callable[[], None] | None = None) -> list[Reply]:
+    """Process one inbound message. Mutates `session`; returns replies to deliver.
+
+    async_delivery: the channel delivers replies after this returns (WhatsApp). A new approval card then stays
+        unapprovable until the channel calls `mark_delivered(session, True)`; if delivery fails the card is dropped.
+    sent_at: when the owner sent this message (channel timestamp). An approval sent before the card was shown
+        is refused — the owner cannot approve a card they have not seen.
+    checkpoint: persists the session; called after an approval is consumed and BEFORE anything executes, so a
+        crash mid-execution can never leave the card approvable again."""
     notify = notify or (lambda _msg: None)
     now = time.time()
     _history_prune(session, now)
@@ -156,7 +165,13 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     # -- approval --------------------------------------------------------------
     if session.pending and kind == "text" and t in YES:
         _history_add(session, "owner", text, now)
-        replies = _execute_pending(session, notify)
+        shown_at = session.pending.get("shown_at", session.pending["at"])   # key missing = card from an older deploy
+        if shown_at is None or (sent_at is not None and sent_at < shown_at):
+            replies = [Reply("Bu onay, kart sana ulaşmadan önce gelmiş görünüyor. Kartı okuyup tekrar *evet* "
+                             "yazar mısın?")]
+            _remember_replies(session, replies, now)
+            return replies
+        replies = _execute_pending(session, notify, checkpoint)
         _remember_replies(session, replies, now)
         return replies
     if session.pending and kind == "text" and t in NO:
@@ -224,15 +239,29 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     (run_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
     (run_dir / "approval_card.txt").write_text(card)
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
-                       "run_dir": str(run_dir), "at": now, "usage": run.usage}
+                       "run_dir": str(run_dir), "at": now, "usage": run.usage,
+                       "shown_at": None if async_delivery else time.time()}
     log.info("plan ready: %d turns, usage %s", run.turns, run.usage)
     replies = replies + [Reply(card)]
     _remember_replies(session, replies, now)
     return replies
 
 
-def _execute_pending(session: Session, notify: Notify) -> list[Reply]:
+def mark_delivered(session: Session, ok: bool) -> None:
+    """Channel callback after delivering replies. An undelivered card is dropped, never left approvable."""
+    if session.pending and session.pending.get("shown_at", 0) is None:
+        if ok:
+            session.pending["shown_at"] = time.time()
+        else:
+            log.warning("approval card could not be delivered; dropping it")
+            session.pending = None
+
+
+def _execute_pending(session: Session, notify: Notify,
+                     checkpoint: Callable[[], None] | None = None) -> list[Reply]:
     p, session.pending = session.pending, None      # one approval, one execution — even if this crashes
+    if checkpoint:
+        checkpoint()                                # persist "consumed" before any side effect
     notify("✅ Onaylandı, uyguluyorum…")
     backend = session.get_backend()
     run_dir = Path(p["run_dir"])

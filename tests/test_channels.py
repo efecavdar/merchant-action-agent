@@ -360,3 +360,64 @@ def test_core_surfaces_pipeline_valueerror_to_owner(monkeypatch, cfg, tmp_path):
     s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     r = core.handle(s, "audio", media_path="x.ogg")
     assert r[-1].text.startswith("Sesli not 3 dakikadan uzun") and s.pending is None
+
+
+# --------------------------------------------------------------------------- #
+# approval integrity (security review H2 / L1 / M1)
+# --------------------------------------------------------------------------- #
+
+def _pending_session(monkeypatch, cfg, tmp_path, **kw):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver", **kw)
+    assert s.pending
+    return s
+
+
+def test_everyday_words_do_not_approve(monkeypatch, cfg, tmp_path):
+    for word in ("tamam", "ok", "olur", "e", "y"):
+        s = _pending_session(monkeypatch, cfg, tmp_path)
+        core.handle(s, "text", word)
+        assert s.backend.campaigns == [], word
+
+
+def test_card_not_approvable_until_delivered_and_dropped_if_undelivered(monkeypatch, cfg, tmp_path):
+    s = _pending_session(monkeypatch, cfg, tmp_path, async_delivery=True)
+    r = core.handle(s, "text", "evet", sent_at=time.time(), async_delivery=True)
+    assert "ulaşmadan" in r[0].text and s.backend.campaigns == [] and s.pending   # not shown yet → refused
+    core.mark_delivered(s, False)
+    assert s.pending is None                                                     # undelivered → dropped
+
+
+def test_approval_sent_before_card_was_shown_is_refused(monkeypatch, cfg, tmp_path):
+    s = _pending_session(monkeypatch, cfg, tmp_path, async_delivery=True)
+    before = time.time() - 5
+    core.mark_delivered(s, True)
+    r = core.handle(s, "text", "evet", sent_at=before, async_delivery=True)
+    assert "ulaşmadan" in r[0].text and s.backend.campaigns == []
+    r = core.handle(s, "text", "evet", sent_at=time.time() + 1, async_delivery=True)
+    assert r[0].text.startswith("Hallettim") and len(s.backend.campaigns) == 1
+
+
+def test_consumed_approval_is_checkpointed_before_execution(monkeypatch, cfg, tmp_path):
+    s = _pending_session(monkeypatch, cfg, tmp_path)
+    seen = []
+    real = core.executor.execute
+    def spy(*a, **k):
+        assert seen == ["saved"] and s.pending is None   # persisted as consumed before any side effect
+        return real(*a, **k)
+    monkeypatch.setattr(core.executor, "execute", spy)
+    core.handle(s, "text", "evet", checkpoint=lambda: seen.append("saved"))
+    assert len(s.backend.campaigns) == 1
+
+
+def test_kedd_secret_is_not_pickled(cfg):
+    import pickle
+    from app.tools.backend import KeddBackend
+    cfg("kedd_agent_secret", "s3cret-value-xyz")
+    b = KeddBackend("https://gw.example", "s3cret-value-xyz", "+905000000000")
+    blob = pickle.dumps(b)
+    assert b"s3cret-value-xyz" not in blob
+    assert pickle.loads(blob)._secret == b"s3cret-value-xyz"

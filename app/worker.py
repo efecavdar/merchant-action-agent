@@ -48,10 +48,17 @@ def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
             except Exception:  # noqa: BLE001
                 log.warning("notify failed: %s", t[:40])
 
-        replies = core.handle(session, m.kind, text=m.text, media_path=media_path, notify=notify)
+        replies = core.handle(session, m.kind, text=m.text, media_path=media_path, notify=notify,
+                              sent_at=float(m.timestamp) if m.timestamp else None, async_delivery=True,
+                              checkpoint=lambda: save(m.sender, session))
     except Exception:
         log.exception("handling failed")
         replies = [core.Reply("Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?")]
     finally:
         save(m.sender, session)          # persist even on failure (e.g. a consumed approval stays consumed)
-    deliver_replies(m.sender, replies)
+    errors = deliver_replies(m.sender, replies)
+    core.mark_delivered(session, not errors)   # a card the owner never received must not stay approvable
+    try:
+        save(m.sender, session)
+    except Exception:  # noqa: BLE001
+        log.exception("could not save session after delivery")
