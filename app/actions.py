@@ -20,19 +20,27 @@ MAX_CATEGORY_CHARS = 40
 
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
+                "complete_appointment", "create_quote_draft", "teach_chatbot",
                 "apply_bulk_price", "adjust_loyalty", "ads_action", "publish_social_post",
                 "create_customer", "update_customer", "create_lead", "set_lead_stage",
                 "add_lead_note", "create_task", "complete_task"}
 SOCIAL_PLATFORMS = ("instagram", "facebook")
 MAX_CAPTION_CHARS = 2200
 MAX_HASHTAGS = 15
-APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment"}
+APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment",
+                     "complete_appointment"}
 ADS_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
 CRM_TYPES = {"create_customer", "update_customer", "create_lead", "set_lead_stage",
              "add_lead_note", "create_task", "complete_task"}
 LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
 MAX_NOTE_CHARS = 500
 MAX_TAGS, MAX_TAG_CHARS, MAX_TITLE_CHARS = 10, 30, 120
+APPT_METHODS = ("cash", "card", "transfer", "other")
+MAX_APPT_AMOUNT = 100_000
+MAX_QUESTION_CHARS = 200
+MAX_ANSWER_CHARS = 1000
+MAX_VALID_DAYS = 60
+MIN_QUOTE_PRICE_RATIO = 0.5
 
 # JSON schema handed to the model (Responses API flat tool format)
 PROPOSAL_SCHEMA: dict[str, Any] = {
@@ -119,8 +127,34 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                                                 "within a year"},
                     "item_ref": {"type": "string", "description": "service id from list_catalog (create_appointment)"},
                     "staff": {"type": "string", "description": "staff member name (create/reschedule)"},
-                    "appointment_id": {"type": "string", "description": "from find_appointments (reschedule/cancel)"},
+                    "appointment_id": {"type": "string",
+                                     "description": "from find_appointments or get_schedule "
+                                                  "(reschedule/cancel/complete)"},
                     "reason": {"type": "string", "description": "cancel (optional) / loyalty reason"},
+                    # complete_appointment
+                    "amount": {"type": "number",
+                               "description": "TRY taken for the appointment; omit to charge the "
+                                            "service's catalog price"},
+                    "method": {"type": "string", "enum": list(APPT_METHODS)},
+                    # create_quote_draft
+                    "items": {"type": "array", "items": {"type": "object"},
+                              "description": "quote rows: {catalog_item_id from list_catalog, "
+                                           "qty 1-100, unit_price? in TRY}"},
+                    "catalog_item_id": {"type": "string",
+                                        "description": "existing catalog id from list_catalog"},
+                    "qty": {"type": "integer", "description": "quote row quantity, 1-100"},
+                    "unit_price": {"type": "number",
+                                   "description": "TRY per unit; at least half the catalog price, "
+                                                "omit for the catalog price"},
+                    "valid_days": {"type": "integer",
+                                   "description": "how long the quote stays valid, 1-60 days"},
+                    # teach_chatbot
+                    "question": {"type": "string",
+                                 "description": "what the chatbot should answer, at most 200 chars, "
+                                              "no contact details"},
+                    "answer": {"type": "string",
+                               "description": "the chatbot's answer, at most 1000 chars, no contact "
+                                            "details; prices only from this run's catalog"},
                     # bulk price / loyalty / ads
                     "preview_id": {"type": "string",
                                    "description": "from preview_bulk_price (apply_bulk_price)"},
@@ -233,6 +267,17 @@ def _check_promised_numbers(where: str, text: str, plan_pcts: set[int], plan_pri
                       f"(add the item or drop the number)")
 
 
+def _check_answer_prices(where: str, answer: Any, catalog: dict[str, dict[str, Any]],
+                         plan_prices: set[float], errors: list[str]) -> None:
+    """A chatbot answer must not teach prices the run never saw (catalog or this plan)."""
+    if not isinstance(answer, str):
+        return
+    known = {float(v["price"]) for v in catalog.values() if _is_number(v.get("price"))}
+    for p in sorted(_promised_numbers(answer)[1] - (known | plan_prices)):
+        errors.append(f"{where}: answer mentions {p:g} TL but no catalog item in this run has "
+                      f"that price (the chatbot must not learn wrong prices)")
+
+
 def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: str,
                               errors: list[str]) -> None:
     variables = a.get("variables")
@@ -264,24 +309,36 @@ def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: st
         _check_no_contacts(where, f"variables[{k!r}]", v, errors)
 
 
+def _is_number(v: Any) -> bool:
+    """A real number for money math: int/float, never a bool."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _coerce_number(v: Any, want_int: bool) -> Any:
+    """One sloppy tool-call number ("20", 20.0) → a plain number; anything else passes through
+    untouched so the caller — never this helper — reports it."""
+    if isinstance(v, str):
+        v = v.strip().replace(",", ".")
+        try:
+            v = float(v)
+        except ValueError:
+            return v
+    if isinstance(v, float) and want_int and v.is_integer():
+        v = int(v)
+    return v
+
+
 def _coerce_numbers(a: dict[str, Any]) -> None:
     """Tool-call arguments sometimes arrive as strings ("20") or floats (20.0). Normalise in place
     so the validator and the executor see plain numbers."""
     for key, want_int in (("percent", True), ("duration_minutes", True), ("price", False),
-                             ("points", True), ("delta_pct", True), ("estimated_value", False)):
-        v = a.get(key)
-        if isinstance(v, str):
-            v = v.strip().replace(",", ".")
-            try:
-                v = float(v)
-            except ValueError:
-                continue
-        if isinstance(v, float) and want_int and v.is_integer():
-            v = int(v)
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, (int, float)):
-            a[key] = v
+                          ("points", True), ("delta_pct", True), ("estimated_value", False),
+                          ("amount", False), ("unit_price", False), ("qty", True),
+                          ("valid_days", True)):
+        if key in a:
+            v = _coerce_number(a[key], want_int)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                a[key] = v
 
 
 # summary talks about messaging customers → the plan must contain a send_campaign
@@ -309,7 +366,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       known_templates: dict[str, dict[str, Any]] | None = None,
                       requires_template: bool | None = None,
                       known_leads: set[str] | None = None,
-                      known_tasks: set[str] | None = None) -> list[str]:
+                      known_tasks: set[str] | None = None,
+                      appointment_services: dict[str, str] | None = None) -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
@@ -317,7 +375,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     a tool call in the same run (like segments); `known_previews` maps preview_id -> preview
     result, `known_templates` maps template name -> template (from list_campaign_templates).
     `requires_template` reflects the session's backend (True on KEDD: templates only);
-    None falls back to the global BACKEND setting (older callers)."""
+    None falls back to the global BACKEND setting (older callers).
+    `appointment_services` maps appointment id -> service name (from find_appointments or
+    get_schedule); a completion without an amount is charged the service's catalog price."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
     known_previews = known_previews or {}
@@ -325,6 +385,7 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     known_templates = known_templates or {}
     known_leads = known_leads or set()
     known_tasks = known_tasks or set()
+    appointment_services = appointment_services or {}
     needs_template = settings.backend == "kedd" if requires_template is None else requires_template
     errors: list[str] = []
     if not isinstance(proposal, dict):
@@ -534,9 +595,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     errors.append(f"{where}: staff is required (see get_store_profile)")
             else:
                 if a.get("appointment_id") not in known_appointments:
-                    errors.append(f"{where}: appointment_id must come from a find_appointments call "
-                                  f"(known: {sorted(known_appointments)})")
-            if t != "cancel_appointment":
+                    errors.append(f"{where}: appointment_id must come from a find_appointments "
+                                  f"or get_schedule call (known: {sorted(known_appointments)})")
+            if t not in ("cancel_appointment", "complete_appointment"):
                 try:
                     starts = _iso_dt(a.get("starts") or "")
                 except (ValueError, TypeError):
@@ -544,6 +605,24 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 else:
                     if starts <= datetime.now():
                         errors.append(f"{where}: starts must be in the future")
+            if t == "complete_appointment":
+                amount = a.get("amount")
+                if amount is None:
+                    svc = (appointment_services or {}).get(a.get("appointment_id") or "")
+                    prices = sorted({float(item["price"]) for item in catalog.values()
+                                     if item.get("name") == svc and _is_number(item.get("price"))})
+                    if len(prices) == 1:
+                        # Default: charge the service's catalog price (the owner said nothing else).
+                        a["amount"] = prices[0]
+                    else:
+                        errors.append(f"{where}: amount is required (the service price is not "
+                                      "unique in this run's catalog)")
+                elif not _is_number(amount) or not 0 < amount <= MAX_APPT_AMOUNT:
+                    errors.append(f"{where}: amount must be more than 0 and at most "
+                                  f"{MAX_APPT_AMOUNT}")
+                if a.get("method") is not None and a.get("method") not in APPT_METHODS:
+                    errors.append(f"{where}: method must be one of {' | '.join(APPT_METHODS)}")
+                _check_crm_note(where, a.get("note"), errors)
 
         elif t == "apply_bulk_price":
             if not a.get("label"):
@@ -669,6 +748,68 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     if not seen:
                         errors.append(f"{where}: {key} must come from a {tool} call in this run or "
                                       f"a ref created earlier (known: {sorted(known)})")
+
+        elif t == "create_quote_draft":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            cust, lead = a.get("customer_id"), a.get("lead_id")
+            if bool(cust) == bool(lead):
+                errors.append(f"{where}: set exactly one of customer_id, lead_id")
+            elif cust and cust not in known_customers:
+                errors.append(f"{where}: customer_id must come from a find_customer call "
+                              f"(known: {sorted(known_customers)})")
+            elif lead and lead not in known_leads:
+                errors.append(f"{where}: lead_id must come from a find_leads call "
+                              f"(known: {sorted(known_leads)})")
+            rows = a.get("items")
+            if not isinstance(rows, list) or not rows:
+                errors.append(f"{where}: items must be a non-empty list of quote rows")
+            else:
+                for j, row in enumerate(rows):
+                    if not isinstance(row, dict):
+                        errors.append(f"{where}: items[{j}] must be an object")
+                        continue
+                    item = catalog.get(row.get("catalog_item_id") or "")
+                    if not item:
+                        errors.append(f"{where}: items[{j}]: unknown catalog_item_id "
+                                      "(see list_catalog)")
+                        continue
+                    qty = _coerce_number(row.get("qty"), True)
+                    if isinstance(qty, int) and not isinstance(qty, bool):
+                        row["qty"] = qty
+                    if not isinstance(row.get("qty"), int) or isinstance(row.get("qty"), bool) \
+                            or not 1 <= row["qty"] <= 100:
+                        errors.append(f"{where}: items[{j}]: qty must be 1..100")
+                    unit = _coerce_number(row.get("unit_price"), False)
+                    if _is_number(unit):
+                        row["unit_price"] = unit
+                    unit = row.get("unit_price")
+                    if unit is not None:
+                        if not _is_number(unit) or unit < 0:
+                            errors.append(f"{where}: items[{j}]: unit_price must be 0 or more")
+                        elif _is_number(item.get("price")) \
+                                and unit < item["price"] * MIN_QUOTE_PRICE_RATIO:
+                            errors.append(f"{where}: items[{j}]: unit_price is below half the "
+                                          f"catalog price ({item['price']:g} ₺)")
+            days = a.get("valid_days")
+            if days is not None and (not isinstance(days, int) or isinstance(days, bool)
+                                      or not 1 <= days <= MAX_VALID_DAYS):
+                errors.append(f"{where}: valid_days must be 1..{MAX_VALID_DAYS}")
+            _check_crm_note(where, a.get("note"), errors)
+
+        elif t == "teach_chatbot":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            question, answer = a.get("question"), a.get("answer")
+            for field, value, maxi in (("question", question, MAX_QUESTION_CHARS),
+                                       ("answer", answer, MAX_ANSWER_CHARS)):
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{where}: {field} is required")
+                else:
+                    if len(value) > maxi:
+                        errors.append(f"{where}: {field} too long ({len(value)} > {maxi} chars)")
+                    _check_no_contacts(where, field, value, errors)
+            _check_answer_prices(where, answer, catalog, plan_prices, errors)
 
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}

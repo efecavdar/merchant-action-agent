@@ -259,7 +259,8 @@ def test_find_appointments_turkish_name_match(tmp_path):
     hits = b.find_appointments(query)
     assert appt["id"] in [h["id"] for h in hits]
     assert b.find_appointments(query.upper()) and b.find_appointments(query[:3])
-    assert set(hits[0]) == {"id", "customer", "service", "staff", "starts", "ends", "status"}
+    assert set(hits[0]) == {"id", "customer", "service", "staff", "starts", "ends", "status",
+                               "company"}
     assert all(h["id"] != appt["id"] or h["starts"].startswith(day) for h in b.find_appointments(day=day))
     assert appt["id"] not in [h["id"] for h in b.find_appointments(day="2026-10-28")]
     assert b.find_appointments("zzz-kayıt-dışı") == []

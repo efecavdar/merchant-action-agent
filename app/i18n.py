@@ -246,6 +246,35 @@ STRINGS: dict[str, dict[str, str]] = {
     "step.add_lead_note": {"tr": "Lead notu eklendi", "en": "Lead note added"},
     "step.create_task": {"tr": "Görev oluşturuldu", "en": "Task created"},
     "step.complete_task": {"tr": "Görev tamamlandı", "en": "Task completed"},
+    # -- approval.py: money + content card lines -----------------------------------------
+    "card.appt_done": {"tr": "✔️ Randevu tamamlandı: {who} — {svc}{paid}",
+                       "en": "✔️ Appointment completed: {who} — {svc}{paid}"},
+    "card.appt_paid": {"tr": ", {amount} ₺{method}", "en": ", {amount} ₺{method}"},
+    "card.method.cash": {"tr": "nakit", "en": "cash"},
+    "card.method.card": {"tr": "kart", "en": "card"},
+    "card.method.transfer": {"tr": "havale", "en": "transfer"},
+    "card.method.other": {"tr": "diğer", "en": "other"},
+    "card.quote_draft": {"tr": "📄 Teklif taslağı: {who} — {rows} = {total} ₺ (gönderilmez, taslak)",
+                         "en": "📄 Quote draft: {who} — {rows} = {total} ₺ (not sent, draft)"},
+    "card.quote_more": {"tr": " +{k} {unit}", "en": " +{k} {unit}"},
+    "card.chatbot_teach": {"tr": "🧠 Chatbot öğrenecek: “{q}” → “{a}”",
+                           "en": "🧠 Chatbot will learn: “{q}” → “{a}”"},
+    # -- executor progress lines: money + content ----------------------------------------
+    "progress.appt_done": {"tr": "✅ {i}/{n} Randevu tamamlandı{paid}",
+                           "en": "✅ {i}/{n} Appointment completed{paid}"},
+    "progress.quote": {"tr": "✅ {i}/{n} Teklif taslağı: {total} ₺",
+                       "en": "✅ {i}/{n} Quote draft: {total} ₺"},
+    "progress.chatbot": {"tr": "✅ {i}/{n} Chatbot öğrendi: “{q}”",
+                         "en": "✅ {i}/{n} Chatbot learned: “{q}”"},
+    "progress.fail.complete_appointment": {"tr": "Randevu tamamlanamadı",
+                                           "en": "Couldn't complete the appointment"},
+    "progress.fail.create_quote_draft": {"tr": "Teklif hazırlanamadı",
+                                         "en": "Couldn't draft the quote"},
+    "progress.fail.teach_chatbot": {"tr": "Chatbot öğrenemedi",
+                                    "en": "Couldn't teach the chatbot"},
+    "step.complete_appointment": {"tr": "Randevu tamamlandı", "en": "Appointment completed"},
+    "step.create_quote_draft": {"tr": "Teklif taslağı hazırlandı", "en": "Quote drafted"},
+    "step.teach_chatbot": {"tr": "Chatbot'a öğretildi", "en": "Taught the chatbot"},
 }
 
 
@@ -447,6 +476,17 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
                                                when=format_task_due(r.get("due_date"), lang))
     if kind == "complete_task":
         return t("progress.task_done", lang).format(**head)
+    if kind == "complete_appointment":
+        paid = ""
+        if r.get("amount") is not None:
+            method = t(f"card.method.{r.get('method')}", lang, "") if r.get("method") else ""
+            paid = t("card.appt_paid", lang).format(amount=_money(r.get("amount")),
+                                                   method=f" {method}" if method else "")
+        return t("progress.appt_done", lang).format(**head, paid=paid)
+    if kind == "create_quote_draft":
+        return t("progress.quote", lang).format(**head, total=_money(r.get("total")))
+    if kind == "teach_chatbot":
+        return t("progress.chatbot", lang).format(**head, q=_clean(r.get("question"), 80))
     return f"✅ {i}/{n} {kind}"
 
 

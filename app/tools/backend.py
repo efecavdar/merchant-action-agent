@@ -73,6 +73,7 @@ class Customer:
     created: str = ""                   # ISO date the customer signed up ("" = old customer)
     loyalty_points: int = 0
     note: str = ""                      # owner note, write-only (no read shape returns it)
+    company: str = ""                   # employer/company, shown as "Name (Company)" when set
 
     def loyalty_status(self, today: date) -> str:
         days = (today - date.fromisoformat(self.last_visit)).days
@@ -148,6 +149,7 @@ class Lead:
     value: float | None = None      # estimated deal value, TRY
     tags: list[str] = field(default_factory=list)
     notes: list[dict[str, Any]] = field(default_factory=list)  # [{id, note, day}]
+    company: str = ""               # employer/company, shown as "Name (Company)" when set
 
 
 @dataclass
@@ -167,6 +169,25 @@ class TaskItem:
     status: str = "open"            # open | completed
     customer_id: str = ""
     lead_id: str = ""
+
+
+@dataclass
+class QuoteDraft:
+    id: str
+    customer_id: str = ""           # exactly one of customer / lead is set
+    lead_id: str = ""
+    items: list[dict[str, Any]] = field(default_factory=list)  # [{catalog_item_id, qty, unit_price}]
+    total: float = 0.0
+    valid_days: int | None = None
+    note: str = ""
+    status: str = "draft"           # drafts are never sent to anyone
+
+
+@dataclass
+class KnowledgeEntry:
+    id: str
+    question: str
+    answer: str
 
 
 # --------------------------------------------------------------------------- #
@@ -243,6 +264,7 @@ class Backend(Protocol):
                    name: str | None = None) -> dict[str, Any]: ...
     def list_tasks(self, status: str | None = None) -> dict[str, Any]: ...
     def get_insights(self, days: int = 7) -> dict[str, Any]: ...
+    def search_chatbot_knowledge(self, q: str) -> dict[str, Any]: ...
 
     # write (only the executor calls these, after human approval)
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
@@ -258,6 +280,13 @@ class Backend(Protocol):
     def reschedule_appointment(self, appointment_id: str, starts: str,
                                staff: str | None = None) -> dict[str, Any]: ...
     def cancel_appointment(self, appointment_id: str, reason: str = "") -> dict[str, Any]: ...
+    def complete_appointment(self, appointment_id: str, amount: float | None = None,
+                             method: str | None = None,
+                             note: str | None = None) -> dict[str, Any]: ...
+    def create_quote(self, customer_id: str | None = None, lead_id: str | None = None,
+                     items: list[dict[str, Any]] | None = None, valid_days: int | None = None,
+                     note: str | None = None) -> dict[str, Any]: ...
+    def teach_chatbot(self, question: str, answer: str) -> dict[str, Any]: ...
     def apply_bulk_price(self, preview_id: str) -> dict[str, Any]: ...
     def adjust_loyalty(self, customer_id: str, points: int, reason: str) -> dict[str, Any]: ...
     def ads_action(self, campaign_id: str, action: str,
@@ -372,6 +401,7 @@ def _seed_customers(rng: random.Random, n: int, today: date, tags: list[str]) ->
             total_spent=round(visits * rng.uniform(400, 1500), 2),
             tags=rng.sample(tags, k=rng.randint(1, 2)),
             marketing_consent=rng.random() < 0.85,
+            company=_COMPANIES[(i // 4) % len(_COMPANIES)] if i % 4 == 1 else "",
         ))
     return out
 
@@ -425,6 +455,12 @@ _LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
 _CRM_SEED_STAGES = ("new", "new", "contacted", "new", "qualified", "contacted", "proposal",
                     "new", "won", "contacted", "lost", "qualified")
 _CRM_SEED_VALUES = {"qualified": 3500.0, "proposal": 6000.0, "won": 9000.0, "lost": 2500.0}
+# Company names for seeded customers/leads (task 27). Index-derived like the stages above:
+# every fourth record works somewhere, the rest are individuals. No RNG draws.
+_COMPANIES = ("Ada Kafe", "Nar Kuaför", "Mavi Pansiyon", "Ege Tur", "Kuzey Ajans", "Lavanta Spa")
+_KNOWLEDGE_SEEDS = (
+    ("İade politikanız nedir?", "Kullanılmamış ürünleri 14 gün içinde iade edebilirsin."),
+    ("Hangi ödeme yöntemleri var?", "Nakit, kart ve havale ile ödeme yapabilirsin."))
 
 
 def _already_registered(kind: str, name: str, rid: str) -> str:
@@ -446,10 +482,12 @@ def _seed_summary(rng: random.Random, items_cfg: list, customers: list[Customer]
             revenue.append(RevenueEntry(f"r{len(revenue) + 1:04d}", day, cat, float(price), name))
         for _ in range(rng.randint(0, 2)):
             stage = _CRM_SEED_STAGES[len(leads) % len(_CRM_SEED_STAGES)]
-            leads.append(Lead(f"l{len(leads) + 1:03d}", f"{rng.choice(_FIRST)} {rng.choice(_LAST)}", day,
+            li = len(leads)
+            leads.append(Lead(f"l{li + 1:03d}", f"{rng.choice(_FIRST)} {rng.choice(_LAST)}", day,
                               rng.choice(_LEAD_SOURCES), rng.choice(tags), stage=stage,
                               last_contact=day if stage != "new" else None,
-                              value=_CRM_SEED_VALUES.get(stage)))
+                              value=_CRM_SEED_VALUES.get(stage),
+                              company=_COMPANIES[(li // 4) % len(_COMPANIES)] if li % 4 == 1 else ""))
         if back <= 1:
             for _ in range(rng.randint(1, 3)):
                 messages.append(InboxMessage(f"m{len(messages) + 1:03d}", day, rng.choice(customers).name,
@@ -472,7 +510,7 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 6  # 6: CRM leads/tasks + insights history (task 26)
+    SCHEMA = 7  # 7: quote drafts + chatbot knowledge (task 27)
 
     PREVIEW_TTL_S = 15 * 60
 
@@ -527,6 +565,9 @@ class MockBackend:
                      customer_id=self.customers[1].id),
         ]
         self.appointment_changes: list[dict[str, Any]] = []
+        self.quotes: list[QuoteDraft] = []
+        self.knowledge: list[KnowledgeEntry] = [
+            KnowledgeEntry(f"k{i + 1:03d}", q, a) for i, (q, a) in enumerate(_KNOWLEDGE_SEEDS)]
         self._rng = random.Random(seed + 1)
         self._counter = 100
         self._items_at_start = len(self.items)
@@ -676,12 +717,14 @@ class MockBackend:
         }
 
     def find_customer(self, name: str) -> list[dict[str, Any]]:
-        """Resolve a spoken name to customer ids (accent-insensitive, partial). No phone numbers."""
+        """Resolve a spoken name to customer ids (accent-insensitive, partial). Matches the
+        company name too. No phone numbers."""
         q = _fold_name(name or "")
         if not q:
             return []
-        return [{"id": c.id, "name": c.name, "last_visit": c.last_visit, "visit_count": c.visit_count}
-                for c in self.customers if q in _fold_name(c.name)][:10]
+        return [{"id": c.id, "name": c.name, "last_visit": c.last_visit, "visit_count": c.visit_count,
+                 "company": c.company or None}
+                for c in self.customers if q in _fold_name(c.name) or q in _fold_name(c.company)][:10]
 
     def find_loyalty_member(self, name: str) -> dict[str, Any]:
         """Resolve a spoken name to loyalty members with current points. member_id is the
@@ -700,6 +743,7 @@ class MockBackend:
         open_t = datetime.combine(d, dtime.fromisoformat(hours["open"]))
         close_t = datetime.combine(d, dtime.fromisoformat(hours["close"]))
         names = {c.id: c.name for c in self.customers}
+        companies = {c.id: c.company for c in self.customers}
         items = {i.id: i for i in self.items}
         todays = sorted((a for a in self.appointments if a.starts.startswith(day) and a.status == "confirmed"),
                         key=lambda a: a.starts)
@@ -718,8 +762,10 @@ class MockBackend:
         return {
             "day": day,
             "business_hours": hours,
-            "appointments": [{"time": a.starts[11:16] + "–" + a.ends[11:16], "service": items[a.item_id].name,
-                              "staff": a.staff, "customer": names.get(a.customer_id, "?")} for a in todays],
+            "appointments": [{"id": a.id, "time": a.starts[11:16] + "–" + a.ends[11:16],
+                              "service": items[a.item_id].name, "staff": a.staff,
+                              "customer": names.get(a.customer_id, "?"),
+                              "company": companies.get(a.customer_id) or None} for a in todays],
             "free_slots": free,
         }
 
@@ -764,6 +810,7 @@ class MockBackend:
         """Accent-insensitive partial name search; several customers may match. No phone numbers."""
         q = _fold_name(customer_name or "")
         names = {c.id: c.name for c in self.customers}
+        companies = {c.id: c.company for c in self.customers}
         items = {i.id: i for i in self.items}
         out = []
         for a in sorted(self.appointments, key=lambda x: x.starts):
@@ -774,7 +821,8 @@ class MockBackend:
             svc = items.get(a.item_id)
             out.append({"id": a.id, "customer": names.get(a.customer_id, "?"),
                         "service": svc.name if svc else "?", "staff": a.staff,
-                        "starts": a.starts, "ends": a.ends, "status": a.status})
+                        "starts": a.starts, "ends": a.ends, "status": a.status,
+                        "company": companies.get(a.customer_id) or None})
         return out
 
     def preview_bulk_price(self, item_type: str | None = None, category: str | None = None,
@@ -971,6 +1019,40 @@ class MockBackend:
             self._record_change("cancelled", a, reason)
         return asdict(a)
 
+    def complete_appointment(self, appointment_id: str, amount: float | None = None,
+                             method: str | None = None, note: str | None = None) -> dict[str, Any]:
+        """Mark an appointment done. A paid completion writes the revenue row the insights
+        see; without an amount it is a free/package completion (no revenue fields)."""
+        a = self._appointment(appointment_id)
+        if a.status == "cancelled":
+            raise ValueError("İptal edilmiş bir randevu tamamlanamaz")
+        if a.status == "completed":
+            raise ValueError("Bu randevu zaten tamamlanmış")
+        if method is not None and method not in ("cash", "card", "transfer", "other"):
+            raise ValueError(f"ödeme yöntemi anlaşılmadı: {method!r} (cash | card | transfer | other)")
+        paid = None
+        if amount is not None:
+            try:
+                paid = float(amount)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                raise ValueError(f"tutar sayı olmalı: {amount!r}") from None
+            if not 0 < paid <= 100_000:
+                raise ValueError(f"tutar 0 ile 100000 arasında olmalı: {amount!r}")
+        a.status = "completed"
+        self._record_change("completed", a, note or "")
+        revenue_id: str | None = None
+        if paid is not None:
+            svc = self._item(a.item_id)
+            entry = RevenueEntry(self._next_id("r"), self.today.isoformat(), svc.category, paid,
+                                 svc.name)
+            self.revenue_entries.append(entry)
+            revenue_id = entry.id
+            customer = self._customer(a.customer_id)
+            customer.last_visit = self.today.isoformat()
+            customer.visit_count += 1
+            customer.total_spent = round(customer.total_spent + paid, 2)
+        return {"id": a.id, "status": a.status, "revenue_id": revenue_id, "amount": paid}
+
     def apply_bulk_price(self, preview_id: str) -> dict[str, Any]:
         """Apply a previewed bulk price change. Unknown or expired previews fail like the gateway."""
         pv = self.previews.get(preview_id)
@@ -1022,13 +1104,15 @@ class MockBackend:
     @staticmethod
     def _lead_shape(lead: Lead) -> dict[str, Any]:
         return {"id": lead.id, "name": lead.name, "source": lead.source, "stage": lead.stage,
-                "last_contact": lead.last_contact, "value": lead.value}
+                "last_contact": lead.last_contact, "value": lead.value,
+                "company": lead.company or None}
 
     def find_leads(self, stage: str | None = None, name: str | None = None) -> dict[str, Any]:
-        """Leads by funnel stage and/or accent-insensitive name. Display names only."""
+        """Leads by funnel stage and/or accent-insensitive name. Matches the company name too."""
         q = _fold_name(name or "")
         out = [l for l in self.leads
-               if (not stage or l.stage == stage) and (not q or q in _fold_name(l.name))]
+               if (not stage or l.stage == stage)
+               and (not q or q in _fold_name(l.name) or q in _fold_name(l.company))]
         return {"leads": [self._lead_shape(l) for l in out[:20]], "truncated": len(out) > 20}
 
     def _task_shape(self, t: TaskItem) -> dict[str, Any]:
@@ -1080,7 +1164,8 @@ class MockBackend:
         for l in self.leads:
             funnel[l.stage] = funnel.get(l.stage, 0) + 1
         appts = [a for a in self.appointments if lo <= a.starts[:10] <= hi]
-        done = [a for a in appts if a.status == "confirmed" and a.starts[:10] < hi]
+        done = [a for a in appts if a.status == "completed"
+                or (a.status == "confirmed" and a.starts[:10] < hi)]
         cancelled = [a for a in appts if a.status == "cancelled"]
         booked_min = sum((datetime.fromisoformat(a.ends) - datetime.fromisoformat(a.starts)
                           ).total_seconds() // 60 for a in appts if a.status == "confirmed")
@@ -1188,6 +1273,61 @@ class MockBackend:
         t.status = "completed"
         return {"id": t.id, "status": t.status}
 
+    # -- money + content (task 27): quote drafts, chatbot knowledge ------------- #
+    def create_quote(self, customer_id: str | None = None, lead_id: str | None = None,
+                     items: list[dict[str, Any]] | None = None, valid_days: int | None = None,
+                     note: str | None = None) -> dict[str, Any]:
+        """Draft a quote for one customer or lead. Drafts stay drafts: never sent to anyone."""
+        if bool(customer_id) == bool(lead_id):
+            raise ValueError("teklif için ya müşteri ya lead seç (ikisi birden olmaz, boş da olmaz)")
+        if customer_id:
+            self._customer(customer_id)
+        if lead_id:
+            self._lead(lead_id)
+        total, rows = 0.0, []
+        for row in items or []:
+            item = self._item((row or {}).get("catalog_item_id") or "")
+            qty = (row or {}).get("qty", 0)
+            if isinstance(qty, bool) or not isinstance(qty, int) or not 1 <= qty <= 100:
+                raise ValueError(f"adet 1 ile 100 arasında olmalı: {qty!r}")
+            unit = (row or {}).get("unit_price")
+            try:
+                unit = float(unit) if unit is not None else item.price
+            except (TypeError, ValueError):
+                raise ValueError(f"birim fiyat sayı olmalı: {unit!r}") from None
+            if unit < 0:
+                raise ValueError("birim fiyat negatif olamaz")
+            if unit < item.price / 2:
+                raise ValueError(f"{item.name} katalog fiyatının yarısından ucuza teklif edilemez")
+            total += qty * unit
+            rows.append({"catalog_item_id": item.id, "qty": qty, "unit_price": round(unit, 2)})
+        if not rows:
+            raise ValueError("teklif için en az bir kalem gerekli")
+        q = QuoteDraft(self._next_id("q"), customer_id or "", lead_id or "", rows,
+                       round(total, 2), valid_days, note or "")
+        self.quotes.append(q)
+        return {"id": q.id, "total": q.total, "status": q.status}
+
+    def teach_chatbot(self, question: str, answer: str) -> dict[str, Any]:
+        """Teach the business chatbot one question/answer pair."""
+        q, a = (question or "").strip(), (answer or "").strip()
+        if not q or not a:
+            raise ValueError("chatbot için soru ve cevap gerekli")
+        if len(q) > 200 or len(a) > 1000:
+            raise ValueError("soru en fazla 200, cevap en fazla 1000 karakter olabilir")
+        entry = KnowledgeEntry(self._next_id("k"), q, a)
+        self.knowledge.append(entry)
+        return {"id": entry.id}
+
+    def search_chatbot_knowledge(self, q: str) -> dict[str, Any]:
+        """Knowledge entries matching a question (accent-insensitive, partial)."""
+        needle = _fold_name(q or "")
+        hits = [e for e in self.knowledge
+                if not needle or needle in _fold_name(e.question) or needle in _fold_name(e.answer)]
+        return {"entries": [{"id": e.id, "question": e.question, "answer": e.answer}
+                            for e in hits[:20]],
+                "truncated": len(hits) > 20}
+
     def report(self) -> dict[str, Any]:
         return {
             "backend": self.name,
@@ -1239,6 +1379,23 @@ _IDEMPOTENCY_CONFLICT_TR = {
     "unknown_outcome": ("Bu işlemin sonucu belirsiz (daha önce çalışmış olabilir); "
                         "güvenlik için tekrar denemedim"),
 }
+
+# Completion errors the gateway reports as bare codes: shown in Turkish. A gateway
+# `message` always wins (surfaced verbatim by _gateway_error); this table only covers
+# code-only payloads (gateway K12).
+_COMPLETE_ERROR_TR = {
+    "not_found": "Randevu bulunamadı",
+    "already_cancelled": "Bu randevu zaten iptal edilmiş",
+    "already_completed": "Bu randevu zaten tamamlanmış",
+    "future_appointment": "Randevu saati gelmeden tamamlanamaz",
+    "event_reservation": "Etkinlik rezervasyonları randevu gibi tamamlanamaz",
+    "no_credits": "Pakette kalan hak yok",
+    "subscription_inactive": "Abonelik aktif değil",
+    "package_expired": "Paketin süresi dolmuş",
+    "service_not_allowed": "Bu hizmet pakete dahil değil",
+    "no_assistant": "Bu işletmede chatbot asistanı kurulu değil",
+}
+
 
 # Capabilities in GET /agent/report that count as agent writes for the Live-in-KEDD panel.
 # Reads (catalog.list, segments.create, …) never appear there; appointments.* all merge.
@@ -1386,6 +1543,14 @@ class KeddBackend:
             msg = payload.get("message") or ""
             text = f"{msg} (mevcut kayıt: {rid})" if msg else _already_registered(kind, name, rid)
             return KeddError(text)
+        return err
+
+    @staticmethod
+    def _coded_or_raise(err: KeddError, table: dict[str, str]) -> KeddError:
+        """A listed gateway code without a message → Turkish; a gateway message stays verbatim."""
+        payload = getattr(err, "payload", {}) or {}
+        if payload.get("error") in table and not payload.get("message"):
+            return KeddError(table[payload["error"]])
         return err
 
     @staticmethod
@@ -1611,15 +1776,17 @@ class KeddBackend:
             if (a.get("status") or "") == "cancelled":
                 continue
             sh, eh = self._tr_hhmm(a.get("starts")), self._tr_hhmm(a.get("ends"))
-            appts.append({"time": f"{sh or '?'}–{eh or '?'}", "service": a.get("service") or "?",
-                          "staff": a.get("staff") or "", "customer": a.get("customer") or ""})
+            appts.append({"id": a.get("id", ""), "time": f"{sh or '?'}–{eh or '?'}",
+                          "service": a.get("service") or "?", "staff": a.get("staff") or "",
+                          "customer": a.get("customer") or "", "company": a.get("company")})
         return {"day": res.get("day", day), "business_hours": self._day_hours(hours, day),
                 "appointments": appts, "free_slots": {"-": self._slots_to_gaps(res.get("slots"))}}
 
     def find_customer(self, name: str) -> list[dict[str, Any]]:
         res = self._get("/agent/customers", name=name)
         return [{"id": m.get("id", ""), "name": m.get("name", ""), "last_visit": m.get("lastVisit"),
-                 "visit_count": m.get("visitCount", 0)} for m in res.get("items") or []]
+                 "visit_count": m.get("visitCount", 0), "company": m.get("company")}
+                for m in res.get("items") or []]
 
     def daily_summary(self, day: str) -> dict[str, Any]:
         res = self._get("/agent/daily-summary", day=day)
@@ -1648,7 +1815,8 @@ class KeddBackend:
         return [{"id": a.get("id", ""), "customer": a.get("customer") or "",
                  "service": a.get("service") or "?", "staff": a.get("staff") or "",
                  "starts": self._tr_minutes(a.get("starts")), "ends": self._tr_minutes(a.get("ends")),
-                 "status": self._map_status(a.get("status"))} for a in res.get("appointments") or []]
+                 "status": self._map_status(a.get("status")), "company": a.get("company")}
+                for a in res.get("appointments") or []]
 
     def preview_bulk_price(self, item_type: str | None = None, category: str | None = None,
                            item_ids: list[str] | None = None, mode: str | None = None,
@@ -1886,7 +2054,8 @@ class KeddBackend:
         res = self._get("/agent/leads", stage=stage or "", name=name or "")
         return {"leads": [{"id": l.get("id", ""), "name": l.get("name", ""),
                            "source": l.get("source") or "", "stage": l.get("stage", ""),
-                           "last_contact": l.get("last_contact"), "value": self._f(l.get("value"))}
+                           "last_contact": l.get("last_contact"), "value": self._f(l.get("value")),
+                           "company": l.get("company")}
                           for l in res.get("leads") or []],
                 "truncated": bool(res.get("truncated"))}
 
@@ -2074,6 +2243,56 @@ class KeddBackend:
                       idempotency_key: str | None = None) -> dict[str, Any]:
         res = self._post("/agent/tasks/complete", {"task_id": task_id}, idempotency_key)
         return {"id": res.get("id", task_id), "status": res.get("status", "")}
+
+    # -- money + content (task 27; gateway K12, built against the brief's contract) -- #
+    def search_chatbot_knowledge(self, q: str) -> dict[str, Any]:
+        res = self._get("/agent/chatbot/knowledge", q=q or "")
+        return {"entries": [{"id": e.get("id", ""), "question": e.get("question", ""),
+                             "answer": e.get("answer", "")}
+                            for e in res.get("entries") or [] if isinstance(e, dict)],
+                "truncated": bool(res.get("truncated"))}
+
+    def complete_appointment(self, appointment_id: str, amount: float | None = None,
+                             method: str | None = None, note: str | None = None,
+                             idempotency_key: str | None = None) -> dict[str, Any]:
+        try:
+            res = self._post("/agent/appointments/complete",
+                             {"appointment_id": appointment_id, "amount": amount,
+                              "method": method, "note": note},
+                             idempotency_key)
+        except KeddError as e:
+            raise self._coded_or_raise(e, _COMPLETE_ERROR_TR) from None
+        return {"id": res.get("id", appointment_id),
+                "status": self._map_status(res.get("status", "completed")),
+                "revenue_id": res.get("revenue_id"), "amount": self._f(res.get("amount"))}
+
+    def create_quote(self, customer_id: str | None = None, lead_id: str | None = None,
+                     items: list[dict[str, Any]] | None = None, valid_days: int | None = None,
+                     note: str | None = None,
+                     idempotency_key: str | None = None) -> dict[str, Any]:
+        if bool(customer_id) == bool(lead_id):
+            raise ValueError("teklif için ya müşteri ya lead seç (ikisi birden olmaz, boş da olmaz)")
+        rows = []
+        for r in items or []:
+            row = {"catalog_item_id": (r or {}).get("catalog_item_id"), "qty": (r or {}).get("qty")}
+            if (r or {}).get("unit_price") is not None:
+                row["unit_price"] = r["unit_price"]
+            rows.append(row)
+        res = self._post("/agent/quotes",
+                         {"customer_id": customer_id, "lead_id": lead_id, "items": rows,
+                          "valid_days": valid_days, "note": note},
+                         idempotency_key)
+        return {"id": res.get("id", ""), "total": self._f(res.get("total")) or 0.0,
+                "status": res.get("status", "draft")}
+
+    def teach_chatbot(self, question: str, answer: str,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        try:
+            res = self._post("/agent/chatbot/knowledge", {"question": question, "answer": answer},
+                             idempotency_key)
+        except KeddError as e:
+            raise self._coded_or_raise(e, _COMPLETE_ERROR_TR) from None
+        return {"id": res.get("id", "")}
 
     def report(self) -> dict[str, Any]:
         self._get("/agent/report")  # usage counters have no mock counterpart; the call only checks liveness
