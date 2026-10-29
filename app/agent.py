@@ -26,7 +26,7 @@ from . import meta_client as meta
 from .actions import PROPOSAL_SCHEMA, validate_proposal
 from .config import settings
 from .pipeline import MediaContext
-from .tools.backend import Backend
+from .tools.backend import Backend, KeddBackend
 
 log = logging.getLogger(__name__)
 
@@ -246,8 +246,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
 
         calls = [o for o in response.output if o.type == "function_call"]
         if not calls:
-            # Model answered in prose. Nudge it back to the protocol once.
-            log.warning("no tool call; nudging. text=%r", (response.output_text or "")[:200])
+            # Model answered in prose. Nudge it back to the protocol (length only, never the text).
+            log.warning("no tool call; nudging. prose_chars=%d", len(response.output_text or ""))
             response = client.responses.create(
                 model=settings.orchestrator_model,
                 previous_response_id=response.id,
@@ -269,15 +269,18 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
             elif call.name == "propose_actions":
                 errors = validate_proposal(args, known_temp, catalog, run.segments,
                                            run.appointments, run.customers,
-                                           run.previews, run.campaigns, run.templates)
+                                           run.previews, run.campaigns, run.templates,
+                                           requires_template=isinstance(backend, KeddBackend))
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:
                     run.proposal = args
                     return run
                 revisions += 1
-                log.warning("proposal rejected (%d/%d): %s\n  proposal=%s", revisions, max_revisions, errors,
-                            json.dumps(args, ensure_ascii=False)[:1500])
+                codes = sorted({e.split(":")[0] if e.startswith("actions[") else "plan" for e in errors})
+                types = sorted({a.get("type", "?") for a in args.get("actions", [])})
+                log.warning("proposal rejected (%d/%d): %d errors codes=%s types=%s",
+                            revisions, max_revisions, len(errors), codes, types)
                 if revisions > max_revisions:
                     raise RuntimeError(f"proposal still invalid after {max_revisions} revisions: {errors}")
                 result = {"accepted": False, "errors": errors,

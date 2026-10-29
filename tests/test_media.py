@@ -39,6 +39,12 @@ def _which(fake):
 # voice: to_wav_24k_mono
 # --------------------------------------------------------------------------- #
 
+def _ogg_src(tmp_path, name="n.ogg"):
+    src = tmp_path / name
+    src.write_bytes(b"OggS" + b"\x00" * 64)
+    return src
+
+
 def test_to_wav_rejects_long_audio_before_converting(monkeypatch, tmp_path):
     monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
     monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 200.0)
@@ -46,8 +52,7 @@ def test_to_wav_rejects_long_audio_before_converting(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise AssertionError("must reject before running ffmpeg")
     monkeypatch.setattr(subprocess, "run", boom)
-    src = tmp_path / "long.ogg"
-    src.write_bytes(b"fake")
+    src = _ogg_src(tmp_path, "long.ogg")
     with pytest.raises(ValueError, match="Sesli not 3 dakikadan uzun"):
         meta.to_wav_24k_mono(src)
 
@@ -55,9 +60,12 @@ def test_to_wav_rejects_long_audio_before_converting(monkeypatch, tmp_path):
 def test_to_wav_duration_boundary(monkeypatch, tmp_path):
     monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
     ran = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: ran.append(cmd))
-    src = tmp_path / "n.ogg"
-    src.write_bytes(b"fake")
+
+    def fake_run(cmd, **k):
+        ran.append(cmd)
+        _write_wav(cmd[-1], 10)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    src = _ogg_src(tmp_path)
     monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 180.0)
     assert meta.to_wav_24k_mono(src).suffix == ".wav" and len(ran) == 1   # exactly 3:00 passes
     monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 180.1)
@@ -80,7 +88,7 @@ def test_to_wav_corrupt_audio_is_turkish_valueerror(monkeypatch, tmp_path):
         raise subprocess.CalledProcessError(1, ["ffmpeg"])
     monkeypatch.setattr(subprocess, "run", fail)
     with pytest.raises(ValueError, match="Sesli not açılamadı"):
-        meta.to_wav_24k_mono(tmp_path / "broken.ogg")
+        meta.to_wav_24k_mono(_ogg_src(tmp_path, "broken.ogg"))
 
 
 def _write_wav(path, seconds, rate=24000):
@@ -99,11 +107,11 @@ def test_to_wav_measures_wav_when_ffprobe_missing(monkeypatch, tmp_path):
         _write_wav(cmd[-1], fake_run.seconds)
     fake_run.seconds = 10
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert meta.to_wav_24k_mono(tmp_path / "n.ogg").suffix == ".wav"
+    assert meta.to_wav_24k_mono(_ogg_src(tmp_path)).suffix == ".wav"
 
     fake_run.seconds = 200
     with pytest.raises(ValueError, match="Sesli not 3 dakikadan uzun"):
-        meta.to_wav_24k_mono(tmp_path / "long.ogg")
+        meta.to_wav_24k_mono(_ogg_src(tmp_path, "long.ogg"))
 
 
 def _ffmpeg_has(encoder):
@@ -442,3 +450,84 @@ def test_check_api_all_pass(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "FAIL" not in out
     assert "All requested checks passed." in out
+
+
+# --------------------------------------------------------------------------- #
+# task 15, item 14: ffmpeg/ffprobe hardening
+# --------------------------------------------------------------------------- #
+
+def test_t15_to_wav_rejects_unknown_magic_and_missing_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
+
+    def boom(*a, **k):
+        raise AssertionError("no subprocess for a file that is not audio")
+    monkeypatch.setattr(subprocess, "run", boom)
+    bad = tmp_path / "x.ogg"
+    bad.write_bytes(b"\x7fELF-not-audio" + b"\x00" * 64)
+    with pytest.raises(ValueError, match="Sesli not açılamadı"):
+        meta.to_wav_24k_mono(bad)
+    with pytest.raises(ValueError, match="Sesli not açılamadı"):
+        meta.to_wav_24k_mono(tmp_path / "missing.ogg")
+
+
+def test_t15_to_wav_allows_listed_containers(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
+    monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 5.0)
+
+    def fake_run(cmd, **k):
+        _write_wav(cmd[-1], 5)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    heads = {"a.ogg": b"OggS", "a.webm": b"\x1a\x45\xdf\xa3", "a.m4a": b"\x00\x00\x00\x20ftyp",
+             "a.mp3": b"ID3\x04\x00", "a.mp3b": b"\xff\xfb\x90\x00", "a.wav": b"RIFF\x00\x00\x00\x00WAVE"}
+    for name, head in heads.items():
+        src = tmp_path / name
+        src.write_bytes(head + b"\x00" * 64)
+        assert meta.to_wav_24k_mono(src).suffix == ".wav", name
+
+
+def test_t15_ffmpeg_cmd_is_locked_down(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
+    monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 5.0)
+    seen = {}
+
+    def fake_run(cmd, **k):
+        seen["cmd"], seen["timeout"] = cmd, k.get("timeout")
+        _write_wav(cmd[-1], 5)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    meta.to_wav_24k_mono(_ogg_src(tmp_path))
+    cmd = seen["cmd"]
+    assert "-protocol_whitelist" in cmd and "file,pipe" in cmd
+    assert "-t" in cmd and "181" in cmd
+    assert seen["timeout"] == 60
+
+
+def test_t15_ffprobe_has_a_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", _which({"ffprobe": "/usr/bin/ffprobe"}))
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: seen.update(timeout=k.get("timeout")) or
+                        SimpleNamespace(stdout="12.5\n"))
+    assert meta._audio_duration_s(tmp_path) == 12.5
+    assert seen["timeout"] == 60
+
+
+def test_t15_wav_duration_always_checked(monkeypatch, tmp_path):
+    # ffprobe says 10 s but the converted WAV is really 200 s (lying header): reject anyway
+    monkeypatch.setattr(shutil, "which", _which({"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}))
+    monkeypatch.setattr(meta, "_audio_duration_s", lambda p: 10.0)
+
+    def fake_run(cmd, **k):
+        _write_wav(cmd[-1], 200)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="Sesli not 3 dakikadan uzun"):
+        meta.to_wav_24k_mono(_ogg_src(tmp_path))
+
+
+# --------------------------------------------------------------------------- #
+# task 15, item 12: no user content in logs (vision output)
+# --------------------------------------------------------------------------- #
+
+def test_t15_vision_fallback_logs_no_model_output(monkeypatch, caplog):
+    monkeypatch.setattr(meta, "describe_image", lambda img, prompt: "gizli-vizyon-çıktısı, alın bence")
+    with caplog.at_level("WARNING", logger="app.pipeline"):
+        pipeline.describe_crop(Image.new("RGB", (8, 8)))
+    assert "gizli-vizyon-çıktısı" not in caplog.text

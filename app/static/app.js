@@ -97,9 +97,25 @@
     return r.json();
   }
 
+  // Same approval vocabulary the server accepts (core YES/NO): if one of these was
+  // queued while a response with an approval card was still in flight, it must NOT
+  // auto-send — the owner never saw the card they would be approving.
+  const APPROVAL_WORDS = new Set([
+    "evet", "e", "onay", "onaylıyorum", "tamam", "ok", "olur", "yes", "y", "gönder",
+    "evet gönder", "hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur",
+  ]);
+  let cardArrived = false;
+
+  function normApproval(s) {
+    return (s || "").trim().toLowerCase().replace(/^[.!?,👍\s]+|[.!?,👍\s]+$/g, "");
+  }
+
   function renderResponse(data) {
     for (const s of data.status || []) addStatus(s);
-    for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
+    for (const rep of data.replies || []) {
+      addBubble("them", rep.text || "", rep.image_url || null);
+      if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
+    }
     setBusiness(data.business_name, data.business);
   }
 
@@ -107,6 +123,15 @@
     if (!queued || busy) return;
     const q = queued;
     queued = null;
+    if (q.kind === "message" && cardArrived && APPROVAL_WORDS.has(normApproval(q.text))) {
+      cardArrived = false;
+      if (q.el) q.el.remove();
+      textInput.value = q.text || "";
+      textInput.focus();
+      addStatus("Kart geldi — onayı otomatik göndermedim, karta bakıp sen gönder."
+        + (q.images.length || q.audioBlob ? " Fotoğraf/ses notunu tekrar eklemen gerek." : ""));
+      return;
+    }
     if (q.kind === "brief") runBrief(q.el);
     else runMessage({ text: q.text, audioBlob: q.audioBlob, images: q.images, pendingEl: q.el });
   }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from .pipeline import MediaContext
@@ -9,6 +10,20 @@ from .tools.backend import render_campaign_template
 
 _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
          "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌"}
+
+_NAME_CHARS = 40   # names, variables and other short third-party strings on the card
+_DESC_CHARS = 120  # catalog descriptions show what will be written, so they get more room
+_PROMPT_CHARS = 80
+
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")  # newlines, tabs and other controls
+
+
+def clean_display(text: Any, max_chars: int = _NAME_CHARS) -> str:
+    """Make a third-party string safe for one card line: control chars and newlines collapse
+    to one space, WhatsApp markup chars are stripped (a name must not reformat the card),
+    and the result is truncated."""
+    s = _CONTROL_RE.sub(" ", str(text or "")).strip()
+    return s.replace("*", "").replace("_", "").replace("~", "")[:max_chars]
 
 
 def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
@@ -48,17 +63,19 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
         if not p:
             return "💸 Toplu fiyat: ⚠️ önizleme bulunamadı"
         items = p.get("items") or []
-        head = ", ".join(f"{i['name']} {i['old_price']:,.0f}→{i['new_price']:,.0f} ₺" for i in items[:3])
+        head = ", ".join(f"{clean_display(i['name'])} {i['old_price']:,.0f}→{i['new_price']:,.0f} ₺"
+                         for i in items[:3])
         more = f" (+{len(items) - 3} kalem daha)" if len(items) > 3 else ""
         return f"💸 Toplu fiyat: {len(items)} kalem — {head}{more}"
     if t == "adjust_loyalty":
         pts = a.get("points")
         sign = f"+{pts}" if isinstance(pts, int) and pts > 0 else f"{pts}"
-        reason = f" ({a['reason']})" if a.get("reason") else ""
-        return f"⭐ Puan: {f['customers'].get(a.get('customer_id'), a.get('customer_id'))} {sign}{reason}"
+        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+        reason = f" ({clean_display(a['reason'])})" if a.get("reason") else ""
+        return f"⭐ Puan: {who} {sign}{reason}"
     if t == "ads_action":
         c = f["campaigns"].get(a.get("campaign_id")) or {}
-        name = c.get("name") or a.get("campaign_id")
+        name = clean_display(c.get("name") or a.get("campaign_id"))
         act, d = a.get("action"), a.get("delta_pct")
         if act in ("increase_budget", "decrease_budget") and isinstance(d, int):
             old = c.get("daily_budget")
@@ -69,13 +86,14 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any]) -> str:
             verb = {"pause": "durdurulacak", "resume": "yeniden başlatılacak"}.get(act, str(act))
         return f"📢 Reklam: {name} — {verb}"
     if t == "create_appointment":
-        svc = (f["items"].get(a.get("item_ref")) or {}).get("name", a.get("item_ref"))
-        who = f["customers"].get(a.get("customer_id"), a.get("customer_id"))
-        return f"📅 Randevu: {who} — {svc}, {a.get('staff')}, {_when(a.get('starts'))}"
+        svc = clean_display((f["items"].get(a.get("item_ref")) or {}).get("name", a.get("item_ref")))
+        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+        return f"📅 Randevu: {who} — {svc}, {clean_display(a.get('staff'))}, {_when(a.get('starts'))}"
     ap = f["appointments"].get(a.get("appointment_id")) or {}
-    base = f"{ap.get('customer', '?')} — {ap.get('service', '?')}, {_when(ap.get('starts'))}"
+    base = (f"{clean_display(ap.get('customer', '?'))} — {clean_display(ap.get('service', '?'))}, "
+            f"{_when(ap.get('starts'))}")
     if t == "reschedule_appointment":
-        staff = f", {a['staff']}" if a.get("staff") else ""
+        staff = f", {clean_display(a['staff'])}" if a.get("staff") else ""
         return f"🔁 Randevu taşınıyor: {base} → {_when(a.get('starts'))}{staff}"
     return f"❌ Randevu iptal: {base}"
 
@@ -86,31 +104,59 @@ _FACT_TYPES = {"apply_bulk_price", "adjust_loyalty", "ads_action", "create_appoi
 
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int],
                 facts: dict[str, Any] | None = None) -> str:
-    """The text the merchant sees (WhatsApp-style)."""
+    """The text the merchant sees (WhatsApp-style). Action lines first, then the model's note,
+    so the prose cannot frame what is actually about to run."""
     facts = facts or card_facts([])
-    names = {p.temp_id: p.name for p in ctx.products}
-    lines = ["*Çırak — onayına sunuyorum*", "", proposal["summary_tr"].strip(), ""]
+    products = {p.temp_id: p for p in ctx.products}
+    new_items: dict[str, str] = {}  # temp_id / ref -> display name, for discounts below
+    for a in proposal["actions"]:
+        if a.get("type") == "add_catalog_item":
+            handle = a.get("temp_id") or a.get("ref")
+            if handle:
+                card = products.get(a.get("temp_id") or "")
+                new_items[handle] = a.get("name") or (card.name if card else "?")
+    lines = ["*Çırak — onayına sunuyorum*", ""]
     for a in proposal["actions"]:
         t = a["type"]; ic = _ICON.get(t, "•")
         if t == "add_catalog_item":
             kind = "Hizmet" if a.get("item_type") == "service" else "Ürün"
-            name = a.get("name") or names.get(a.get("temp_id"), "?")
+            card = products.get(a.get("temp_id") or "")
+            name = clean_display(a.get("name") or (card.name if card else "?"))
+            # Same fallbacks the executor writes: explicit fields win, vision fills the gaps.
+            category = clean_display(a.get("category") or (card.category if card else ""))
+            desc = clean_display(a.get("description") or (card.description if card else ""),
+                                 _DESC_CHARS)
             extra = f", {a['duration_minutes']} dk" if a.get("duration_minutes") else ""
             src = " 📷" if a.get("temp_id") else ""
-            lines.append(f"{ic} {kind}: {name} — {a.get('price'):,.0f} ₺{extra}{src}")
+            line = f"{ic} {kind}: {name} — {a.get('price'):,.0f} ₺{extra}{src}"
+            if category:
+                line += f" · {category}"
+            if desc:
+                line += f" — {desc}"
+            lines.append(line)
         elif t == "create_discount":
+            refs = a.get("item_refs") or []
+            resolved = [clean_display(new_items.get(r) or (facts["items"].get(r) or {}).get("name") or r)
+                        for r in refs]
+            shown = ", ".join(resolved[:5])
+            if len(resolved) > 5:
+                shown += f" +{len(resolved) - 5} kalem"
             lines.append(f"{ic} İndirim: %{a.get('percent')} ({a.get('starts')} → {a.get('ends')}) — "
-                         f"{len(a.get('item_refs') or [])} kalem")
+                         f"{shown or f'{len(refs)} kalem'}")
         elif t == "generate_visual":
-            lines.append(f"{ic} Kampanya görseli üretilecek")
+            prompt = clean_display(a.get("visual_prompt"), _PROMPT_CHARS)
+            lines.append(f"{ic} Kampanya görseli üretilecek" + (f": “{prompt}”" if prompt else ""))
         elif t == "send_campaign":
             n = segment_counts.get(a.get("segment_id"), "?")
-            lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj")
+            attach = " 📎 görsel eklenecek" if a.get("attach_visual") else ""
+            lines.append(f"{ic} WhatsApp: {n} müşteriye mesaj{attach}")
             if a.get("template"):
                 tmpl = facts["templates"].get(a["template"])
                 if tmpl:
+                    display_vars = {k: clean_display(v)
+                                    for k, v in ((a.get("variables") or {}).items())}
                     rendered = render_campaign_template(
-                        tmpl["body"], {"1": "‹müşteri adı›", **(a.get("variables") or {})})
+                        tmpl["body"], {"1": "‹müşteri adı›", **display_vars})
                     lines.append(f"   “{rendered}”")
                 else:
                     lines.append(f"   “⚠️ şablon bulunamadı: {a['template']}”")
@@ -118,7 +164,8 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                 lines.append(f"   “{a.get('message')}”")
         elif t in _FACT_TYPES:
             lines.append(_fact_line(t, a, facts))
-    lines += ["", "Onaylıyor musun? (evet / hayır)"]
+    lines += ["", f"Çırak'ın notu: {proposal['summary_tr'].strip()}", "",
+                "Onaylıyor musun? (evet / hayır)"]
     return "\n".join(lines)
 
 

@@ -21,9 +21,11 @@ log = logging.getLogger(__name__)
 
 Dispatch = Callable[[dict], None]          # receives Inbound.to_dict()
 SeenCheck = Callable[[str], bool]          # returns True the FIRST time an id is seen
+Unmark = Callable[[str], None]             # forget an id again so a redelivery is processed
 
 
-def create_app(dispatch: Dispatch, first_time: SeenCheck) -> FastAPI:
+def create_app(dispatch: Dispatch, first_time: SeenCheck,
+               unmark: Unmark | None = None) -> FastAPI:
     api = FastAPI(title="Çırak webhook", docs_url=None, redoc_url=None, openapi_url=None)
 
     @api.get("/health")
@@ -47,6 +49,8 @@ def create_app(dispatch: Dispatch, first_time: SeenCheck) -> FastAPI:
             payload = json.loads(raw)
         except ValueError:
             raise HTTPException(status_code=400)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400)
         for msg in wa.parse_webhook(payload):
             if not wa.is_allowed(msg.sender):
                 log.warning("ignored message from non-allowed sender …%s", msg.sender[-4:])
@@ -55,7 +59,15 @@ def create_app(dispatch: Dispatch, first_time: SeenCheck) -> FastAPI:
             if not await run_in_threadpool(first_time, msg.id):
                 log.info("duplicate delivery %s ignored", msg.id)
                 continue
-            await run_in_threadpool(dispatch, msg.to_dict())
+            try:
+                await run_in_threadpool(dispatch, msg.to_dict())
+            except Exception:
+                # The job never started: un-mark the id and fail loud, so Meta's redelivery
+                # is treated as new instead of dropped as a duplicate.
+                log.exception("dispatch failed for %s", msg.id)
+                if unmark is not None:
+                    await run_in_threadpool(unmark, msg.id)
+                raise HTTPException(status_code=500)
         return {"ok": True}
 
     return api
@@ -78,13 +90,17 @@ def _local_app() -> FastAPI:
             seen.add(mid)
             return True
 
+    def unmark(mid: str) -> None:
+        with lock:
+            seen.discard(mid)
+
     def dispatch(msg: dict) -> None:
         def run():
             with lock:   # serialise per process; fine for a demo
                 process_inbound(msg, sessions.get, sessions.__setitem__)
         threading.Thread(target=run, daemon=True).start()
 
-    return create_app(dispatch, first_time)
+    return create_app(dispatch, first_time, unmark=unmark)
 
 
 def __getattr__(name: str):

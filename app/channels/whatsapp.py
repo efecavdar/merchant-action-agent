@@ -23,6 +23,8 @@ from ..config import settings
 log = logging.getLogger(__name__)
 
 MAX_TEXT = 4096
+MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+_TOO_BIG_TR = "Medya 16 MB'tan büyük, daha küçük bir dosya dener misin?"
 
 
 @dataclass
@@ -108,22 +110,42 @@ def download_media(media_id: str, dest_dir: Path) -> Path:
     meta = requests.get(f"{settings.graph_api}/{media_id}", headers=_auth(), timeout=30)
     meta.raise_for_status()
     info = meta.json()
-    blob = requests.get(info["url"], headers=_auth(), timeout=60)
+    blob = requests.get(info["url"], headers=_auth(), timeout=60, stream=True)
     blob.raise_for_status()
+    try:
+        declared = int(blob.headers.get("Content-Length") or 0)
+    except (ValueError, TypeError):
+        declared = 0
+    if declared > MAX_DOWNLOAD_BYTES:
+        raise ValueError(f"{_TOO_BIG_TR} (media {media_id})")
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in blob.iter_content(chunk_size=65536):
+        size += len(chunk)
+        if size > MAX_DOWNLOAD_BYTES:
+            raise ValueError(f"{_TOO_BIG_TR} (media {media_id})")
+        chunks.append(chunk)
     ext = mimetypes.guess_extension((info.get("mime_type") or "").split(";")[0]) or ".bin"
     if ext == ".oga":
         ext = ".ogg"
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / f"{media_id}{ext}"
-    path.write_bytes(blob.content)
+    path.write_bytes(b"".join(chunks))
     return path
+
+
+def _graph_error_code(r: Any) -> Any:
+    try:
+        return r.json().get("error", {}).get("code", "?")
+    except (ValueError, AttributeError):
+        return "?"
 
 
 def _post_message(body: dict[str, Any]) -> dict[str, Any]:
     r = requests.post(f"{settings.graph_api}/{settings.wa_phone_number_id}/messages",
                       headers=_auth(), json={"messaging_product": "whatsapp", **body}, timeout=30)
     if r.status_code >= 400:
-        log.error("send failed %s: %s", r.status_code, r.text[:500])
+        log.error("send failed status=%s code=%s", r.status_code, _graph_error_code(r))
     r.raise_for_status()
     return r.json()
 
