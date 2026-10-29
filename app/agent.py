@@ -39,7 +39,8 @@ or to answer a question from the business data.
 Rules:
 - Always start with get_store_profile (sector, today's date, staff, tone). Never plan blind.
 - Two ways to finish, exactly one of them, exactly once:
-  * propose_actions — when something must be written: catalog, discount, campaign, appointment.
+  * propose_actions — when something must be written: catalog, discount, campaign, appointment,
+    customer, lead, task.
   * reply_only — when the owner only asks something ("bugün ne oldu?", "yarın boşluk var mı?", "Ayşe'nin randevusu
     ne zaman?"). Answer in Turkish, 3-6 short lines, informal (sen), numbers ONLY from tool results, one emoji max.
     For "bugün ne oldu / nasıl geçti" call get_daily_summary(today) and summarise: appointments, revenue, new
@@ -60,6 +61,12 @@ Rules:
   appointment action carries a `label` the owner can read ("Elif K. — Demo Görüşmesi, Efe, Cuma 15:00").
 - Audience: call find_customers whenever the owner wants to notify customers; never invent a segment id.
   "uzun süredir gelmeyenler" ≈ inactive_days 60; "sadık / müdavim" ≈ min_visits 3; "yeni gelenler" ≈ 1 visit.
+- Leads and tasks: resolve ids with find_leads / list_tasks in this run (or chain a ref you create
+  earlier in the same plan). Lead stages are new → contacted → qualified → proposal → won (or lost).
+  New customers and leads start without marketing consent: never promise them a campaign message.
+- Numbers questions ("bu hafta nasıldı?", "huni ne durumda?") and the morning brief are answered
+  from get_insights plus list_tasks; a morning brief ends with one line: this week vs last week
+  revenue, then open/overdue task counts.
 - Messages: Turkish, in the business's tone, personal, mention only discounts and prices that are in THIS plan,
   one emoji at most, under 350 characters. Do not promise anything the plan does not do.
 - Template campaigns: a business-initiated WhatsApp message is only delivered through an approved
@@ -168,6 +175,30 @@ TOOLS: list[dict[str, Any]] = [
                     "customer_id.",
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
                     "required": ["name"], "additionalProperties": False}},
+    {"type": "function", "name": "find_leads",
+     "description": "Leads in the funnel, by stage and/or (partial) name. Returns lead ids for "
+                    "set_lead_stage/add_lead_note.",
+     "parameters": {"type": "object",
+                    "properties": {"stage": {"type": "string",
+                                              "enum": ["new", "contacted", "qualified", "proposal",
+                                                       "won", "lost"]},
+                                   "name": {"type": "string"}},
+                    "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "list_tasks",
+     "description": "Tasks with due dates and linked customers/leads. Returns task ids for "
+                    "complete_task.",
+     "parameters": {"type": "object",
+                    "properties": {"status": {"type": "string",
+                                              "enum": ["open", "overdue", "completed", "all"]}},
+                    "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "get_insights",
+     "description": "Business performance for the last N days: revenue vs the previous window, "
+                    "top items, lead funnel, appointment load. Use for 'bu hafta nasıldı?' and "
+                    "the morning brief.",
+     "parameters": {"type": "object",
+                    "properties": {"days": {"type": "integer",
+                                            "description": "window, 1-90 (default 7)"}},
+                    "required": [], "additionalProperties": False}},
     {"type": "function", "name": "propose_actions",
      "description": "Submit the final plan for human approval. Call exactly once when done.",
      "parameters": PROPOSAL_SCHEMA},
@@ -188,6 +219,8 @@ class AgentRun:
     previews: dict[str, dict[str, Any]] = field(default_factory=dict)
     campaigns: set[str] = field(default_factory=set)
     templates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    leads: set[str] = field(default_factory=set)
+    tasks: set[str] = field(default_factory=set)
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     turns: int = 0
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
@@ -247,6 +280,16 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         # validation then enforces "resolved in this run" for adjust_loyalty.
         run.customers.update(m["member_id"] for m in res.get("members") or [])
         return res
+    if name == "find_leads":
+        res = backend.find_leads(stage=args.get("stage"), name=args.get("name"))
+        run.leads.update(l["id"] for l in res.get("leads") or [])
+        return res
+    if name == "list_tasks":
+        res = backend.list_tasks(status=args.get("status"))
+        run.tasks.update(t["id"] for t in res.get("tasks") or [])
+        return res
+    if name == "get_insights":
+        return backend.get_insights(args.get("days", 7))
     raise KeyError(name)
 
 
@@ -306,7 +349,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
                 errors = validate_proposal(args, known_temp, catalog, run.segments,
                                            run.appointments, run.customers,
                                            run.previews, run.campaigns, run.templates,
-                                           requires_template=isinstance(backend, KeddBackend))
+                                           requires_template=isinstance(backend, KeddBackend),
+                                           known_leads=run.leads, known_tasks=run.tasks)
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:

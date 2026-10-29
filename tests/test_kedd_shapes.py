@@ -56,7 +56,9 @@ def _kb(*fixtures: str, **overrides) -> KeddBackend:
                                     "discounts", "appointment_create", "appointment_reschedule",
                                     "appointment_cancel", "social_post", "campaigns_dryrun",
                                     "campaigns_send", "loyalty_adjust", "ads_action",
-                                    "ads_pause"} else "GET"
+                                    "ads_pause", "crm_customer_create", "crm_customer_update",
+                                    "crm_lead_create", "crm_lead_stage", "crm_lead_note",
+                                    "crm_task_create", "crm_task_complete"} else "GET"
         routes[(method, _PATHS[name])] = _load(name)
     routes.update(overrides)
     kb = KeddBackend(BASE, "s3cret", "+905321")
@@ -90,6 +92,16 @@ _PATHS = {
     "loyalty_adjust": "/agent/loyalty/adjust",
     "ads_action": "/agent/ads/action",
     "ads_pause": "/agent/ads/action",
+    "crm_leads": "/agent/leads",
+    "crm_tasks": "/agent/tasks",
+    "crm_insights": "/agent/insights",
+    "crm_customer_create": "/agent/customers",
+    "crm_customer_update": "/agent/customers/update",
+    "crm_lead_create": "/agent/leads",
+    "crm_lead_stage": "/agent/leads/stage",
+    "crm_lead_note": "/agent/leads/note",
+    "crm_task_create": "/agent/tasks",
+    "crm_task_complete": "/agent/tasks/complete",
 }
 
 
@@ -227,6 +239,35 @@ CASES = [
     ("ads_action_budget", ["ads_performance", "ads_action"],
      lambda m: m.ads_action(m.ads[0].id, "increase_budget", 10),
      lambda k: k.ads_action("ad-1", "increase_budget", 10), []),
+    ("find_leads", ["crm_leads"],
+     lambda m: m.find_leads(), lambda k: k.find_leads(), ["leads"]),
+    ("find_leads_filtered", ["crm_leads"],
+     lambda m: m.find_leads(stage="new"), lambda k: k.find_leads(stage="new"), []),
+    ("list_tasks", ["crm_tasks"],
+     lambda m: m.list_tasks(), lambda k: k.list_tasks(), ["tasks"]),
+    ("get_insights", ["crm_insights"],
+     lambda m: m.get_insights(7), lambda k: k.get_insights(7), ["top_items"]),
+    ("create_customer", ["crm_customer_create"],
+     lambda m: m.create_customer("Zeynep Test", tags=["vip"]),
+     lambda k: k.create_customer("Ada Kafe", tags=["kafe"]), []),
+    ("update_customer", ["crm_customer_update"],
+     lambda m: m.update_customer(m.customers[0].id, add_tags=["vip"]),
+     lambda k: k.update_customer("c-9", add_tags=["vip"]), ["tags"]),
+    ("create_lead", ["crm_lead_create"],
+     lambda m: m.create_lead("Test Kıraathane", estimated_value=1000),
+     lambda k: k.create_lead("Lavanta Spa", estimated_value=6000), []),
+    ("set_lead_stage", ["crm_lead_stage"],
+     lambda m: m.set_lead_stage(m.leads[0].id, "contacted"),
+     lambda k: k.set_lead_stage("lead-1", "won"), []),
+    ("add_lead_note", ["crm_lead_note"],
+     lambda m: m.add_lead_note(m.leads[0].id, "Perşembe aranacak"),
+     lambda k: k.add_lead_note("lead-1", "Perşembe aranacak"), []),
+    ("create_task", ["crm_task_create"],
+     lambda m: m.create_task("Test görevi", "2026-10-30"),
+     lambda k: k.create_task("Ada Kafe'yi ara", "2026-10-30T10:00"), []),
+    ("complete_task", ["crm_task_complete"],
+     lambda m: m.complete_task(m.tasks[0].id),
+     lambda k: k.complete_task("task-1"), []),
 ]
 
 

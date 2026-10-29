@@ -195,6 +195,57 @@ STRINGS: dict[str, dict[str, str]] = {
     # -- core.py: KEDD panel note appended to the final report ------------------------
     "kedd.panel_note": {"tr": "🔔 Hepsi KEDD panelinde bildirimlerde.",
                         "en": "🔔 It's all in the KEDD panel notifications."},
+    # -- approval.py: CRM card lines ------------------------------------------------
+    "card.new_customer": {"tr": "👤 Yeni müşteri: {name}{tags}", "en": "👤 New customer: {name}{tags}"},
+    "card.new_customer_tags": {"tr": " (etiket: {tags})", "en": " (tags: {tags})"},
+    "card.customer_updated": {"tr": "🏷️ {name}: {parts}", "en": "🏷️ {name}: {parts}"},
+    "card.tag_added": {"tr": "+etiket {tags}", "en": "+tag {tags}"},
+    "card.tag_removed": {"tr": "-etiket {tags}", "en": "-tag {tags}"},
+    "card.note_added": {"tr": "not eklendi", "en": "note added"},
+    "card.renamed": {"tr": "yeni ad: {name}", "en": "new name: {name}"},
+    "card.new_lead": {"tr": "🧲 Yeni lead: {name}{value}", "en": "🧲 New lead: {name}{value}"},
+    "card.lead_value": {"tr": " — tahmini {amount} ₺", "en": " — est. {amount} ₺"},
+    "card.lead_stage": {"tr": "📈 {name}: {prev} → {new}", "en": "📈 {name}: {prev} → {new}"},
+    "card.stage.new": {"tr": "yeni", "en": "new"},
+    "card.stage.contacted": {"tr": "temasta", "en": "contacted"},
+    "card.stage.qualified": {"tr": "nitelikli", "en": "qualified"},
+    "card.stage.proposal": {"tr": "teklif", "en": "proposal"},
+    "card.stage.won": {"tr": "kazanıldı", "en": "won"},
+    "card.stage.lost": {"tr": "kaybedildi", "en": "lost"},
+    "card.lead_note": {"tr": "📝 Not: {note}", "en": "📝 Note: {note}"},
+    "card.task": {"tr": "⏰ Görev: {title} — {when}", "en": "⏰ Task: {title} — {when}"},
+    "card.task_done": {"tr": "✅ Görev tamamlandı: {title}", "en": "✅ Task completed: {title}"},
+    "card.consent_note": {"tr": "🔕 Yeni müşteriye onayı olmadığı için kampanya gönderilemez",
+                          "en": "🔕 The new customer has no marketing consent, so no campaign can be sent"},
+    # -- executor progress lines: CRM ------------------------------------------------
+    "progress.new_customer": {"tr": "✅ {i}/{n} Yeni müşteri: {name}{tags}",
+                              "en": "✅ {i}/{n} New customer: {name}{tags}"},
+    "progress.customer_updated": {"tr": "✅ {i}/{n} {name}: {parts}",
+                                  "en": "✅ {i}/{n} {name}: {parts}"},
+    "progress.new_lead": {"tr": "✅ {i}/{n} Yeni lead: {name}{value}",
+                          "en": "✅ {i}/{n} New lead: {name}{value}"},
+    "progress.lead_stage": {"tr": "✅ {i}/{n} Lead: {prev} → {new}",
+                            "en": "✅ {i}/{n} Lead: {prev} → {new}"},
+    "progress.lead_note": {"tr": "✅ {i}/{n} Not: {note}", "en": "✅ {i}/{n} Note: {note}"},
+    "progress.task": {"tr": "✅ {i}/{n} Görev: {title} — {when}",
+                      "en": "✅ {i}/{n} Task: {title} — {when}"},
+    "progress.task_done": {"tr": "✅ {i}/{n} Görev tamamlandı", "en": "✅ {i}/{n} Task completed"},
+    "progress.fail.create_customer": {"tr": "Müşteri oluşturulamadı",
+                                        "en": "Couldn't create the customer"},
+    "progress.fail.update_customer": {"tr": "Müşteri güncellenemedi",
+                                        "en": "Couldn't update the customer"},
+    "progress.fail.create_lead": {"tr": "Lead oluşturulamadı", "en": "Couldn't create the lead"},
+    "progress.fail.set_lead_stage": {"tr": "Aşama güncellenemedi", "en": "Couldn't update the stage"},
+    "progress.fail.add_lead_note": {"tr": "Not eklenemedi", "en": "Couldn't add the note"},
+    "progress.fail.create_task": {"tr": "Görev oluşturulamadı", "en": "Couldn't create the task"},
+    "progress.fail.complete_task": {"tr": "Görev tamamlanamadı", "en": "Couldn't complete the task"},
+    "step.create_customer": {"tr": "Müşteri oluşturuldu", "en": "Customer created"},
+    "step.update_customer": {"tr": "Müşteri güncellendi", "en": "Customer updated"},
+    "step.create_lead": {"tr": "Lead oluşturuldu", "en": "Lead created"},
+    "step.set_lead_stage": {"tr": "Lead aşaması güncellendi", "en": "Lead stage updated"},
+    "step.add_lead_note": {"tr": "Lead notu eklendi", "en": "Lead note added"},
+    "step.create_task": {"tr": "Görev oluşturuldu", "en": "Task created"},
+    "step.complete_task": {"tr": "Görev tamamlandı", "en": "Task completed"},
 }
 
 
@@ -219,6 +270,8 @@ _TR_MONTHS = ("", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl
 _EN_MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _TR_TIME_SUFFIX = {"0": "'da", "1": "'de", "2": "'de", "3": "'te", "4": "'de", "5": "'te",
                    "6": "'da", "7": "'de", "8": "'de", "9": "'da"}  # "10:00'da", "14:05'te"
+_TR_WEEKDAYS = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
+_EN_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _WS_RE = re.compile(r"\s+")
 _PHONE_RE = re.compile(r"\d{10,}")
 _NAME_CHARS = 60
@@ -283,6 +336,19 @@ def _relative_day(iso: Any, today: str | None, lang: str) -> str:
         except ValueError:
             pass
     return _day_month(s, lang)
+
+
+def format_task_due(iso: Any, lang: str = TR) -> str:
+    """Task due date for cards and progress: "2026-10-31T10:00" → "Cuma 10:00" / "Friday 10:00";
+    date-only values render as "31 Eki" / "Oct 31". Unparseable values are shown as-is."""
+    s = str(iso or "")
+    if len(s) >= 16 and s[10] in "T ":
+        try:
+            weekday = (_TR_WEEKDAYS if lang != EN else _EN_WEEKDAYS)[date.fromisoformat(s[:10]).weekday()]
+            return f"{weekday} {s[11:16]}"
+        except ValueError:
+            return s
+    return _day_month(s, lang) if s else "?"
 
 
 def _failed_line(i: int, n: int, step: dict[str, Any], lang: str) -> str:
@@ -355,7 +421,48 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
                                                  total="?" if total is None else total)
     if kind == "ads_action":
         return t("progress.ad", lang).format(**head)
+    if kind == "create_customer":
+        tags = ", ".join(str(x) for x in (r.get("tags") or []))
+        suffix = t("card.new_customer_tags", lang).format(tags=_clean(tags, _NAME_CHARS)) if tags else ""
+        return t("progress.new_customer", lang).format(
+            **head, name=_clean(r.get("name"), _NAME_CHARS), tags=suffix)
+    if kind == "update_customer":
+        parts = update_parts(r.get("added_tags"), r.get("removed_tags"), bool(r.get("note_added")),
+                             bool(r.get("renamed")), str(r.get("name") or "?"), lang)
+        return t("progress.customer_updated", lang).format(
+            **head, name=_clean(r.get("name"), _NAME_CHARS), parts=", ".join(parts) or "—")
+    if kind == "create_lead":
+        value = _money(r.get("value")) if r.get("value") is not None else ""
+        suffix = t("card.lead_value", lang).format(amount=value) if value else ""
+        return t("progress.new_lead", lang).format(
+            **head, name=_clean(r.get("name"), _NAME_CHARS), value=suffix)
+    if kind == "set_lead_stage":
+        prev = t(f"card.stage.{r.get('prev_stage')}", lang, str(r.get("prev_stage")))
+        new = t(f"card.stage.{r.get('stage')}", lang, str(r.get("stage")))
+        return t("progress.lead_stage", lang).format(**head, prev=prev, new=new)
+    if kind == "add_lead_note":
+        return t("progress.lead_note", lang).format(**head, note=_clean(r.get("note"), 80))
+    if kind == "create_task":
+        return t("progress.task", lang).format(**head, title=_clean(r.get("title"), _NAME_CHARS),
+                                               when=format_task_due(r.get("due_date"), lang))
+    if kind == "complete_task":
+        return t("progress.task_done", lang).format(**head)
     return f"✅ {i}/{n} {kind}"
+
+
+def update_parts(added: Any, removed: Any, noted: bool, renamed: bool, name: str,
+                 lang: str) -> list[str]:
+    """Shared update-customer fragments for cards (from the action) and progress (from the record)."""
+    parts = []
+    if added:
+        parts.append(t("card.tag_added", lang).format(tags=", ".join(str(x) for x in added)))
+    if removed:
+        parts.append(t("card.tag_removed", lang).format(tags=", ".join(str(x) for x in removed)))
+    if noted:
+        parts.append(t("card.note_added", lang))
+    if renamed:
+        parts.append(t("card.renamed", lang).format(name=name))
+    return parts
 
 
 # --------------------------------------------------------------------------- #

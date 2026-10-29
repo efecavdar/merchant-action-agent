@@ -50,6 +50,9 @@ is a sale-price window on catalog items.
 | GET | `/agent/report` | — | agent activity counters for the window: `{window_hours, total, by_capability: {name: {ok, error}}}`. Names are dotted capabilities (`catalog.create`, `appointments.reschedule`, `profile`, …) and include reads as well as writes; clients filter what they display |
 | POST (R) | `/agent/segments` | `{inactive_days, min_visits, tags}` | `{segment_id, criteria, count, excluded_no_consent, sample}` — the sample is at most 5 entries (name + last visit), never phone numbers |
 | POST (R) | `/agent/catalog/bulk-price/preview` | `{item_type, category, item_ids, mode, value}` (`mode`: `percent` \| `amount`) | `{preview_id, items: [{id, name, old_price, new_price}], count}` — changes nothing |
+| GET | `/agent/leads` | `stage`, `name` (optional) | `{leads: [{id, name, source, stage, last_contact\|null, value?}], truncated}` (≤ 20). Display names only, no contact details. Gateway K11 — agreed shape, pending deploy |
+| GET | `/agent/tasks` | `status` = `open` \| `overdue` \| `completed` \| `all` | `{tasks: [{id, title, due_date, status, overdue, customer_id?, customer_name?, lead_id?, lead_name?}], truncated}` (≤ 30). Gateway K11 — agreed shape, pending deploy |
+| GET | `/agent/insights` | `days` 1–90 (default 7) | `{days, period, prev_period, revenue: {paid_total, paid_count, prev_paid_total, diff}, top_items: [{name, revenue, count}], new_customers, funnel: {new, contacted, qualified, proposal, won, lost}, appointments: {total, completed, cancelled, occupancy_pct}}`. Gateway K11 — agreed shape, pending deploy |
 
 ### Writes (owner/admin role required)
 
@@ -64,6 +67,13 @@ is a sale-price window on catalog items.
 | POST | `/agent/catalog/bulk-price` | `{preview_id}` | applied rows `{id, old_price, new_price}`; unknown/expired previews fail |
 | POST | `/agent/loyalty/adjust` | `{member_id, delta (int, non-zero, |Δ| ≤ 1000), reason?}` | `{member_id, delta, points_before, points_after}` |
 | POST | `/agent/ads/action` | `{campaign_id, action: "pause" \| "resume" \| "set_budget", budget? (absolute, only with `set_budget`), reason (required)}` | `{campaign_id, action, budget_before?, budget_after?}`. Server limits: budget step ≤ ±20 %, ≤ 3× the original, ≤ 2 budget changes per business per day (409 `too_many_budget_ops`) |
+| POST | `/agent/customers` | `{name 2–80, phone?, email?, tags? ≤10×30, note? ≤500}` | `{id, name}`. Marketing consent is always false. 409 `customer_exists` (+`customer_id`) when the customer is already registered; demo key + phone → 400. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/customers/update` | `{customer_id, name?, add_tags?, remove_tags?, note?}` | `{id, name, tags}`. Phone, e-mail and consent cannot change. 409 `customer_merged` / `customer_archived`. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/leads` | `{name 2–80, phone?, email?, estimatedValue? ≥0, tags?, note?}` | `{id, name}`. 409 `lead_exists` (+`lead_id`). Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/leads/stage` | `{lead_id, stage ∈ new\|contacted\|qualified\|proposal\|won\|lost}` | `{id, stage, prev_stage}`. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/leads/note` | `{lead_id, note ≤500}` | `{id, note_id}`. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/tasks` | `{title ≤120, due_date ISO (date or datetime), customer_id?, lead_id?}` | `{id, title, due_date, status}`. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/tasks/complete` | `{task_id}` | `{id, status}`. Gateway K11 — agreed shape, pending deploy |
 
 Writes re-validate every limit server-side (discount caps, recipient caps, slot clashes,
 business hours) and never trust the client's checks.
@@ -85,6 +95,8 @@ closed: after a failed step, later steps (like sending messages) do not run.
 | 409 | `unknown_outcome` | this key's execution ended ambiguously — it may already have run, do not retry automatically |
 | 409 | `segment_drift`, `segment_used`, `quiet_hours`, `quota_exceeded` | the campaign segment changed, was already sent, is in quiet hours, or the quota is spent |
 | 409 | `too_many_budget_ops` | more than 2 ad budget changes for this business today |
+| 409 | `customer_exists`, `lead_exists` | the customer/lead is already registered; the payload carries the existing `customer_id` / `lead_id` so the client can offer it |
+| 409 | `customer_merged`, `customer_archived` | the customer was merged into another record or archived; the update is refused |
 | 415 | `unsupported_media_type` | POST without `Content-Type: application/json` |
 | 429 | `rate_limited` | per-business read/write caps exceeded |
 | 503 | `disabled` | the gateway is switched off (globally or for this merchant) |
