@@ -933,7 +933,7 @@ def test_t15_card_item_shows_category_and_description_with_vision_fallback():
     assert "çanta" in card and "siyah deri el çantası" in card
     assert "bakım" in card and "90 dakikalık keratin bakımı" in card
     long_card = approval.render_card(prop, _photo_ctx("D" * 200), {})
-    assert "D" * 120 in long_card and "D" * 121 not in long_card  # description capped at 120
+    assert "D" * 119 + "…" in long_card and "D" * 120 not in long_card  # 120 incl. the marker
 
 
 def test_t15_card_discount_lists_item_names():
@@ -962,7 +962,7 @@ def test_t15_card_visual_attachment_and_prompt():
     ]}
     card = approval.render_card(prop, MediaContext("x", "text"), {"s1": 5})
     assert "📎 görsel eklenecek" in card
-    assert "P" * 80 in card and "P" * 81 not in card
+    assert "P" * 79 + "…" in card and "P" * 80 not in card
     plain = approval.render_card({"summary_tr": "özet", "actions": [
         {"type": "send_campaign", "segment_id": "s1", "message": "m"}]},
         MediaContext("x", "text"), {"s1": 5})
@@ -975,7 +975,7 @@ def test_t15_card_sanitises_third_party_strings():
                  "t": {"name": "t", "body": "Merhaba {{1}}, kodun {{2}}", "variables": [{"number": 2}]}}}
     prop = {"summary_tr": "özet", "actions": [
         {"type": "add_catalog_item", "item_type": "product", "ref": "n1",
-         "name": "Kötü\nİsim_*~" + "N" * 50, "price": 10},
+         "name": "Kötü\nİsim_*~" + "N" * 80, "price": 10},
         {"type": "send_campaign", "segment_id": "s1", "template": "t",
          "variables": {"2": "KO_D\n*X*"}},
         {"type": "adjust_loyalty", "customer_id": "c1", "points": 50, "reason": "r", "label": "l"},
@@ -983,7 +983,7 @@ def test_t15_card_sanitises_third_party_strings():
     card = approval.render_card(prop, MediaContext("x", "text"), {"s1": 1}, facts)
     body = card.split("Onaylıyor")[0].replace("*Çırak — onayına sunuyorum*", "")
     assert "Kötü İsim_N" not in card and "Kötü İsim" in card and "*" not in body
-    assert "N" * 31 in card and "N" * 32 not in card  # "Kötü İsim" (9) + 31 = 40 chars max
+    assert "N" * 50 + "…" in card and "N" * 51 not in card  # "Kötü İsim" (9) + 50 + "…" = 60 max
     assert "KOD X" in card and "Ayşe Yılmaz VIP" in card
 
 
@@ -1079,3 +1079,30 @@ def test_t15_validator_visual_needs_a_photo_crop():
     assert any("crop" in e for e in errs)
     prop["actions"][0]["item_refs"] = ["tmp9", "i001"]
     assert validate_proposal(prop, {"tmp9"}, CATALOG, {"seg1"}) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Yaz bize: wa.me/905321234567", "Ara: (0532) 123 45 67", "Mağaza: 0212 123 45 67",
+    "instagram.com/butikx", "IBAN tr33 0006 1005 1978 6457 8413 26",
+])
+def test_review_contacts_caught(text):
+    errors: list[str] = []
+    from app.actions import _check_no_contacts
+    _check_no_contacts("actions[0]", "message", text, errors)
+    assert errors, text
+
+
+@pytest.mark.parametrize("text", [
+    "XL 42 BEDEN STOKTA KALDI", "Fiyat 1.250 ₺, kampanya 15.11.2026 bitiyor", "Saat 10.00-19.00 arası açığız",
+    "549,90 TL", "Hediyelik eşyalarımız geldi", "Ücretsiz kargo her siparişte",
+])
+def test_review_no_false_positives(text):
+    from app.actions import _OFFER_WORDS_RE, _check_no_contacts
+    errors: list[str] = []
+    _check_no_contacts("actions[0]", "message", text, errors)
+    assert not errors and not _OFFER_WORDS_RE.search(text), (text, errors)
+
+
+def test_review_card_strips_unicode_separators_and_bidi():
+    s = approval.clean_display("Ay şe‮Yılmaz\u0085X")
+    assert not any(ch in s for ch in " ‮\u0085") and "Ay şe Yılmaz X" == s

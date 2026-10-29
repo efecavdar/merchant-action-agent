@@ -1,10 +1,11 @@
-// Task 15, item 17: a queued approval word must NOT auto-send after a card arrives.
-// Usage: node web_queue_harness.js <app.js path> <hold|pass>
+// Task 15, item 17: nothing queued while a plan runs may auto-send once its card arrives
+// (the owner has not read the card yet); after an ordinary reply the queue drains normally.
+// Usage: node web_queue_harness.js <app.js path> <hold|pass> [queued text]
 // Drives app.js with stub DOM + stub fetch. Exits 0 on PASS, 1 on FAIL.
 const fs = require("fs");
 
-const [appPath, scenario] = process.argv.slice(2, 4);
-const QUEUED_TEXT = scenario === "hold" ? "evet" : "fiyat ne kadar";
+const [appPath, scenario, queuedArg] = process.argv.slice(2, 5);
+const QUEUED_TEXT = queuedArg || (scenario === "hold" ? "evet" : "fiyat ne kadar");
 if (!appPath || !["hold", "pass"].includes(scenario)) {
   console.error("usage: node web_queue_harness.js <app.js> <hold|pass>");
   process.exit(2);
@@ -61,7 +62,8 @@ const CARD = "*Çırak — onayına sunuyorum*\n🛍️ Ürün: Fular — 850 �
   if (byId.textInput.value !== "") return fail("input was not cleared when queueing");
 
   releaseFirst({ ok: true, json: async () => (
-    { replies: [{ text: CARD }], status: [], business_name: "Nar Butik", business: "butik" }) });
+    { replies: [{ text: scenario === "hold" ? CARD : "Fular eklendi." }], status: [],
+      business_name: "Nar Butik", business: "butik" }) });
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); // flush the async chain
 
   if (scenario === "hold") {

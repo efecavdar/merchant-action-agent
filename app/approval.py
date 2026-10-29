@@ -11,11 +11,13 @@ from .tools.backend import render_campaign_template
 _ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
          "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌"}
 
-_NAME_CHARS = 40   # names, variables and other short third-party strings on the card
+_NAME_CHARS = 60   # = the validator's name/variable limit: the owner sees everything a customer gets
 _DESC_CHARS = 120  # catalog descriptions show what will be written, so they get more room
 _PROMPT_CHARS = 80
 
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")  # newlines, tabs and other controls
+# Controls, Unicode line/paragraph separators, NEL and bidi/format characters (U+202E can reorder a line).
+# ZWJ stays so joined emoji survive.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u2069\ufeff]+")
 
 
 def clean_display(text: Any, max_chars: int = _NAME_CHARS) -> str:
@@ -23,7 +25,8 @@ def clean_display(text: Any, max_chars: int = _NAME_CHARS) -> str:
     to one space, WhatsApp markup chars are stripped (a name must not reformat the card),
     and the result is truncated."""
     s = _CONTROL_RE.sub(" ", str(text or "")).strip()
-    return s.replace("*", "").replace("_", "").replace("~", "")[:max_chars]
+    s = s.replace("*", "").replace("_", "").replace("~", "")
+    return s if len(s) <= max_chars else s[:max_chars - 1].rstrip() + "…"
 
 
 def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:

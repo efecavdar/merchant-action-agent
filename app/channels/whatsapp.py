@@ -27,6 +27,10 @@ MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
 _TOO_BIG_TR = "Medya 16 MB'tan büyük, daha küçük bir dosya dener misin?"
 
 
+class MediaTooBig(ValueError):
+    """Its message is Turkish and safe to show the owner."""
+
+
 @dataclass
 class Inbound:
     id: str                 # wamid, used for de-duplication (Meta redelivers on timeouts)
@@ -110,21 +114,21 @@ def download_media(media_id: str, dest_dir: Path) -> Path:
     meta = requests.get(f"{settings.graph_api}/{media_id}", headers=_auth(), timeout=30)
     meta.raise_for_status()
     info = meta.json()
-    blob = requests.get(info["url"], headers=_auth(), timeout=60, stream=True)
-    blob.raise_for_status()
-    try:
-        declared = int(blob.headers.get("Content-Length") or 0)
-    except (ValueError, TypeError):
-        declared = 0
-    if declared > MAX_DOWNLOAD_BYTES:
-        raise ValueError(f"{_TOO_BIG_TR} (media {media_id})")
-    chunks: list[bytes] = []
-    size = 0
-    for chunk in blob.iter_content(chunk_size=65536):
-        size += len(chunk)
-        if size > MAX_DOWNLOAD_BYTES:
-            raise ValueError(f"{_TOO_BIG_TR} (media {media_id})")
-        chunks.append(chunk)
+    with requests.get(info["url"], headers=_auth(), timeout=60, stream=True) as blob:   # closed on every path
+        blob.raise_for_status()
+        try:
+            declared = int(blob.headers.get("Content-Length") or 0)
+        except (ValueError, TypeError):
+            declared = 0
+        if declared > MAX_DOWNLOAD_BYTES:
+            raise MediaTooBig(_TOO_BIG_TR)
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in blob.iter_content(chunk_size=65536):
+            size += len(chunk)
+            if size > MAX_DOWNLOAD_BYTES:
+                raise MediaTooBig(_TOO_BIG_TR)
+            chunks.append(chunk)
     ext = mimetypes.guess_extension((info.get("mime_type") or "").split(";")[0]) or ".bin"
     if ext == ".oga":
         ext = ".ogg"

@@ -31,20 +31,12 @@ seen = modal.Dict.from_name("cirak-seen", create_if_missing=True)
 
 
 def _read_local_env(want: set[str]) -> dict[str, str]:
-    """Parse values out of the deploy machine's .env. Call only under modal.is_local()."""
-    found: dict[str, str] = {}
-    try:
-        lines = Path(__file__).with_name(".env").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        key, sep, value = line.strip().removeprefix("export ").partition("=")
-        key = key.strip()
-        if sep and key in want and key not in found:
-            value = value.strip().strip("'\"")
-            if value:
-                found[key] = value
-    return found
+    """Values from the deploy machine's .env, parsed by python-dotenv (inline comments, quotes, export).
+    Call only under modal.is_local()."""
+    from dotenv import dotenv_values
+
+    env = dotenv_values(Path(__file__).with_name(".env"))
+    return {k: v for k in want if (v := (env.get(k) or "").strip())}
 
 
 _WEB_KEYS = {"META_APP_SECRET", "WA_VERIFY_TOKEN", "WA_PHONE_NUMBER_ID", "WA_ALLOWED_SENDERS"}
@@ -96,7 +88,10 @@ def web():
     def first_time(mid: str) -> bool:
         return bool(seen.put(mid, 1, skip_if_exists=True))
 
-    return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time)
+    def unmark(mid: str) -> None:      # dispatch failed: let Meta's redelivery through
+        seen.pop(mid, None)
+
+    return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time, unmark=unmark)
 # Public judges demo: mock businesses only. The secret carries ONLY the model key plus the two
 # forced flags — from_dotenv would drag KEDD and WhatsApp secrets into this container, so the
 # single key is parsed out of the local .env by hand instead. The .env read happens only on the

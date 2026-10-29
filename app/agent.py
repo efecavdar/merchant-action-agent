@@ -282,7 +282,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
                 log.warning("proposal rejected (%d/%d): %d errors codes=%s types=%s",
                             revisions, max_revisions, len(errors), codes, types)
                 if revisions > max_revisions:
-                    raise RuntimeError(f"proposal still invalid after {max_revisions} revisions: {errors}")
+                    raise RuntimeError(f"proposal still invalid after {max_revisions} revisions "
+                                       f"({len(errors)} errors)")   # error texts quote model values
                 result = {"accepted": False, "errors": errors,
                           "hint": "Fix every error and call propose_actions again with the COMPLETE plan "
                                   "(all actions, in order). Keep everything that was already valid.",

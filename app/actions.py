@@ -111,13 +111,18 @@ def _promised_numbers(message: str) -> tuple[set[int], set[float]]:
     return pcts, prices
 
 
-_URL_RE = re.compile(r"https?://|www\.", re.I)
+_URL_RE = re.compile(r"https?://|www\.|\b(?:wa|t)\.me\b|\b[\w-]+\.(?:com|net|org|me|ly|link|io|co|shop|store|app|tr)\b",
+                     re.I)
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_INTL_RE = re.compile(r"\+\d[\d\s().-]{7,}\d")
 _PHONE_TR_RE = re.compile(r"(?<!\d)0?5\d{2}[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d)")
-_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
+_PHONE_DIGITS_RE = re.compile(r"(?<!\d)(?:90|0)?[2-5]\d{9}(?!\d)")   # after () . - and spaces are removed
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", re.I)
+_IBAN_TR_RE = re.compile(r"TR\d{24}", re.I)   # Turkish IBAN once spaces are removed
 # Offer words that promise a deal: only a plan with a discount action may use them.
-_OFFER_WORDS_RE = re.compile(r"bedava|ücretsiz|yarı\s+fiyat|1\s+alana\s+1|hediye", re.I)
+# "hediyelik eşya" and "ücretsiz kargo" are not deals on the items.
+_OFFER_WORDS_RE = re.compile(r"\bbedava|\bücretsiz\b(?!\s+kargo)|\byarı\s+fiyat|\b1\s+alana\s+1\b|\bhediye(?!lik)",
+                             re.I)
 
 
 def _check_no_contacts(where: str, what: str, text: str, errors: list[str]) -> None:
@@ -126,9 +131,10 @@ def _check_no_contacts(where: str, what: str, text: str, errors: list[str]) -> N
         errors.append(f"{where}: {what} must not contain a URL")
     if _EMAIL_RE.search(text):
         errors.append(f"{where}: {what} must not contain an e-mail address")
-    if _PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text):
+    if (_PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text)
+            or _PHONE_DIGITS_RE.search(re.sub(r"[()\s.-]", "", text))):
         errors.append(f"{where}: {what} must not contain a phone number")
-    if _IBAN_RE.search(text) or _IBAN_RE.search(re.sub(r"\s+", "", text)):
+    if _IBAN_RE.search(text) or _IBAN_TR_RE.search(re.sub(r"\s+", "", text)):
         errors.append(f"{where}: {what} must not contain an IBAN")
 
 

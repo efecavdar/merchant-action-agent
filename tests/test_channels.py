@@ -463,6 +463,12 @@ def test_t15_download_media_refuses_over_16mb(monkeypatch, cfg, tmp_path):
 
     class _Blob:
         status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
         headers = {}
 
         def raise_for_status(self):
@@ -489,6 +495,12 @@ def test_t15_download_media_streams_small_files(monkeypatch, cfg, tmp_path):
 
     class _Blob:
         status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
         headers = {"Content-Length": "4"}
 
         def raise_for_status(self):
