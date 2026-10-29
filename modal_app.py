@@ -8,6 +8,8 @@ Secrets come from the local .env at deploy time (modal.Secret.from_dotenv); noth
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import modal
 
 app = modal.App("cirak")
@@ -67,3 +69,44 @@ def web():
         return bool(seen.put(mid, 1, skip_if_exists=True))
 
     return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time)
+# Public judges demo: mock businesses only. The secret carries ONLY the model key plus the two
+# forced flags — from_dotenv would drag KEDD and WhatsApp secrets into this container, so the
+# single key is parsed out of the local .env by hand instead. The .env read happens only on the
+# deploy machine: inside containers is_local() is False and the secret stays an empty placeholder
+# (the real values arrive via the deployed Secret).
+if modal.is_local():
+    _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock"}
+    try:
+        _dotenv_lines = Path(__file__).with_name(".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        _dotenv_lines = []
+    for _line in _dotenv_lines:
+        _key, _sep, _value = _line.strip().removeprefix("export ").partition("=")
+        _value = _value.strip().strip("'\"")
+        if _sep and _key.strip() == "MODEL_API_KEY" and _value:
+            _demo_env["MODEL_API_KEY"] = _value
+            break
+    if "MODEL_API_KEY" not in _demo_env:
+        raise RuntimeError("MODEL_API_KEY not found in the local .env; refusing to deploy the public demo.")
+    demo_secret = modal.Secret.from_dict(_demo_env)
+else:
+    demo_secret = modal.Secret.from_dict({})
+
+demo_counts = modal.Dict.from_name("cirak-demo-counts", create_if_missing=True)
+
+
+@app.function(image=image, secrets=[demo_secret], timeout=600, max_containers=1)
+@modal.asgi_app()
+def demo():
+    """Public web UI for judges: mock only, rate-limited, no volume (ephemeral disk)."""
+    import logging
+    import os
+    import tempfile
+
+    from app.channels.web import create_app
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # No volume: uploads, runs and generated visuals live on ephemeral disk. Set before the
+    # app import — Settings reads the env once, at import time.
+    os.environ["DATA_DIR"] = os.environ["OUT_DIR"] = tempfile.mkdtemp(prefix="cirak-demo-")
+    return create_app(daily_counts=demo_counts)
