@@ -1129,12 +1129,18 @@ class KeddBackend:
         from urllib.parse import urlencode
         qs = urlencode({k: v for k, v in params.items() if v not in (None, "")})
         target = f"{path}?{qs}" if qs else path
-        try:
-            # Reads fail fast: a hung gateway must surface in seconds so the demo chat
-            # falls back instead of hanging (writes below keep the patient 30 s).
-            r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=8)
-        except requests.exceptions.RequestException:
-            raise KeddError("KEDD'ye ulaşılamadı.") from None
+        # Reads fail fast: a hung gateway must surface in seconds so the demo chat falls back instead of
+        # hanging (writes below keep the patient 30 s). One retry on timeout covers a cold-starting gateway;
+        # reads have no side effects, writes are never retried.
+        for attempt in (1, 2):
+            try:
+                r = self._s.get(f"{self.base}{target}", headers=self._headers("GET", target, ""), timeout=8)
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 2:
+                    raise KeddError("KEDD'ye ulaşılamadı.") from None
+            except requests.exceptions.RequestException:
+                raise KeddError("KEDD'ye ulaşılamadı.") from None
         if r.status_code >= 400:
             raise self._gateway_error(r.status_code, self._error_payload(r))
         return r.json()

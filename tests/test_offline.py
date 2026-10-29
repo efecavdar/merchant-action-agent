@@ -1252,3 +1252,26 @@ def test_template_campaign_cannot_promise_a_visual():
     ]}, known_segments={"seg1"}, known_temp_ids=set(), catalog={},
         known_templates={"t1": {"variables": []}}, requires_template=True)
     assert any("attach_visual must be false with a template" in e for e in errors)
+
+
+def test_kedd_read_retries_once_on_timeout_but_writes_never():
+    import requests
+    kb = KeddBackend("https://kedd.example", "s3cret", "+905000000000")
+    calls = {"get": 0, "post": 0}
+
+    class _S:
+        def get(self, url, headers, timeout):
+            calls["get"] += 1
+            if calls["get"] == 1:
+                raise requests.exceptions.Timeout()
+            return type("R", (), {"status_code": 200, "json": lambda self: {"ok": True}})()
+
+        def post(self, url, data, headers, timeout):
+            calls["post"] += 1
+            raise requests.exceptions.Timeout()
+
+    kb._s = _S()
+    assert kb._get("/agent/profile") == {"ok": True} and calls["get"] == 2
+    with pytest.raises(ValueError):
+        kb._post("/agent/discounts", {"percent": 10}, idempotency_key="k1")
+    assert calls["post"] == 1
