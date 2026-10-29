@@ -83,6 +83,17 @@
       <p id="traceEmpty" class="trace-empty" data-i18n="trace.empty">Send the phone a message and the trace will appear here.</p>
       <p class="trace-models"><span data-i18n="trace.models">Models</span>: <span id="traceModels">—</span></p>
     </section>
+    <section class="kedd-sec" id="keddLive">
+      <h2 data-i18n="kedd.title">Live in KEDD</h2>
+      <p class="section-sub" data-i18n="kedd.sub">The demo business right now — catalog, today's appointments, recent writes.</p>
+      <div class="kedd-head">
+        <span id="keddPill" class="pill live">…</span>
+        <span id="keddBusiness" class="kedd-biz"></span>
+        <button type="button" id="keddRetry" class="kedd-retry" data-i18n="kedd.retry" hidden>Retry KEDD</button>
+      </div>
+      <p id="keddError" class="kedd-error" hidden></p>
+      <div id="keddRows" class="kedd-rows" aria-live="polite"></div>
+    </section>
     <footer class="pagefoot">
       <a href="https://github.com/efecavdar/merchant-action-agent" data-i18n="foot.repo">GitHub</a>
       <span id="syntheticLine" class="synthetic" hidden data-i18n="foot.synthetic">Synthetic demo data · nothing is sent to real customers</span>

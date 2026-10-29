@@ -33,6 +33,11 @@ class Settings:
     kedd_api_url: str = os.environ.get("KEDD_API_URL", "")
     kedd_agent_secret: str = field(default=os.environ.get("KEDD_AGENT_SECRET", ""), repr=False)
     merchant_phone: str = os.environ.get("MERCHANT_PHONE", "")      # E.164, identifies the merchant to KEDD
+    # Scoped demo credential (task 17): the public demo signs with this + key id "demo" and
+    # never loads the main key. The business value is the demo merchant's E.164 phone; the
+    # gateway maps it to the agent-demo-studio business (same header semantics as above).
+    kedd_demo_secret: str = field(default=os.environ.get("KEDD_DEMO_SECRET", ""), repr=False)
+    kedd_demo_phone: str = os.environ.get("KEDD_DEMO_PHONE", "")
 
     # Paths (overridable so the Modal deployment can point them at a persistent volume)
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("DATA_DIR", ROOT / "data")))

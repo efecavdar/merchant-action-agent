@@ -1,12 +1,14 @@
 """WhatsApp-style web UI for the demo. Everything goes through `app.core.handle`.
 
-Public mode (`PUBLIC_DEMO=true`, the Modal `demo` function for judges) adds: mock-only
-businesses (`/kedd` is refused), per-IP and global rate limits, upload checks, session
+Public mode (`PUBLIC_DEMO=true`, the Modal `demo` function for judges) adds: the live
+KEDD demo business by default (mock fallback + panel when KEDD is down, `/kedd` refused),
+per-IP and global rate limits, an approved-plans cap, upload checks, session
 expiry/eviction, and a banner. Local behaviour is unchanged when the flag is off.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -15,7 +17,7 @@ import secrets
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -33,7 +35,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .. import core
 from ..brief import build_morning_brief
 from ..config import settings
-from ..tools.backend import MockBackend
+from ..tools.backend import KeddBackend, KeddError, MockBackend
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
@@ -63,6 +65,11 @@ SESS_HOUR_MAX = 20
 SESS_DAY_MAX = 60
 SESSION_CREATE_HOUR_MAX = 20
 SESSION_CREATE_DAY_MAX = 60
+# Live KEDD demo (task 17).
+KEDD_DEMO_PHONE = "kedd-demo"
+CAP_APPROVED_HOUR_MAX = 3
+KEDD_STATE_CACHE_S = 10
+KEDD_STATE_TIMEOUT_S = 10
 
 _KEDD_REFUSAL = "Bu demo yalnız örnek işletmelerle çalışır."
 _IP_LIMIT_MSG = ("Hız sınırına takıldın, biraz sonra tekrar dener misin? ⏳ "
@@ -76,6 +83,10 @@ _AUDIO_TOO_BIG = "Sesli not 2 MB'tan küçük olmalı. 🎙️ Voice notes must 
 _TEXT_TOO_LONG = ("Mesajın biraz uzun, 1000 karakterden kısa dener misin? ✂️ "
                   "Please keep messages under 1000 characters.")
 _TOO_LARGE = ("Mesajın çok büyük, daha küçük dener misin? 📦 Your message is too large.")
+_KEDD_DOWN = ("KEDD'ye şu an ulaşamıyorum, yazdıkların duruyor; birazdan tekrar dener misin? 🔌 "
+              "I can't reach KEDD right now, please try again in a bit.")
+_CAP_MSG = ("Saatte 3 planlık demo kotan doldu, örnek salonda devam ediyorsun. 🏁 "
+            "You've used your 3 demo plans for this hour, continuing on the sample salon.")
 _FREE_COMMANDS = {"/butik", "/salon", "/sifirla", "/reset", "/kedd"}
 _FREE_GREETINGS = {"/yardim", "/help", "yardım", "merhaba", "selam"}
 _BANNER_HTML = ('<div class="demobanner">Demo: örnek işletme verisi · Synthetic demo data · '
@@ -170,6 +181,25 @@ def _create_limited(create_hits: dict[str, list[float]], ip: str, now: float) ->
         return True
     hits.append(now)
     create_hits[ip] = hits
+    return False
+
+
+def _demo_creds_ready() -> bool:
+    """The demo credential triple is configured, so kedd-demo sessions can be built."""
+    return bool(settings.kedd_api_url and settings.kedd_demo_secret and settings.kedd_demo_phone)
+
+
+def _cap_hit(approve_hits: dict[str, list[float]], ip: str, now: float) -> bool:
+    """True when this IP already approved enough kedd-demo plans this hour; else records."""
+    hits = [t for t in approve_hits.get(ip, []) if now - t < 3600]
+    if len(hits) >= CAP_APPROVED_HOUR_MAX:
+        approve_hits[ip] = hits
+        return True
+    hits.append(now)
+    approve_hits[ip] = hits
+    if len(approve_hits) > MAX_TRACKED_IPS:
+        for stale in [k for k, v in approve_hits.items() if not v or now - v[-1] >= 3600]:
+            del approve_hits[stale]
     return False
 
 
@@ -279,6 +309,87 @@ def _trace_json(run_dir: Path) -> dict[str, Any]:
     return {"steps": steps, "models": list(dict.fromkeys(models))}
 
 
+def _recent_writes(rep: dict[str, Any]) -> list[dict[str, str]]:
+    """Session writes as PII-free kind/label rows for the Live-in-KEDD panel."""
+    out: list[dict[str, str]] = []
+    for i in rep.get("items_added") or []:
+        out.append({"kind": "catalog", "label": f"{i.get('name', '')} · {i.get('price')}"})
+    for d in rep.get("active_discounts") or []:
+        out.append({"kind": "discount", "label": f"{d.get('name', '')} (%{d.get('percent')})"})
+    for c in rep.get("campaigns") or []:
+        out.append({"kind": "campaign", "label": f"{c.get('name', '')} → {c.get('recipients')} kişi"})
+    for p in rep.get("social_posts") or []:
+        plats = ",".join(p.get("platforms") or [])
+        out.append({"kind": "social", "label": f"{str(p.get('caption', ''))[:60]} ({plats})"})
+    for a in rep.get("appointments_changed") or []:
+        out.append({"kind": "appointment", "label": f"{a.get('change', '')}: {a.get('starts', '')}"})
+    return out[-5:]
+
+
+def _bare_state(state: str, business: str, error: str | None) -> dict[str, Any]:
+    return {"state": state, "business": business, "business_name": business,
+            "catalog_sample": [], "appointments_today": {"count": 0, "items": []},
+            "recent_writes": [], "error": error}
+
+
+def _snapshot(backend: Any, business: str) -> dict[str, Any]:
+    """Panel rows from any backend. Customer names/phones are dropped at the mapping edge."""
+    profile = backend.store_profile()
+    items = backend.list_catalog()[:5]
+    appts = backend.get_schedule(date.today().isoformat()).get("appointments") or []
+    if isinstance(backend, KeddBackend):
+        writes: list[dict[str, str]] = []  # gateway /agent/report has no row shape to map yet
+    else:
+        writes = _recent_writes(backend.report())
+    return {
+        "business": business,
+        "business_name": str(profile.get("business_name", business)),
+        "catalog_sample": [{"name": str(i.get("name", "")), "price": i.get("price")} for i in items],
+        "appointments_today": {
+            "count": len(appts),
+            "items": [{"time": str(a.get("time", "")), "service": str(a.get("service", "")),
+                       "staff": str(a.get("staff", ""))} for a in appts[:5]]},
+        "recent_writes": writes,
+    }
+
+
+def _fallback_state(error: str) -> dict[str, Any]:
+    """The panel's other surface: mock salon data plus the triggering error, never a hang."""
+    try:
+        snap = _snapshot(MockBackend("salon"), "salon")
+    except Exception:  # noqa: BLE001 — even the fallback must render
+        return _bare_state("fallback", "salon", error[:200])
+    return {"state": "fallback", **snap, "error": error[:200]}
+
+
+def _kedd_state(session: core.Session, fresh: bool, cache: dict[str, Any]) -> dict[str, Any]:
+    """Live panel payload: cached KEDD reads, mock data for mock sessions, salon fallback."""
+    business = session.business
+    if business not in (KEDD_DEMO_PHONE, "kedd"):
+        try:
+            return {"state": "mock", **_snapshot(session.get_backend(), business), "error": None}
+        except Exception:  # noqa: BLE001 — a broken mock must not 500 the panel
+            log.warning("kedd-state: mock snapshot failed")
+            return _bare_state("mock", business, None)
+    now, key = _now(), business
+    if not fresh and cache.get("data") is not None and cache.get("key") == key \
+            and now - cache.get("at", 0.0) < KEDD_STATE_CACHE_S:
+        return cache["data"]
+    try:
+        backend = session.get_backend()
+        if not isinstance(backend, KeddBackend):
+            session.backend = None  # a mock here means the guard never ran; rebuild live
+            backend = session.get_backend()
+        data = {"state": "live", **_snapshot(backend, business), "error": None}
+    except KeddError as e:
+        data = _fallback_state(str(e))
+    except Exception:  # noqa: BLE001 — panel must render even on unexpected backend errors
+        log.warning("kedd-state: live probe failed")
+        data = _fallback_state("KEDD'ye ulaşılamadı.")
+    cache["at"], cache["key"], cache["data"] = now, key, data  # benign if two probes race
+    return data
+
+
 def _log_result(endpoint: str, data: dict[str, Any], started: float) -> None:
     # Public-demo rule: logs carry counts and timings only, never user content.
     log.info("%s: replies=%d notifications=%d ms=%d", endpoint, len(data["replies"]),
@@ -304,6 +415,8 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
     ip_hits: dict[str, list[float]] = {}
     sess_hits: dict[str, list[float]] = {}
     create_hits: dict[str, list[float]] = {}
+    approve_hits: dict[str, list[float]] = {}
+    kedd_cache: dict[str, Any] = {"at": 0.0, "key": "", "data": None}
     glob: Any = daily_counts if daily_counts is not None else {"day": "", "count": 0}
     guard = threading.Lock()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -331,6 +444,8 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                     last_seen.pop(oldest, None)
             is_new = sid not in sessions
             sess = core.Session(sender=f"web-{sid}")
+            if settings.public_demo and _demo_creds_ready():
+                sess.business = KEDD_DEMO_PHONE  # backend stays lazy; first read builds Kedd(demo)
             sessions[sid] = sess
             locks.setdefault(sid, threading.Lock())
             last_seen[sid] = now
@@ -341,13 +456,20 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             return locks.setdefault(sid, threading.Lock())
 
     def _public_guard(session: core.Session) -> None:
-        # Pin public sessions to a MockBackend so a KeddBackend can never be built, whatever the
-        # env contains: once session.backend is a fresh mock, get_backend() returns it directly
-        # without consulting settings. Never raises (a bad MOCK_BUSINESS surfaces later as usual).
+        # Pin public sessions to safe backends: mock businesses get a MockBackend, and the
+        # kedd-demo business gets ONLY a demo-key KeddBackend — a main-key backend here is
+        # dropped so the next read rebuilds the demo one lazily. Never raises.
         if not settings.public_demo:
             return
         if session.business == "kedd":
             session.business, session.backend = settings.mock_business, None
+        if session.business == KEDD_DEMO_PHONE:
+            backend = session.backend
+            ok = (isinstance(backend, KeddBackend) and getattr(backend, "_key_id", "main") == "demo"
+                  and getattr(backend, "_schema", None) == KeddBackend.SCHEMA)
+            if backend is not None and not ok:
+                session.backend = None
+            return
         backend = session.backend
         stale = getattr(backend, "_schema", None) != MockBackend.SCHEMA
         if backend is None or not isinstance(backend, MockBackend) or stale:
@@ -374,9 +496,13 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             return HTMLResponse(_IP_LIMIT_MSG, status_code=429)
         page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         page = page.replace("{{BUSINESS}}", html.escape(_business_name(session)))
-        badge = "KEDD" if session.business == "kedd" else "demo"
-        page = page.replace("{{BADGE}}", badge).replace(
-            "{{BADGE_CLASS}}", "kedd" if badge == "KEDD" else "demo")
+        if session.business == KEDD_DEMO_PHONE:
+            badge, bclass = "KEDD demo", "kedd"
+        elif session.business == "kedd":
+            badge, bclass = "KEDD", "kedd"
+        else:
+            badge, bclass = "demo", "demo"
+        page = page.replace("{{BADGE}}", badge).replace("{{BADGE_CLASS}}", bclass)
         page = page.replace("{{BANNER}}", _BANNER_HTML if settings.public_demo else "")
         resp = HTMLResponse(page)
         if is_new:
@@ -388,6 +514,10 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
         try:
             _public_guard(session)
             return core.handle(session, kind, text=text, media_path=media, notify=status.append)
+        except KeddError:
+            # The session keeps its kedd-demo state; the next message retries KEDD.
+            log.warning("web handle kedd failed")
+            return [core.Reply(_KEDD_DOWN)]
         except Exception as e:  # noqa: BLE001 — never leave the demo chat hanging
             if settings.public_demo:
                 log.warning("web handle failed: %s", type(e).__name__)
@@ -473,6 +603,16 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                 if limited == "global":
                     log.info("message: limited=global")
                     return _finalize(_refusal(session, _GLOBAL_LIMIT_MSG), is_new, sid)
+            if (session.business == KEDD_DEMO_PHONE and session.pending
+                    and not (uploads or audio_name) and _norm_command(text) in core.YES):
+                with guard:
+                    capped = _cap_hit(approve_hits, _client_ip(request), _now())
+                if capped:
+                    # One-way flip: the pending KEDD plan is discarded, never run.
+                    with _lock(sid):
+                        session.business, session.backend, session.pending = "salon", None, None
+                    log.info("message: capped")
+                    return _finalize(_refusal(session, _CAP_MSG), is_new, sid)
 
         def _work() -> dict[str, Any]:
             with _lock(sid):
@@ -551,6 +691,9 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                 _public_guard(session)
                 try:
                     replies = build_morning_brief(session)
+                except KeddError:
+                    log.warning("brief kedd failed")
+                    replies = [core.Reply(_KEDD_DOWN)]
                 except Exception as e:  # noqa: BLE001 — never leave the demo chat hanging
                     if settings.public_demo:
                         log.warning("brief failed: %s", type(e).__name__)
@@ -602,6 +745,30 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             data = _trace_json(run_dir)
             log.info("trace: steps=%d models=%d", len(data["steps"]), len(data["models"]))
             resp = JSONResponse(data)
+        if is_new:
+            resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
+        return resp
+
+    @app.get("/api/kedd-state")
+    async def get_kedd_state(request: Request) -> JSONResponse:
+        # Read-only and model-free, like /api/trace: burns no quota. `?fresh=1` bypasses
+        # the 10 s cache — that is what the panel's retry button calls.
+        sid, session, is_new = _ensure(request)
+        if session is None:
+            return JSONResponse(status_code=429, content={"detail": _IP_LIMIT_MSG})
+        fresh = request.query_params.get("fresh") == "1"
+
+        def _work() -> dict[str, Any]:
+            with _lock(sid):
+                return _kedd_state(session, fresh, kedd_cache)
+
+        try:
+            data = await asyncio.wait_for(run_in_threadpool(_work), KEDD_STATE_TIMEOUT_S)
+        except TimeoutError:
+            log.warning("kedd-state: probe timed out")
+            data = _fallback_state("KEDD yavaş yanıt verdi, örnek salonu gösteriyorum.")
+        log.info("kedd-state: state=%s", data["state"])
+        resp = JSONResponse(data)
         if is_new:
             resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
         return resp

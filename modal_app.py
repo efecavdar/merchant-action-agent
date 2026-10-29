@@ -92,15 +92,20 @@ def web():
         seen.pop(mid, None)
 
     return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time, unmark=unmark)
-# Public judges demo: mock businesses only. The secret carries ONLY the model key plus the two
-# forced flags — from_dotenv would drag KEDD and WhatsApp secrets into this container, so the
-# single key is parsed out of the local .env by hand instead. The .env read happens only on the
-# deploy machine: inside containers is_local() is False and the secret stays an empty placeholder
-# (the real values arrive via the deployed Secret).
+# Public judges demo: the live KEDD demo business (task 17). The secret carries ONLY the model
+# key, the demo credential triple and the two forced flags — from_dotenv would drag the MAIN
+# KEDD key and WhatsApp secrets into this container, so the keys are parsed out of the local
+# .env by hand instead. The .env read happens only on the deploy machine: inside containers
+# is_local() is False and the secret stays an empty placeholder (the real values arrive via
+# the deployed Secret). BACKEND stays forced to mock: the demo branch never consults it.
+_DEMO_KEYS = {"MODEL_API_KEY", "KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_PHONE"}
 if modal.is_local():
-    _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock", **_read_local_env({"MODEL_API_KEY"})}
+    _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock", **_read_local_env(_DEMO_KEYS)}
     if "MODEL_API_KEY" not in _demo_env:
         raise RuntimeError("MODEL_API_KEY not found in the local .env; refusing to deploy the public demo.")
+    if not {"KEDD_API_URL", "KEDD_DEMO_SECRET", "KEDD_DEMO_PHONE"} <= _demo_env.keys():
+        raise RuntimeError("KEDD demo credential missing from the local .env; "
+                           "refusing to deploy the public demo.")
     demo_secret = modal.Secret.from_dict(_demo_env)
 else:
     demo_secret = modal.Secret.from_dict({})

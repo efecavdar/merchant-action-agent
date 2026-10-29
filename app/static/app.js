@@ -142,8 +142,9 @@
 
   function setBusiness(name, business) {
     if (name) businessNameEl.textContent = name;
-    const kedd = business === "kedd";
-    badgeEl.textContent = kedd ? "KEDD" : "demo";
+    const demo = business === "kedd-demo";
+    const kedd = demo || business === "kedd";
+    badgeEl.textContent = demo ? "KEDD demo" : (business === "kedd" ? "KEDD" : "demo");
     badgeEl.className = "badge " + (kedd ? "kedd" : "demo");
   }
 
@@ -194,7 +195,10 @@
       if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
     }
     setBusiness(data.business_name, data.business);
-    if (landingReady) refreshTrace();
+    if (landingReady) {
+      refreshTrace();
+      refreshKedd(false);
+    }
   }
 
   function drainQueue() {
@@ -434,6 +438,7 @@
       b.setAttribute("aria-pressed", b.dataset.lang === lang ? "true" : "false");
     }
     paintCoverage();
+    paintKedd();
   }
 
   function paintCoverage() {
@@ -544,6 +549,72 @@
     paintModels(data);
   }
 
+  /* ---- Live-in-KEDD panel: read-only proof of the demo business. All server
+   * strings land in textContent, like the approval card renderer above. */
+  const keddPillEl = document.getElementById("keddPill");
+  const keddBusinessEl = document.getElementById("keddBusiness");
+  const keddRowsEl = document.getElementById("keddRows");
+  const keddRetryEl = document.getElementById("keddRetry");
+  const keddErrorEl = document.getElementById("keddError");
+  let keddData = null;
+
+  function keddRow(title, lines) {
+    const box = document.createElement("div");
+    box.className = "kedd-row";
+    const h = document.createElement("h3");
+    h.textContent = title;
+    box.appendChild(h);
+    const ul = document.createElement("ul");
+    for (const line of lines) {
+      const li = document.createElement("li");
+      li.textContent = line;
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+    keddRowsEl.appendChild(box);
+  }
+
+  function paintKedd() {
+    if (!keddRowsEl) return;
+    keddRowsEl.innerHTML = "";
+    if (!keddData) {
+      keddPillEl.textContent = t("kedd.off");
+      keddPillEl.className = "pill soon";
+      return;
+    }
+    const d = keddData;
+    const pill = d.state === "live" ? ["kedd.live", "live"]
+      : d.state === "fallback" ? ["kedd.fallback", "fallback"] : ["kedd.mock", "soon"];
+    keddPillEl.textContent = t(pill[0]);
+    keddPillEl.className = "pill " + pill[1];
+    keddBusinessEl.textContent = d.business_name || "";
+    keddRetryEl.hidden = d.state !== "fallback";
+    keddErrorEl.hidden = !d.error;
+    keddErrorEl.textContent = d.error || "";
+    const sample = d.catalog_sample || [];
+    keddRow(t("kedd.catalog"), sample.length ? sample.map((it) => {
+      const price = typeof it.price === "number" ? ` · ${it.price} ₺` : "";
+      return `${it.name || "?"}${price}`;
+    }) : [t("kedd.nowrites")]);
+    const appts = (d.appointments_today && d.appointments_today.items) || [];
+    const n = (d.appointments_today && d.appointments_today.count) || 0;
+    keddRow(`${t("kedd.appts")} (${n})`, appts.length ? appts.map((a) => {
+      const who = a.staff ? ` · ${a.staff}` : "";
+      return `${a.time || "?"} ${a.service || "?"}${who}`;
+    }) : [t("kedd.nowrites")]);
+    const writes = d.recent_writes || [];
+    keddRow(t("kedd.writes"), writes.length ? writes.map((w) => w.label || w.kind || "?")
+      : [t("kedd.nowrites")]);
+  }
+
+  async function refreshKedd(fresh) {
+    try {
+      const r = await fetch("/api/kedd-state" + (fresh ? "?fresh=1" : ""));
+      if (r.ok) keddData = await r.json();
+    } catch (e) { /* keep the last painted state */ }
+    paintKedd();
+  }
+
   function landingInit() {
     if (landingReady) return;
     landingReady = true;
@@ -562,6 +633,8 @@
     if (document.querySelectorAll(".demobanner").length && syntheticLineEl) syntheticLineEl.hidden = false;
     loadCoverage();
     refreshTrace();
+    refreshKedd(false);
+    if (keddRetryEl) keddRetryEl.addEventListener("click", () => refreshKedd(true));
   }
   document.addEventListener("DOMContentLoaded", landingInit);
 })();
