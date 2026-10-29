@@ -46,11 +46,13 @@ def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
             try:                      # progress notes are best effort; a failed one must not abort the job
                 wa.send_text(m.sender, t)
             except Exception:  # noqa: BLE001
-                log.warning("notify failed: %s", t[:40])
+                log.warning("notify failed")       # notify text can carry the transcript
 
         replies = core.handle(session, m.kind, text=m.text, media_path=media_path, notify=notify,
                               sent_at=float(m.timestamp) if m.timestamp else None, async_delivery=True,
                               checkpoint=lambda: save(m.sender, session))
+    except wa.MediaTooBig as e:
+        replies = [core.Reply(str(e))]
     except Exception:
         log.exception("handling failed")
         replies = [core.Reply("Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?")]

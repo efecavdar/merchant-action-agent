@@ -215,3 +215,76 @@ def test_agent_loop_revises_invalid_proposal(monkeypatch):
     assert run.proposal["actions"][0]["price"] == 850
     assert run.turns == 3 and run.segments == {fake.seg}
     assert [t["tool"] for t in run.tool_log] == ["get_store_profile", "find_customers", "propose_actions", "propose_actions"]
+
+
+# --------------------------------------------------------------------------- #
+# task 15, item 8: template requirement follows the session's backend
+# --------------------------------------------------------------------------- #
+
+def test_t15_plan_passes_session_backend_template_flag(monkeypatch):
+    from app.tools.backend import KeddBackend
+
+    seen = {}
+    real_validate = agent.validate_proposal
+
+    def spy(proposal, *args, **kwargs):
+        seen["requires_template"] = kwargs.get("requires_template")
+        return real_validate(proposal, *args, **kwargs)
+
+    monkeypatch.setattr(agent, "validate_proposal", spy)
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeTemplate()))
+    run = agent.plan(MediaContext("x", "text"), MockBackend("butik", today=date(2026, 10, 27)))
+    assert run.proposal and seen["requires_template"] is False
+
+    class OfflineKedd(KeddBackend):
+        def list_catalog(self, item_type=None):
+            return []
+
+        def store_profile(self):
+            return {"business_name": "K", "tone": "samimi"}
+
+        def find_customers(self, **k):
+            return {"segment_id": "sk1", "count": 3}
+
+        def campaign_templates(self):
+            return MockBackend("butik", today=date(2026, 10, 27)).campaign_templates()
+
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeTemplate()))
+    run = agent.plan(MediaContext("x", "text"), OfflineKedd("https://kedd.example", "s", "+900000000000"))
+    assert run.proposal and seen["requires_template"] is True
+
+
+# --------------------------------------------------------------------------- #
+# task 15, item 12: no user content in logs (model prose, rejected proposals)
+# --------------------------------------------------------------------------- #
+
+class FakeProseThenAnswer:
+    """First answers in prose (no tool call), then finishes with reply_only."""
+
+    def __init__(self):
+        self.step = 0
+
+    def create(self, **kw):
+        self.step += 1
+        if self.step == 1:
+            return SimpleNamespace(id="p1", output=[], output_text="gizli-model-yanıtı " * 20,
+                                   usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        fc = FakeResponses._fc
+        return SimpleNamespace(id="p2", output=[fc("reply_only", {"text": "tamam"}, "c1")],
+                               output_text="", usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+
+
+def test_t15_logs_carry_no_model_prose_or_proposals(monkeypatch, caplog):
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeProseThenAnswer()))
+    with caplog.at_level("WARNING", logger="app.agent"):
+        agent.plan(MediaContext("x", "text"), MockBackend("butik", today=date(2026, 10, 27)))
+    assert "gizli-model-yanıtı" not in caplog.text
+
+    monkeypatch.setattr(agent.meta, "client", lambda: SimpleNamespace(responses=FakeResponses()))
+    ctx = MediaContext("Bunları ekle 850 lira", "text",
+                       [ProductCard("tmp1", "x.png", "s", "Çanta", "çanta", "siyah", "deri", "d")])
+    with caplog.at_level("WARNING", logger="app.agent"):
+        agent.plan(ctx, MockBackend("butik", today=date(2026, 10, 27)))
+    warnings = [r.getMessage() for r in caplog.records if r.name == "app.agent"]
+    assert warnings and all("Çanta" not in w and "selam" not in w for w in warnings)
+    assert any("add_catalog_item" in w and "send_campaign" in w for w in warnings)  # action types stay

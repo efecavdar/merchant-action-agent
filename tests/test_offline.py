@@ -3,7 +3,7 @@
 import json
 import pickle
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -80,12 +80,17 @@ def test_mock_salon_services_and_schedule(tmp_path):
 CATALOG = {"i001": {"id": "i001", "price": 650.0}}
 
 
+def _future_day(offset):
+    return (date.today() + timedelta(days=offset)).isoformat()
+
+
 def _proposal(seg_id):
     return {
         "summary_tr": "1 çanta eklenecek, hafta sonu %15, 20 müşteriye mesaj.",
         "actions": [
             {"type": "add_catalog_item", "item_type": "product", "temp_id": "tmp1", "name": "Deri Çanta", "price": 850},
-            {"type": "create_discount", "percent": 15, "item_refs": ["tmp1"], "starts": "2026-10-31", "ends": "2026-11-01"},
+            {"type": "create_discount", "percent": 15, "item_refs": ["tmp1"],
+             "starts": _future_day(2), "ends": _future_day(3)},
             {"type": "generate_visual", "visual_prompt": "leather bag", "item_refs": ["tmp1"]},
             {"type": "send_campaign", "segment_id": seg_id, "message": "Selam! Çanta 850 TL, hafta sonu %15 🎁",
              "attach_visual": True},
@@ -105,8 +110,8 @@ def test_validate_text_only_item_and_service():
     prop = {"summary_tr": "ok", "actions": [
         {"type": "add_catalog_item", "item_type": "service", "ref": "new1", "name": "Keratin", "price": 2500,
          "duration_minutes": 90},
-        {"type": "create_discount", "percent": 20, "item_refs": ["new1", "i001"], "starts": "2026-10-28",
-         "ends": "2026-10-28"},
+        {"type": "create_discount", "percent": 20, "item_refs": ["new1", "i001"],
+         "starts": _future_day(2), "ends": _future_day(2)},
     ]}
     assert validate_proposal(prop, set(), CATALOG, set()) == []
     prop["actions"][0]["duration_minutes"] = 2
@@ -118,7 +123,8 @@ def test_validate_text_only_item_and_service():
 def test_validate_message_must_match_plan():
     # the failure seen in the first live run: discount on unrelated items, message promises a new product at 850
     prop = {"summary_tr": "ok", "actions": [
-        {"type": "create_discount", "percent": 15, "item_refs": ["i001"], "starts": "2026-10-31", "ends": "2026-11-01"},
+        {"type": "create_discount", "percent": 15, "item_refs": ["i001"],
+         "starts": _future_day(2), "ends": _future_day(3)},
         {"type": "send_campaign", "segment_id": "seg1",
          "message": "Yeni fular koleksiyonu 850 TL, hafta sonu %15 indirim!"},
     ]}
@@ -133,10 +139,12 @@ def test_validate_message_must_match_plan():
 
 def test_validate_appointment_actions_need_ids_from_tools():
     cat = {"i001": {"id": "i001", "price": 450.0, "type": "service"}, "i009": {"id": "i009", "price": 1, "type": "product"}}
+    _dt = lambda days, h, m: (datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
+                            + timedelta(days=days)).isoformat(timespec="minutes")
     prop = {"summary_tr": "Randevu.", "actions": [
         {"type": "create_appointment", "customer_id": "c001", "item_ref": "i001", "staff": "Elif",
-         "starts": "2026-10-31T15:00", "label": "Ayşe — Saç Kesimi, Elif, Cuma 15:00"},
-        {"type": "reschedule_appointment", "appointment_id": "a007", "starts": "2026-10-31T16:00", "label": "x"},
+         "starts": _dt(2, 15, 0), "label": "Ayşe — Saç Kesimi, Elif, Cuma 15:00"},
+        {"type": "reschedule_appointment", "appointment_id": "a007", "starts": _dt(2, 16, 0), "label": "x"},
         {"type": "cancel_appointment", "appointment_id": "a008", "label": "y"},
     ]}
     assert validate_proposal(prop, set(), cat, set(), {"a007", "a008"}, {"c001"}) == []
@@ -155,7 +163,8 @@ def test_validate_coerces_numeric_strings_and_requires_promised_campaign():
     prop = {"summary_tr": "Hafta sonu indirim, 28 kişiye kampanya hazırladım.", "actions": [
         {"type": "add_catalog_item", "item_type": "service", "ref": "n1", "name": "Keratin", "price": "2500",
          "duration_minutes": "90"},
-        {"type": "create_discount", "percent": "20", "item_refs": ["n1"], "starts": "2026-10-28", "ends": "2026-10-28"},
+        {"type": "create_discount", "percent": "20", "item_refs": ["n1"],
+         "starts": _future_day(2), "ends": _future_day(2)},
     ]}
     errs = validate_proposal(prop, set(), CATALOG, {"seg1"})
     assert len(errs) == 1 and "send_campaign" in errs[0]
@@ -646,7 +655,7 @@ def _template_proposal(**kw):
     a.update(kw)
     return {"summary_tr": "Fularlarda %15, gelmeyenlere mesaj.", "actions": [
         {"type": "create_discount", "percent": 15, "item_refs": ["i001"],
-         "starts": "2026-10-31", "ends": "2026-11-01"},
+         "starts": _future_day(2), "ends": _future_day(3)},
         a,
     ]}
 
@@ -900,3 +909,200 @@ def test_executor_passes_stable_idempotency_key(tmp_path):
     executor.execute(prop, MediaContext("x", "text"), kb, out_dir=run_dir)   # a retried delivery…
     keys2 = [h["Idempotency-Key"] for _m, _u, h, _b in kb._s.calls[2:]]
     assert keys2 == keys                                                     # …reuses both keys
+
+
+# --------------------------------------------------------------------------- #
+# task 15, items 1-5: the approval card shows everything that will happen
+# --------------------------------------------------------------------------- #
+
+def _photo_ctx(desc="siyah deri el çantası, günlük kullanım için ideal"):
+    return MediaContext("x", "text", [ProductCard("tmp1", "c.png", "s.png", "Deri Çanta", "çanta",
+                                                 "siyah", "deri", desc)])
+
+
+def test_t15_card_item_shows_category_and_description_with_vision_fallback():
+    prop = {"summary_tr": "özet", "actions": [
+        {"type": "add_catalog_item", "item_type": "product", "temp_id": "tmp1",
+         "name": "Deri Çanta", "price": 850},
+        {"type": "add_catalog_item", "item_type": "service", "ref": "n1", "name": "Keratin",
+         "price": 2500, "category": "bakım", "description": "90 dakikalık keratin bakımı",
+         "duration_minutes": 90},
+    ]}
+    card = approval.render_card(prop, _photo_ctx(), {})
+    # vision fallback, as the executor writes it
+    assert "çanta" in card and "siyah deri el çantası" in card
+    assert "bakım" in card and "90 dakikalık keratin bakımı" in card
+    long_card = approval.render_card(prop, _photo_ctx("D" * 200), {})
+    assert "D" * 119 + "…" in long_card and "D" * 120 not in long_card  # 120 incl. the marker
+
+
+def test_t15_card_discount_lists_item_names():
+    prop = {"summary_tr": "özet", "actions": [
+        {"type": "add_catalog_item", "item_type": "product", "ref": "n1", "name": "İpek Fular",
+         "price": 850},
+        {"type": "create_discount", "percent": 15, "item_refs": ["n1", "i001"],
+         "starts": "2026-11-01", "ends": "2026-11-02"},
+    ]}
+    facts = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
+             "items": {"i001": {"id": "i001", "name": "Deri Kemer"}}, "templates": {}}
+    card = approval.render_card(prop, MediaContext("x", "text"), {}, facts)
+    assert "İpek Fular" in card and "Deri Kemer" in card
+    many = {"summary_tr": "özet", "actions": [
+        {"type": "create_discount", "percent": 10, "item_refs": [f"c{i}" for i in range(7)],
+         "starts": "2026-11-01", "ends": "2026-11-02"}]}
+    facts["items"].update({f"c{i}": {"id": f"c{i}", "name": f"Kalem{i}"} for i in range(7)})
+    card7 = approval.render_card(many, MediaContext("x", "text"), {}, facts)
+    assert "Kalem0" in card7 and "Kalem4" in card7 and "+2 kalem" in card7 and "Kalem5" not in card7
+
+
+def test_t15_card_visual_attachment_and_prompt():
+    prop = {"summary_tr": "özet", "actions": [
+        {"type": "generate_visual", "visual_prompt": "P" * 100, "item_refs": []},
+        {"type": "send_campaign", "segment_id": "s1", "message": "m", "attach_visual": True},
+    ]}
+    card = approval.render_card(prop, MediaContext("x", "text"), {"s1": 5})
+    assert "📎 görsel eklenecek" in card
+    assert "P" * 79 + "…" in card and "P" * 80 not in card
+    plain = approval.render_card({"summary_tr": "özet", "actions": [
+        {"type": "send_campaign", "segment_id": "s1", "message": "m"}]},
+        MediaContext("x", "text"), {"s1": 5})
+    assert "görsel eklenecek" not in plain
+
+
+def test_t15_card_sanitises_third_party_strings():
+    facts = {"previews": {}, "customers": {"c1": "Ayşe\nYılmaz\x00*VIP*"}, "campaigns": {},
+             "appointments": {}, "items": {}, "templates": {
+                 "t": {"name": "t", "body": "Merhaba {{1}}, kodun {{2}}", "variables": [{"number": 2}]}}}
+    prop = {"summary_tr": "özet", "actions": [
+        {"type": "add_catalog_item", "item_type": "product", "ref": "n1",
+         "name": "Kötü\nİsim_*~" + "N" * 80, "price": 10},
+        {"type": "send_campaign", "segment_id": "s1", "template": "t",
+         "variables": {"2": "KO_D\n*X*"}},
+        {"type": "adjust_loyalty", "customer_id": "c1", "points": 50, "reason": "r", "label": "l"},
+    ]}
+    card = approval.render_card(prop, MediaContext("x", "text"), {"s1": 1}, facts)
+    body = card.split("Onaylıyor")[0].replace("*Çırak — onayına sunuyorum*", "")
+    assert "Kötü İsim_N" not in card and "Kötü İsim" in card and "*" not in body
+    assert "N" * 50 + "…" in card and "N" * 51 not in card  # "Kötü İsim" (9) + 50 + "…" = 60 max
+    assert "KOD X" in card and "Ayşe Yılmaz VIP" in card
+
+
+def test_t15_card_actions_come_before_the_note():
+    prop = _proposal("seg101")
+    card = approval.render_card(prop, _photo_ctx(), {"seg101": 20})
+    assert "Çırak'ın notu:" in card
+    first_action = card.index("🛍️")
+    assert first_action < card.index("Çırak'ın notu:") < card.index("1 çanta eklenecek")
+
+
+# --------------------------------------------------------------------------- #
+# task 15, items 6-10: validator gaps
+# --------------------------------------------------------------------------- #
+
+def _msg_prop(message):
+    return {"summary_tr": "ok", "actions": [
+        {"type": "send_campaign", "segment_id": "seg1", "message": message}]}
+
+
+def test_t15_validator_rejects_contacts_and_respects_lengths():
+    for bad, kind in [("bak https://ornek.com/x", "URL"), ("bak www.ornek.com", "URL"),
+                      ("yaz info@dukkan.com", "e-mail"), ("ara 0532 123 45 67", "phone"),
+                      ("ara +90 532 123 45 67", "phone"), ("ara +1 555 123 4567", "phone"),
+                      ("TR330006100519786457841326", "IBAN")]:
+        errs = validate_proposal(_msg_prop(bad), set(), CATALOG, {"seg1"})
+        assert any(kind in e for e in errs), bad
+    ok = {"summary_tr": "ok", "actions": [
+        {"type": "create_discount", "percent": 15, "item_refs": ["i001"],
+         "starts": _future_day(2), "ends": _future_day(3)},
+        {"type": "send_campaign", "segment_id": "seg1", "message": "Selam! Çanta 650 TL, hafta sonu %15"}]}
+    assert validate_proposal(ok, set(), CATALOG, {"seg1"}) == []  # prices and percents are not contacts
+    item = {"summary_tr": "ok", "actions": [
+        {"type": "add_catalog_item", "item_type": "product", "ref": "n1", "name": "N" * 61, "price": 10},
+        {"type": "add_catalog_item", "item_type": "product", "ref": "n2", "name": "ara 05321234567",
+         "price": 10, "description": "D" * 501, "category": "C" * 41},
+    ]}
+    errs = validate_proposal(item, set(), CATALOG, set())
+    assert any("60" in e for e in errs) and any("phone" in e for e in errs)
+    assert any("500" in e for e in errs) and any("40" in e for e in errs)
+    many = {"summary_tr": "ok", "actions": [{"type": "cancel_appointment", "appointment_id": "a1",
+                                             "label": "l"}] * 13}
+    assert any("12" in e for e in validate_proposal(many, set(), CATALOG, set(), {"a1"}))
+
+
+def test_t15_validator_offer_words_need_a_discount():
+    for word in ("bedava", "ücretsiz", "yarı fiyat", "1 alana 1", "hediye"):
+        errs = validate_proposal(_msg_prop(f"Hafta sonu {word} fırsatı"), set(), CATALOG, {"seg1"})
+        assert any("discount" in e for e in errs), word
+    prop = {"summary_tr": "ok", "actions": [
+        {"type": "create_discount", "percent": 50, "item_refs": ["i001"],
+         "starts": _future_day(2), "ends": _future_day(3)},
+        {"type": "send_campaign", "segment_id": "seg1", "message": "Hafta sonu yarı fiyat fırsatı"},
+    ]}
+    assert validate_proposal(prop, set(), CATALOG, {"seg1"}) == []
+    tvar = {"summary_tr": "x", "actions": [
+        {"type": "send_campaign", "segment_id": "seg1", "template": "marketing_reengagement_promo_tr",
+         "variables": {"2": "KOD", "3": "hediye çeki"}}]}
+    assert any("discount" in e for e in validate_proposal(tvar, set(), CATALOG, {"seg1"},
+                                                           known_templates=_known_templates()))
+
+
+def test_t15_validator_template_flag_follows_session_backend():
+    free = _proposal("seg101")  # free-text message, no template
+    assert validate_proposal(free, {"tmp1"}, CATALOG, {"seg101"}, requires_template=True) != []
+    assert any("template is required" in e
+               for e in validate_proposal(free, {"tmp1"}, CATALOG, {"seg101"}, requires_template=True))
+    assert validate_proposal(free, {"tmp1"}, CATALOG, {"seg101"}, requires_template=False) == []
+
+
+def test_t15_validator_discount_and_appointment_dates_and_dedupe():
+    prop = {"summary_tr": "ok", "actions": [
+        {"type": "create_discount", "percent": 10, "item_refs": ["i001", "i001"],
+         "starts": (date.today() - timedelta(days=1)).isoformat(), "ends": _future_day(3)},
+    ]}
+    assert any("starts" in e for e in validate_proposal(prop, set(), CATALOG, set()))
+    prop["actions"][0]["starts"] = date.today().isoformat()  # today is fine; dupes silently merged
+    assert validate_proposal(prop, set(), CATALOG, set()) == []
+    assert prop["actions"][0]["item_refs"] == ["i001"]
+    cat = {"i001": {"id": "i001", "price": 450.0, "type": "service"}}
+    past = {"summary_tr": "ok", "actions": [
+        {"type": "create_appointment", "customer_id": "c001", "item_ref": "i001", "staff": "Elif",
+         "starts": "2020-01-01T10:00", "label": "l"}]}
+    assert any("future" in e for e in validate_proposal(past, set(), cat, set(), known_customers={"c001"}))
+
+
+def test_t15_validator_visual_needs_a_photo_crop():
+    prop = {"summary_tr": "ok", "actions": [
+        {"type": "generate_visual", "visual_prompt": "bags", "item_refs": ["i001"]},
+        {"type": "send_campaign", "segment_id": "seg1", "message": "m", "attach_visual": True},
+    ]}
+    errs = validate_proposal(prop, {"tmp9"}, CATALOG, {"seg1"})
+    assert any("crop" in e for e in errs)
+    prop["actions"][0]["item_refs"] = ["tmp9", "i001"]
+    assert validate_proposal(prop, {"tmp9"}, CATALOG, {"seg1"}) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Yaz bize: wa.me/905321234567", "Ara: (0532) 123 45 67", "Mağaza: 0212 123 45 67",
+    "instagram.com/butikx", "IBAN tr33 0006 1005 1978 6457 8413 26",
+])
+def test_review_contacts_caught(text):
+    errors: list[str] = []
+    from app.actions import _check_no_contacts
+    _check_no_contacts("actions[0]", "message", text, errors)
+    assert errors, text
+
+
+@pytest.mark.parametrize("text", [
+    "XL 42 BEDEN STOKTA KALDI", "Fiyat 1.250 ₺, kampanya 15.11.2026 bitiyor", "Saat 10.00-19.00 arası açığız",
+    "549,90 TL", "Hediyelik eşyalarımız geldi", "Ücretsiz kargo her siparişte",
+])
+def test_review_no_false_positives(text):
+    from app.actions import _OFFER_WORDS_RE, _check_no_contacts
+    errors: list[str] = []
+    _check_no_contacts("actions[0]", "message", text, errors)
+    assert not errors and not _OFFER_WORDS_RE.search(text), (text, errors)
+
+
+def test_review_card_strips_unicode_separators_and_bidi():
+    s = approval.clean_display("Ay şe‮Yılmaz\u0085X")
+    assert not any(ch in s for ch in " ‮\u0085") and "Ay şe Yılmaz X" == s

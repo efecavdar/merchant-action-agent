@@ -261,13 +261,13 @@ def test_kedd_command_switches_to_session_phone_backend(monkeypatch, cfg, tmp_pa
     cfg("kedd_api_url", "https://kedd.example")
     cfg("kedd_agent_secret", "s3cret")
     monkeypatch.setattr(KeddBackend, "store_profile", lambda self: {"business_name": "Demo Kuaför"})
-    s = core.Session(sender="905321234567",
+    s = core.Session(sender="905000000000",
                      backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     s.pending, s.images = {"at": time.time()}, ["a.jpg"]
     s.history = [{"role": "owner", "text": "x", "at": time.time()}]
     r = core.handle(s, "text", "/kedd")
     assert s.business == "kedd" and isinstance(s.backend, KeddBackend)
-    assert s.backend._phone == "+905321234567"        # merchant comes from the chat, not the model
+    assert s.backend._phone == "+905000000000"        # merchant comes from the chat, not the model
     assert s.pending is None and s.images == [] and s.history == []
     assert "KEDD'deki işletmen" in r[0].text and "Demo Kuaför" in r[0].text
     core.handle(s, "text", "/butik")                  # and back to the mock
@@ -421,3 +421,145 @@ def test_kedd_secret_is_not_pickled(cfg):
     blob = pickle.dumps(b)
     assert b"s3cret-value-xyz" not in blob
     assert pickle.loads(blob)._secret == b"s3cret-value-xyz"
+
+
+# --------------------------------------------------------------------------- #
+# task 15, items 12/15/16: Graph logs, download cap, dispatch-failure recovery
+# --------------------------------------------------------------------------- #
+
+def test_t15_graph_error_logs_status_and_code_only(monkeypatch, cfg, caplog):
+    cfg("wa_access_token", "tok")
+    cfg("wa_phone_number_id", OURS)
+
+    class _Resp:
+        status_code = 400
+        text = '{"error": {"code": 131030, "type": "OAuthException", "message": "gizli-hata-mesajı"}}'
+
+        def json(self):
+            return json.loads(self.text)
+
+        def raise_for_status(self):
+            raise RuntimeError("HTTP 400")
+
+    monkeypatch.setattr(wa.requests, "post", lambda *a, **k: _Resp())
+    with caplog.at_level("ERROR", logger="app.channels.whatsapp"):
+        try:
+            wa._post_message({"to": "905321", "type": "text", "text": {"body": "x"}})
+        except RuntimeError:
+            pass
+    assert "gizli-hata-mesajı" not in caplog.text
+    assert "131030" in caplog.text and "400" in caplog.text
+
+
+def test_t15_download_media_refuses_over_16mb(monkeypatch, cfg, tmp_path):
+    cfg("wa_access_token", "tok")
+
+    class _Meta:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"url": "https://graph/x", "mime_type": "image/jpeg"}
+
+    class _Blob:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=65536):
+            yield b"x" * (17 * 1024 * 1024)
+
+    monkeypatch.setattr(wa.requests, "get",
+                        lambda *a, **k: _Meta() if k.get("stream") is not True else _Blob())
+    with pytest.raises(ValueError, match="16 MB"):
+        wa.download_media("mid1", tmp_path)
+
+
+def test_t15_download_media_streams_small_files(monkeypatch, cfg, tmp_path):
+    cfg("wa_access_token", "tok")
+
+    class _Meta:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"url": "https://graph/x", "mime_type": "audio/ogg; codecs=opus"}
+
+    class _Blob:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+        headers = {"Content-Length": "4"}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=65536):
+            yield b"OggS"
+
+    calls = {}
+
+    def fake_get(url, **k):
+        calls[url] = k
+        return _Meta() if k.get("stream") is not True else _Blob()
+
+    monkeypatch.setattr(wa.requests, "get", fake_get)
+    path = wa.download_media("mid9", tmp_path)
+    assert path.read_bytes() == b"OggS" and path.suffix == ".ogg"
+    assert calls["https://graph/x"].get("stream") is True
+
+
+def _signed(client_payload: bytes):
+    return "sha256=" + hmac.new(SECRET.encode(), client_payload, hashlib.sha256).hexdigest()
+
+
+def test_t15_dispatch_failure_unmarks_for_redelivery(cfg):
+    cfg("wa_verify_token", "vt")
+    cfg("meta_app_secret", SECRET)
+    cfg("wa_phone_number_id", OURS)
+    cfg("wa_allowed_senders", frozenset({"905321"}))
+    seen, unmarked, calls = set(), [], []
+
+    def dispatch(msg):
+        calls.append(msg["id"])
+        if len(calls) == 1:
+            raise RuntimeError("spawn exploded")
+
+    def first_time(mid):
+        if mid in seen:
+            return False
+        seen.add(mid)
+        return True
+
+    c = TestClient(server.create_app(dispatch, first_time, unmark=lambda mid: (seen.discard(mid),
+                                                                                unmarked.append(mid))))
+    body = json.dumps(_payload([
+        {"id": "m1", "from": "905321", "timestamp": "1", "type": "text",
+         "text": {"body": "selam"}}])).encode()
+    assert c.post("/webhook", content=body, headers={"x-hub-signature-256": _signed(body)}).status_code == 500
+    assert unmarked == ["m1"] and "m1" not in seen
+    assert c.post("/webhook", content=body, headers={"x-hub-signature-256": _signed(body)}).status_code == 200
+    assert calls == ["m1", "m1"]  # Meta's redelivery is processed, not dropped as a duplicate
+
+
+def test_t15_non_object_json_is_400(cfg):
+    cfg("wa_verify_token", "vt")
+    cfg("meta_app_secret", SECRET)
+    cfg("wa_phone_number_id", OURS)
+    cfg("wa_allowed_senders", frozenset({"905321"}))
+    c = TestClient(server.create_app(lambda m: None, lambda mid: True))
+    for raw in (b"[1, 2]", b'"selam"', b"42"):
+        assert c.post("/webhook", content=raw,
+                      headers={"x-hub-signature-256": _signed(raw)}).status_code == 400

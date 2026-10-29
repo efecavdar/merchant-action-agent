@@ -13,6 +13,11 @@ from typing import Any
 from .config import settings
 from .tools.backend import render_campaign_template
 
+MAX_ACTIONS_PER_PLAN = 12
+MAX_NAME_CHARS = 60
+MAX_DESCRIPTION_CHARS = 500
+MAX_CATEGORY_CHARS = 40
+
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
                 "apply_bulk_price", "adjust_loyalty", "ads_action"}
@@ -106,7 +111,31 @@ def _promised_numbers(message: str) -> tuple[set[int], set[float]]:
     return pcts, prices
 
 
-_URL_RE = re.compile(r"https?://|www\.", re.I)
+_URL_RE = re.compile(r"https?://|www\.|\b(?:wa|t)\.me\b|\b[\w-]+\.(?:com|net|org|me|ly|link|io|co|shop|store|app|tr)\b",
+                     re.I)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_PHONE_INTL_RE = re.compile(r"\+\d[\d\s().-]{7,}\d")
+_PHONE_TR_RE = re.compile(r"(?<!\d)0?5\d{2}[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d)")
+_PHONE_DIGITS_RE = re.compile(r"(?<!\d)(?:90|0)?[2-5]\d{9}(?!\d)")   # after () . - and spaces are removed
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", re.I)
+_IBAN_TR_RE = re.compile(r"TR\d{24}", re.I)   # Turkish IBAN once spaces are removed
+# Offer words that promise a deal: only a plan with a discount action may use them.
+# "hediyelik eşya" and "ücretsiz kargo" are not deals on the items.
+_OFFER_WORDS_RE = re.compile(r"\bbedava|\bücretsiz\b(?!\s+kargo)|\byarı\s+fiyat|\b1\s+alana\s+1\b|\bhediye(?!lik)",
+                             re.I)
+
+
+def _check_no_contacts(where: str, what: str, text: str, errors: list[str]) -> None:
+    """Customer-facing text must not smuggle out contact details or payment rails."""
+    if _URL_RE.search(text):
+        errors.append(f"{where}: {what} must not contain a URL")
+    if _EMAIL_RE.search(text):
+        errors.append(f"{where}: {what} must not contain an e-mail address")
+    if (_PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text)
+            or _PHONE_DIGITS_RE.search(re.sub(r"[()\s.-]", "", text))):
+        errors.append(f"{where}: {what} must not contain a phone number")
+    if _IBAN_RE.search(text) or _IBAN_TR_RE.search(re.sub(r"\s+", "", text)):
+        errors.append(f"{where}: {what} must not contain an IBAN")
 
 
 def _check_promised_numbers(where: str, text: str, plan_pcts: set[int], plan_prices: set[float],
@@ -148,8 +177,7 @@ def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: st
             errors.append(f"{where}: variables[{k!r}] too long ({len(v)} > 60 chars)")
         if "\n" in v or "\r" in v:
             errors.append(f"{where}: variables[{k!r}] must be a single line (no newline)")
-        if _URL_RE.search(v):
-            errors.append(f"{where}: variables[{k!r}] must not contain a URL")
+        _check_no_contacts(where, f"variables[{k!r}]", v, errors)
 
 
 def _coerce_numbers(a: dict[str, Any]) -> None:
@@ -194,18 +222,22 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       known_customers: set[str] | None = None,
                       known_previews: dict[str, dict[str, Any]] | None = None,
                       known_campaigns: set[str] | None = None,
-                      known_templates: dict[str, dict[str, Any]] | None = None) -> list[str]:
+                      known_templates: dict[str, dict[str, Any]] | None = None,
+                      requires_template: bool | None = None) -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
     Ids for appointments / customers / campaigns / previews must come from a tool call
     in the same run (like segments); `known_previews` maps preview_id -> preview result,
-    `known_templates` maps template name -> template (from list_campaign_templates)."""
+    `known_templates` maps template name -> template (from list_campaign_templates).
+    `requires_template` reflects the session's backend (True on KEDD: templates only);
+    None falls back to the global BACKEND setting (older callers)."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
     known_previews = known_previews or {}
     known_campaigns = known_campaigns or set()
     known_templates = known_templates or {}
+    needs_template = settings.backend == "kedd" if requires_template is None else requires_template
     errors: list[str] = []
     if not isinstance(proposal, dict):
         return ["proposal must be an object"]
@@ -214,10 +246,13 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     actions = proposal.get("actions")
     if not isinstance(actions, list) or not actions:
         return errors + ["actions must be a non-empty list"]
+    if len(actions) > MAX_ACTIONS_PER_PLAN:
+        errors.append(f"actions must be at most {MAX_ACTIONS_PER_PLAN} per plan (got {len(actions)})")
 
     new_refs: dict[str, float] = {}        # temp_id / ref -> price of items being added
     plan_pcts: set[int] = set()
     plan_prices: set[float] = set()
+    offer_texts: list[tuple[str, str]] = []  # (where, text) using offer words
     has_visual = False
     for i, a in enumerate(actions):
         t = a.get("type")
@@ -244,6 +279,18 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 plan_prices.add(float(price))
             if not a.get("name"):
                 errors.append(f"{where}: name is required")
+            elif isinstance(a["name"], str):
+                if len(a["name"]) > MAX_NAME_CHARS:
+                    errors.append(f"{where}: name too long ({len(a['name'])} > {MAX_NAME_CHARS} chars)")
+                _check_no_contacts(where, "name", a["name"], errors)
+            if isinstance(a.get("description"), str):
+                if len(a["description"]) > MAX_DESCRIPTION_CHARS:
+                    errors.append(f"{where}: description too long "
+                                  f"({len(a['description'])} > {MAX_DESCRIPTION_CHARS} chars)")
+                _check_no_contacts(where, "description", a["description"], errors)
+            if isinstance(a.get("category"), str) and len(a["category"]) > MAX_CATEGORY_CHARS:
+                errors.append(f"{where}: category too long "
+                              f"({len(a['category'])} > {MAX_CATEGORY_CHARS} chars)")
             if a.get("item_type") == "service":
                 dur = a.get("duration_minutes")
                 if dur is not None and (not isinstance(dur, int) or not 5 <= dur <= 600):
@@ -258,6 +305,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             else:
                 plan_pcts.add(pct)
             refs = a.get("item_refs") or []
+            if isinstance(refs, list):
+                refs = list(dict.fromkeys(refs))  # de-duplicated, order kept
+                a["item_refs"] = refs
             bad = [r for r in refs if r not in new_refs and r not in catalog]
             if not refs:
                 errors.append(f"{where}: item_refs is required")
@@ -273,6 +323,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     errors.append(f"{where}: ends before starts")
                 if (e - s).days > 60:
                     errors.append(f"{where}: discount longer than 60 days needs manual setup")
+                if s < date.today():
+                    errors.append(f"{where}: starts is in the past (starts must be today or later)")
             except ValueError:
                 errors.append(f"{where}: starts/ends must be ISO dates")
 
@@ -283,6 +335,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             bad = [r for r in refs if r not in new_refs and r not in known_temp_ids and r not in catalog]
             if bad:
                 errors.append(f"{where}: unknown item refs {bad}")
+            elif refs and not (set(refs) & known_temp_ids):
+                errors.append(f"{where}: item_refs have no photo crop (the executor can only compose "
+                              f"detected temp_ids, not catalog ids) — drop item_refs or use a temp_id")
             has_visual = True
 
         elif t == "send_campaign":
@@ -308,8 +363,12 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                         {"1": "Müşteri", **{str(k): v for k, v in raw_vars.items()
                                            if isinstance(v, str)}})
                     _check_promised_numbers(where, rendered, plan_pcts, plan_prices, errors)
-            elif settings.backend == "kedd":
-                errors.append(f"{where}: template is required with BACKEND=kedd "
+                    for v in raw_vars.values():
+                        if isinstance(v, str) and _OFFER_WORDS_RE.search(v):
+                            offer_texts.append((where, v))
+                            break
+            elif needs_template:
+                errors.append(f"{where}: template is required with this backend "
                               f"(call list_campaign_templates and fill its variables)")
             else:
                 msg = a.get("message") or ""
@@ -318,7 +377,11 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                                   f"(or pick a template from list_campaign_templates)")
                 elif len(msg) > 350:
                     errors.append(f"{where}: message too long ({len(msg)} > 350 chars)")
+                else:
+                    _check_no_contacts(where, "message", msg, errors)
                 _check_promised_numbers(where, msg, plan_pcts, plan_prices, errors)
+                if _OFFER_WORDS_RE.search(msg):
+                    offer_texts.append((where, msg))
 
         elif t in APPOINTMENT_TYPES:
             if not a.get("label"):
@@ -340,9 +403,12 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                                   f"(known: {sorted(known_appointments)})")
             if t != "cancel_appointment":
                 try:
-                    _iso_dt(a.get("starts") or "")
+                    starts = _iso_dt(a.get("starts") or "")
                 except (ValueError, TypeError):
                     errors.append(f"{where}: starts must be an ISO datetime like 2026-10-31T15:00")
+                else:
+                    if starts <= datetime.now():
+                        errors.append(f"{where}: starts must be in the future")
 
         elif t == "apply_bulk_price":
             if not a.get("label"):
@@ -396,6 +462,10 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
 
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}
+    if "create_discount" not in types:
+        for where, text in offer_texts:
+            word = _OFFER_WORDS_RE.search(text).group(0)  # type: ignore[union-attr]
+            errors.append(f"{where}: {word!r} promises a deal but the plan has no create_discount action")
     summary = proposal.get("summary_tr") or ""
     if (known_segments and "send_campaign" not in types and _CAMPAIGN_WORDS_RE.search(summary)
             and not _NEGATED_CAMPAIGN_RE.search(summary)):

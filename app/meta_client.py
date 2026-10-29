@@ -76,6 +76,15 @@ def image_to_data_url(img: Image.Image, fmt: str = "JPEG", quality: int = 90) ->
 
 MAX_VOICE_S = 3 * 60  # longer voice notes are rejected before transcription
 _TOO_LONG_TR = "Sesli not 3 dakikadan uzun, kısaltıp tekrar dener misin?"
+_UNREADABLE_TR = "Sesli not açılamadı, başka bir kayıt dener misin?"
+_SUBPROCESS_TIMEOUT_S = 60
+
+
+def _looks_like_audio(head: bytes) -> bool:
+    """Magic-byte allow-list: ogg, webm (EBML), m4a/mp4 (ftyp), mp3 (ID3 or frame sync), wav."""
+    return (head[:4] == b"OggS" or head[:4] == b"\x1a\x45\xdf\xa3" or head[4:8] == b"ftyp"
+            or head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)
+            or (head[:4] == b"RIFF" and head[8:12] == b"WAVE"))
 
 
 def _audio_duration_s(path: Path) -> float | None:
@@ -85,7 +94,7 @@ def _audio_duration_s(path: Path) -> float | None:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        check=True, capture_output=True, text=True)
+        check=True, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_S)
     try:
         return float(out.stdout.strip())
     except ValueError:
@@ -105,17 +114,31 @@ def to_wav_24k_mono(src: str | Path) -> Path:
     src = Path(src)
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg not found on PATH; install it or pass a 24 kHz mono 16-bit WAV.")
+    try:
+        head = src.read_bytes()[:12]
+    except OSError:
+        raise ValueError(_UNREADABLE_TR) from None
+    if not _looks_like_audio(head):
+        raise ValueError(_UNREADABLE_TR)
     duration = _audio_duration_s(src)
     if duration is not None and duration > MAX_VOICE_S:
         raise ValueError(_TOO_LONG_TR)
     out = Path(tempfile.mkdtemp()) / (src.stem + ".wav")
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
-           "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", "-map_metadata", "-1", str(out)]
+    # Local files only (no network protocols via a crafted path), output capped past the
+    # 3-minute limit so a lying header cannot produce an unbounded conversion.
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
+           "-i", str(src), "-t", "181", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le",
+           "-map_metadata", "-1", str(out)]
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        raise ValueError("Sesli not açılamadı, başka bir kayıt dener misin?") from None
-    if duration is None and _wav_duration_s(out) > MAX_VOICE_S:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=_SUBPROCESS_TIMEOUT_S)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise ValueError(_UNREADABLE_TR) from None
+    try:
+        wav_seconds = _wav_duration_s(out)
+    except Exception:  # noqa: BLE001 — wave.Error means ffmpeg wrote garbage, not audio
+        out.unlink(missing_ok=True)
+        raise ValueError(_UNREADABLE_TR) from None
+    if wav_seconds > MAX_VOICE_S:
         out.unlink(missing_ok=True)
         raise ValueError(_TOO_LONG_TR)
     return out

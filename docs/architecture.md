@@ -56,11 +56,12 @@ ways to finish: `propose_actions` (a structured plan) or `reply_only` (a plain a
 "Bugün ne oldu?"). There is no write tool. A question answered with `reply_only` is returned by
 `core.handle` directly and leaves nothing pending.
 
-Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows seven action types:
+Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows ten action types:
 `add_catalog_item`, `create_discount`, `generate_visual`, `send_campaign`, `create_appointment`,
-`reschedule_appointment`, `cancel_appointment`. A proposal is validated in code, shown to the owner as
-a card, and only then executed by `app/executor.py` (`execute`), which maps each action to one backend
-call in a fixed order. The model never sends a message, sets a price, or books anything by itself.
+`reschedule_appointment`, `cancel_appointment`, `apply_bulk_price`, `adjust_loyalty`, `ads_action`.
+A proposal is validated in code, shown to the owner as a card, and only then executed by
+`app/executor.py` (`execute`), which maps each action to one backend call in a fixed order.
+The model never sends a message, sets a price, or books anything by itself.
 
 A real proposal, from `tests/test_offline.py::_proposal`:
 
@@ -85,16 +86,20 @@ the function, segment `seg101` = 20 customers):
 ```text
 *Çırak — onayına sunuyorum*
 
-1 çanta eklenecek, hafta sonu %15, 20 müşteriye mesaj.
-
 🛍️ Ürün: Deri Çanta — 850 ₺ 📷
-🏷️ İndirim: %15 (2026-10-31 → 2026-11-01) — 1 kalem
-🖼️ Kampanya görseli üretilecek
-📣 WhatsApp: 20 müşteriye mesaj
+🏷️ İndirim: %15 (2026-10-31 → 2026-11-01) — Deri Çanta
+🖼️ Kampanya görseli üretilecek: “leather bag”
+📣 WhatsApp: 20 müşteriye mesaj 📎 görsel eklenecek
    “Selam! Çanta 850 TL, hafta sonu %15 🎁”
+
+Çırak'ın notu: 1 çanta eklenecek, hafta sonu %15, 20 müşteriye mesaj.
 
 Onaylıyor musun? (evet / hayır)
 ```
+
+Action lines come first and the model's note last, so the prose cannot frame what is about to
+run. Item lines show the category and description that will actually be written; discount lines
+name the affected items; third-party strings on the card are sanitised (no newlines, no `*`).
 
 ## 2. Validation rules
 
@@ -104,7 +109,9 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | Check | Failure it prevents |
 |---|---|
 | Proposal is an object with `summary_tr` and a non-empty `actions` list | Empty or shapeless plans |
-| Every action type is one of the 7 known types | Made-up write operations |
+| Every action type is one of the 10 known types; at most 12 actions per plan | Made-up or runaway write operations |
+| Catalog name/description, messages and template variables carry no URL, e-mail, phone or IBAN | Contact details smuggled to customers |
+| Offer words (`bedava`, `ücretsiz`, …) require a `create_discount` in the plan | Messages promising an unplanned deal |
 | `add_catalog_item`: `item_type` is product or service | Wrong catalog entity |
 | `add_catalog_item`: `temp_id` must come from this run's photos, else a text `ref` is required | Items detached from any evidence |
 | `add_catalog_item`: no handle added twice or clashing with an existing id | Duplicate / colliding items |
@@ -124,6 +131,9 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | `reschedule`/`cancel`: `appointment_id` from a `find_appointments` call in the same run | Moving a guessed appointment |
 | `create`/`reschedule`: `starts` is a naive ISO datetime | Unparseable times |
 | Summary promises a campaign/message and a segment was built, but no `send_campaign` action (unless the summary explicitly says no message is sent) | Silent plans that over-promise |
+| `create_discount`: `starts` is today or later; `item_refs` de-duplicated | Backdated sales, double-counted items |
+| Appointment `starts` is in the future | Bookings in the past |
+| `generate_visual` refs include a photo crop | Visuals silently dropping catalog items |
 
 ## 3. Channel security (WhatsApp path)
 

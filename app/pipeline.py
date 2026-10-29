@@ -96,7 +96,7 @@ def describe_crop(crop: Image.Image) -> dict[str, str]:
     try:
         data = meta.extract_json(raw)
     except ValueError:
-        log.warning("vision reply was not JSON, using fallback: %s", raw[:120])
+        log.warning("vision reply was not JSON, using fallback (chars=%d)", len(raw))
         data = {}
     name = " ".join(str(data.get("name") or "Yeni Ürün").split()[:5])
     return {

@@ -30,6 +30,25 @@ sessions = modal.Dict.from_name("cirak-sessions", create_if_missing=True)
 seen = modal.Dict.from_name("cirak-seen", create_if_missing=True)
 
 
+def _read_local_env(want: set[str]) -> dict[str, str]:
+    """Values from the deploy machine's .env, parsed by python-dotenv (inline comments, quotes, export).
+    Call only under modal.is_local()."""
+    from dotenv import dotenv_values
+
+    env = dotenv_values(Path(__file__).with_name(".env"))
+    return {k: v for k in want if (v := (env.get(k) or "").strip())}
+
+
+_WEB_KEYS = {"META_APP_SECRET", "WA_VERIFY_TOKEN", "WA_PHONE_NUMBER_ID", "WA_ALLOWED_SENDERS"}
+
+if modal.is_local():
+    # The public webhook only verifies signatures and filters senders: it gets the four
+    # WhatsApp secrets and nothing else (no model key, no KEDD secrets, no write token).
+    web_secret = modal.Secret.from_dict(_read_local_env(_WEB_KEYS))
+else:
+    web_secret = modal.Secret.from_dict({})
+
+
 # One container, one message at a time: approvals and sessions can never race.
 @app.function(image=image, secrets=[secret], volumes={"/data": volume}, timeout=600, max_containers=1)
 def worker(msg: dict) -> dict[str, str] | None:
@@ -56,7 +75,7 @@ def morning_brief() -> dict[str, str]:
     return worker.remote({"brief": True})
 
 
-@app.function(image=image, secrets=[secret], min_containers=1)
+@app.function(image=image, secrets=[web_secret], min_containers=1)
 @modal.concurrent(max_inputs=50)
 @modal.asgi_app()
 def web():
@@ -69,24 +88,17 @@ def web():
     def first_time(mid: str) -> bool:
         return bool(seen.put(mid, 1, skip_if_exists=True))
 
-    return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time)
+    def unmark(mid: str) -> None:      # dispatch failed: let Meta's redelivery through
+        seen.pop(mid, None)
+
+    return create_app(dispatch=lambda m: worker.spawn(m), first_time=first_time, unmark=unmark)
 # Public judges demo: mock businesses only. The secret carries ONLY the model key plus the two
 # forced flags — from_dotenv would drag KEDD and WhatsApp secrets into this container, so the
 # single key is parsed out of the local .env by hand instead. The .env read happens only on the
 # deploy machine: inside containers is_local() is False and the secret stays an empty placeholder
 # (the real values arrive via the deployed Secret).
 if modal.is_local():
-    _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock"}
-    try:
-        _dotenv_lines = Path(__file__).with_name(".env").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        _dotenv_lines = []
-    for _line in _dotenv_lines:
-        _key, _sep, _value = _line.strip().removeprefix("export ").partition("=")
-        _value = _value.strip().strip("'\"")
-        if _sep and _key.strip() == "MODEL_API_KEY" and _value:
-            _demo_env["MODEL_API_KEY"] = _value
-            break
+    _demo_env = {"PUBLIC_DEMO": "true", "BACKEND": "mock", **_read_local_env({"MODEL_API_KEY"})}
     if "MODEL_API_KEY" not in _demo_env:
         raise RuntimeError("MODEL_API_KEY not found in the local .env; refusing to deploy the public demo.")
     demo_secret = modal.Secret.from_dict(_demo_env)

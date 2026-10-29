@@ -97,9 +97,17 @@
     return r.json();
   }
 
+  // Anything queued while a plan was running is held once its card arrives: the owner wrote it
+  // before reading the card, so it must never approve it (a word list here drifted from core.YES).
+  let cardArrived = false;
+
   function renderResponse(data) {
+    cardArrived = false;
     for (const s of data.status || []) addStatus(s);
-    for (const rep of data.replies || []) addBubble("them", rep.text || "", rep.image_url || null);
+    for (const rep of data.replies || []) {
+      addBubble("them", rep.text || "", rep.image_url || null);
+      if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
+    }
     setBusiness(data.business_name, data.business);
   }
 
@@ -107,6 +115,15 @@
     if (!queued || busy) return;
     const q = queued;
     queued = null;
+    if (q.kind === "message" && cardArrived) {
+      cardArrived = false;
+      if (q.el) q.el.remove();
+      textInput.value = q.text || "";
+      textInput.focus();
+      addStatus("Kart geldi — sıradaki mesajını otomatik göndermedim, karta bakıp sen gönder."
+        + (q.images.length || q.audioBlob ? " Fotoğraf/ses notunu tekrar eklemen gerek." : ""));
+      return;
+    }
     if (q.kind === "brief") runBrief(q.el);
     else runMessage({ text: q.text, audioBlob: q.audioBlob, images: q.images, pendingEl: q.el });
   }
