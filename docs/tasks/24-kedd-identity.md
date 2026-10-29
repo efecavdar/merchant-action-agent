@@ -17,7 +17,7 @@ small businesses using KEDD. Instagram posts go to KEDD's real account. The prod
    follows the business profile from tools (no salon/boutique assumptions in examples). Customer-facing texts stay
    Turkish (task 23 rule).
 2. Web demo quick prompts for the live business (TR + EN pairs, task 23):
-   - "KEDD Pro'ya bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver"
+   - "KEDD Büyüme'ye bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver"
    - "Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla"
    - "Yeni WhatsApp asistanımız için Instagram gönderisi hazırla" (on the public page this ends as a preview; say so in
      the chip's English gloss: "preview only on this page")

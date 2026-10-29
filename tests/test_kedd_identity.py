@@ -17,13 +17,13 @@ HARNESS = Path(__file__).resolve().parent / "fixtures" / "chips_harness.js"
 APP_JS = Path(__file__).resolve().parent.parent / "app" / "static" / "app.js"
 
 KEDD_FILLS = [
-    "KEDD Pro'ya bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver",
+    "KEDD Büyüme'ye bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver",
     "Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla",
     "Yeni WhatsApp asistanımız için Instagram gönderisi hazırla",
     "Ada Kafe'ye 100 tavsiye puanı ekle",
 ]
 KEDD_EN_FILLS = [
-    "Give 20% off KEDD Pro this weekend, tell customers who haven't visited in a while",
+    "Give 20% off KEDD Büyüme this weekend, tell customers who haven't visited in a while",
     "Schedule a demo call with Nar Kuaför tomorrow at 14:00",
     "Prepare an Instagram post for our new WhatsApp assistant",
     "Add 100 referral points to Ada Kafe",
