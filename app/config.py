@@ -55,6 +55,10 @@ class Settings:
     max_agent_turns: int = int(os.environ.get("MAX_AGENT_TURNS", "12"))
     reasoning_effort: str = os.environ.get("REASONING_EFFORT", "medium")
 
+    # Public judges demo (Modal `demo` function): mock businesses only, rate-limited, bannered
+    public_demo: bool = os.environ.get("PUBLIC_DEMO", "").strip().lower() in ("1", "true", "yes", "on")
+    public_demo_daily_cap: int = int(os.environ.get("PUBLIC_DEMO_DAILY_CAP", "400"))
+
 
 settings = Settings()
 

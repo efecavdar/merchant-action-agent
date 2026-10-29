@@ -1,5 +1,7 @@
 # Merchant Action Agent
 
+> **Try it live:** <paste the `demo` URL printed by `modal deploy` here> — runs on synthetic demo data, nothing is sent to real customers.
+
 A multimodal, human-in-the-loop AI agent for small business automation.
 
 **Meta Global AI Developer Hackathon 2026 — Startup track**
