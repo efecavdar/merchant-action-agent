@@ -69,7 +69,7 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                                                 "(required for real WhatsApp sends)"},
                     "variables": {"type": "object",
                                   "description": "template variables by number, e.g. "
-                                                 "{\"2\": \"FULAR15\", \"3\": \"hafta sonu %15\"}; "
+                                                 "{\"2\": \"OZEL20\", \"3\": \"hafta sonu %20\"}; "
                                                  "never \"1\""},
                     "attach_visual": {"type": "boolean"},
                     # publish_social_post
@@ -98,7 +98,7 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                                   "description": "budget change 1..20, for increase/decrease_budget"},
                     "label": {"type": "string",
                               "description": "one Turkish line the owner will see on the approval card, e.g. "
-                                             "'Ayşe Y. — Saç Kesimi, Elif, 31 Ekim Cuma 15:00'"},
+                                             "'Elif K. — Demo Görüşmesi, Efe, 31 Ekim Cuma 15:00'"},
                 },
                 "required": ["type"],
             },
@@ -171,7 +171,7 @@ def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: st
     if variables is None:
         variables = {}
     if not isinstance(variables, dict):
-        errors.append(f"{where}: variables must be an object like {{\"2\": \"FULAR15\"}}")
+        errors.append(f"{where}: variables must be an object like {{\"2\": \"OZEL20\"}}")
         return
     required = {str(v.get("number")) for v in tmpl.get("variables") or [] if str(v.get("number")) != "1"}
     provided = {str(k) for k in variables}

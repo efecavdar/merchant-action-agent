@@ -106,7 +106,7 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": {"type": "object", "properties": {
          "inactive_days": {"type": "integer", "description": "last visit at least this many days ago (e.g. 60 for 'uzun süredir gelmeyenler')"},
          "min_visits": {"type": "integer", "description": "minimum past visits/purchases (default 1; 3+ for 'sadık müşteriler')"},
-         "tags": {"type": "array", "items": {"type": "string"}, "description": "interest tags, e.g. ['çanta'] or ['boya']"}},
+         "tags": {"type": "array", "items": {"type": "string"}, "description": "interest tags, e.g. ['indirim'] or ['yeni']"}},
          "required": [], "additionalProperties": False}},
     {"type": "function", "name": "find_customer",
      "description": "Resolve ONE customer by (partial) name to an id, for appointments. Returns possibly several matches.",
@@ -133,7 +133,7 @@ TOOLS: list[dict[str, Any]] = [
                     "rows. Always preview before apply_bulk_price.",
      "parameters": {"type": "object", "properties": {
          "item_type": {"type": "string", "enum": ["product", "service"]},
-         "category": {"type": "string", "description": "e.g. 'çanta', 'elbise', 'boya'; omit to match all"},
+         "category": {"type": "string", "description": "e.g. 'aksesuar'; omit to match all"},
          "item_ids": {"type": "array", "items": {"type": "string"}},
          "mode": {"type": "string", "enum": ["percent", "amount"]},
          "value": {"type": "number", "description": "percent (e.g. 10) or TRY amount (e.g. 50), "
@@ -160,7 +160,7 @@ TOOLS: list[dict[str, Any]] = [
          "segment_id": {"type": "string", "description": "from find_customers"},
          "template": {"type": "string", "description": "template name from list_campaign_templates"},
          "variables": {"type": "object",
-                       "description": "template variables by number, e.g. {\"2\": \"FULAR15\"}"}},
+                       "description": "template variables by number, e.g. {\"2\": \"OZEL20\"}"}},
          "required": ["segment_id", "template"], "additionalProperties": False}},
     {"type": "function", "name": "find_loyalty_member",
      "description": "Resolve ONE customer by (partial) name to a loyalty member_id with current "
