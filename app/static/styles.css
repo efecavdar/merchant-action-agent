@@ -380,6 +380,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .composer .text:focus { outline: none; }
 .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 6px; }
+.quick[hidden] { display: none; }
 .quick button {
   border: 1px solid var(--line);
   background: var(--card2);

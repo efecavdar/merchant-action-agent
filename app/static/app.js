@@ -477,6 +477,14 @@
      "Add a new silk scarf collection, 850 lira each, 15% off this weekend, tell customers who haven't visited"],
     ["Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.",
      "I have free slots tomorrow afternoon, 20% off hair coloring, tell loyal customers. Also add keratin treatment, 90 minutes, 2500 lira."],
+    ["KEDD Büyüme'ye bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver",
+     "Give 20% off KEDD Büyüme this weekend, tell customers who haven't visited in a while"],
+    ["Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla",
+     "Schedule a demo call with Nar Kuaför tomorrow at 14:00"],
+    ["Yeni WhatsApp asistanımız için Instagram gönderisi hazırla",
+     "Prepare an Instagram post for our new WhatsApp assistant"],
+    ["Ada Kafe'ye 100 tavsiye puanı ekle",
+     "Add 100 referral points to Ada Kafe"],
   ]);
 
   function paintQuick() {
@@ -639,7 +647,16 @@
     keddRowsEl.appendChild(box);
   }
 
+  function paintQuickSet() {
+    const live = !!(keddData && keddData.state === "live");
+    const mock = document.getElementById("quickMock");
+    const kedd = document.getElementById("quickKedd");
+    if (mock) mock.hidden = live;
+    if (kedd) kedd.hidden = !live;
+  }
+
   function paintKedd() {
+    paintQuickSet();
     if (!keddRowsEl) return;
     keddRowsEl.innerHTML = "";
     if (!keddData) {

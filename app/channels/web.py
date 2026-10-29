@@ -547,6 +547,11 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             badge, bclass = "demo", "demo"
         page = page.replace("{{BADGE}}", badge).replace("{{BADGE_CLASS}}", bclass)
         page = page.replace("{{BANNER}}", _BANNER_HTML if settings.public_demo else "")
+        # Initial quick-prompt set by business; the client swaps to the fallback set if
+        # /api/kedd-state reports anything but live.
+        live_business = session.business in (KEDD_DEMO_PHONE, "kedd")
+        page = page.replace("{{MOCK_HIDDEN}}", " hidden" if live_business else "")
+        page = page.replace("{{KEDD_HIDDEN}}", "" if live_business else " hidden")
         resp = HTMLResponse(page)
         if is_new:
             resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
