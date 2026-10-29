@@ -1243,3 +1243,12 @@ def test_identical_reads_in_one_second_never_reuse_a_signature(monkeypatch):
     assert first["X-Agent-Timestamp"] == "100" and second["X-Agent-Timestamp"] == "101"
     assert first["X-Agent-Signature"] != second["X-Agent-Signature"]
     assert "_recent" not in pickle.loads(pickle.dumps(kb)).__dict__
+
+
+def test_template_campaign_cannot_promise_a_visual():
+    errors = validate_proposal({"summary": "s", "actions": [
+        {"type": "generate_visual", "visual_prompt": "fular", "item_refs": []},
+        {"type": "send_campaign", "name": "n", "segment_id": "seg1", "template": "t1", "attach_visual": True},
+    ]}, known_segments={"seg1"}, known_temp_ids=set(), catalog={},
+        known_templates={"t1": {"variables": []}}, requires_template=True)
+    assert any("attach_visual must be false with a template" in e for e in errors)
