@@ -37,8 +37,10 @@
     return esc(s).replace(/\*([^*\n]+?)\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
   }
 
+  // Card titles in every owner language (app/i18n.py "card.title"): the queue-hold guard depends on this.
+  const CARD_MARKERS = ["onayına sunuyorum", "for your approval"];
   function isCard(text) {
-    return text.includes("onayına sunuyorum");
+    return CARD_MARKERS.some((m) => (text || "").includes(m));
   }
 
   // Approval cards render as a real card with one-tap evet/hayır buttons. Everything is
@@ -192,7 +194,7 @@
     for (const s of data.status || []) addStatus(s);
     for (const rep of data.replies || []) {
       addBubble("them", rep.text || "", rep.image_url || null);
-      if ((rep.text || "").includes("onayına sunuyorum")) cardArrived = true;
+      if (isCard(rep.text)) cardArrived = true;
     }
     setBusiness(data.business_name, data.business);
     if (landingReady) {
