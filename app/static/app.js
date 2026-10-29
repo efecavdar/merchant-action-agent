@@ -424,6 +424,24 @@
     return n.toLowerCase().startsWith("tr") ? "tr" : "en";
   }
 
+  // Quick-prompt chips fill the composer in the page language. The Turkish fills live in
+  // index.html (data-fill); the English versions below swap in when the toggle is EN.
+  const QUICK_EN = new Map([
+    ["Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver",
+     "Add a new silk scarf collection, 850 lira each, 15% off this weekend, tell customers who haven't visited"],
+    ["Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. Bir de keratin bakımı ekle, 90 dakika, 2500 lira.",
+     "I have free slots tomorrow afternoon, 20% off hair coloring, tell loyal customers. Also add keratin treatment, 90 minutes, 2500 lira."],
+  ]);
+
+  function paintQuick() {
+    for (const b of document.querySelectorAll(".quick button")) {
+      if (b.dataset.fill === undefined) continue;   // brief + /kedd chips carry no fill text
+      if (b.dataset.fillTr === undefined) b.dataset.fillTr = b.dataset.fill;
+      const tr = b.dataset.fillTr;
+      b.dataset.fill = (lang === "en" && QUICK_EN.has(tr)) ? QUICK_EN.get(tr) : tr;
+    }
+  }
+
   function applyLang(next) {
     if (!window.I18N) return;
     lang = next;
@@ -439,6 +457,7 @@
     }
     paintCoverage();
     paintKedd();
+    paintQuick();
   }
 
   function paintCoverage() {

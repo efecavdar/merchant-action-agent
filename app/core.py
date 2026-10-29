@@ -21,7 +21,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable
 
-from . import agent, approval, executor, pipeline, report
+from . import agent, approval, executor, i18n, pipeline, report
 from .config import settings
 from .tools.backend import Backend, get_backend
 
@@ -36,10 +36,7 @@ HISTORY_KEEP = 10
 HISTORY_TTL_S = 2 * 3600
 HISTORY_REPLY_CHARS = 600
 
-HELP = ("Merhaba, ben Çırak 👋 Sesli not ya da yazıyla ne istediğini söyle, istersen önce ürün fotoğrafı at.\n"
-        "Örn: \"Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir gelmeyenlere haber ver.\"\n"
-        "Hiçbir şey senin *evet*'in olmadan yapılmaz.\n"
-        "Demo: /butik, /salon veya /kedd ile işletme değiştir, /sifirla ile baştan başla.")
+HELP = i18n.t("help", "tr")  # default-language greeting; handle() serves it in Session.lang
 
 
 @dataclass
@@ -58,6 +55,7 @@ class Session:
     pending: dict[str, Any] | None = None       # {"proposal", "ctx", "seg_counts", "run_dir", "at"}
     greeted: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)  # {"role": "owner"|"cirak", "text", "at"}
+    lang: str = "tr"  # owner language, re-detected from every text message / transcript
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         # A session pickled before a field existed (e.g. `history`) unpickles without it.
@@ -86,6 +84,15 @@ Notify = Callable[[str], None]
 
 def _norm(text: str) -> str:
     return text.strip().lower().strip(".!?,👍 ")
+
+
+def _maybe_set_lang(session: Session, text: str) -> None:
+    """Follow the owner's language. Bare approval words and /commands are control tokens, not prose."""
+    if not text.strip():
+        return
+    if _norm(text) in YES or _norm(text) in NO or _norm(text).startswith("/"):
+        return
+    session.lang = i18n.detect_lang(text, session.lang)
 
 
 def _history_prune(session: Session, now: float) -> None:
@@ -133,18 +140,21 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         session.images = []
 
     t = _norm(text)
+    if kind in ("text", "image"):
+        _maybe_set_lang(session, text)
+    lang = session.lang
 
     # -- demo commands ---------------------------------------------------------
     if kind == "text" and t in {"/butik", "/salon"}:
         session.business, session.backend, session.pending, session.images = t[1:], None, None, []
         session.history = []
         name = session.get_backend().store_profile().get("business_name", t[1:])
-        return [Reply(f"Tamam, artık *{name}* (demo) için çalışıyorum.")]
+        return [Reply(i18n.t("business.switched", lang).format(name=name))]
     if kind == "text" and t == "/kedd":
         try:
             backend = get_backend("kedd", sender=session.sender)
         except RuntimeError:
-            return [Reply("KEDD bağlantısı bu ortamda kapalı.")]
+            return [Reply(i18n.t("kedd.off", lang))]
         session.business, session.backend, session.pending, session.images = "kedd", backend, None, []
         session.history = []
         try:
@@ -152,23 +162,22 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         except Exception:  # noqa: BLE001 — gateway unreachable; still switched, name stays unknown
             name = ""
         if name:
-            return [Reply(f"Tamam, artık KEDD'deki işletmen (*{name}*) için çalışıyorum.")]
-        return [Reply("Tamam, artık KEDD'deki işletmen için çalışıyorum.")]
+            return [Reply(i18n.t("kedd.switched_named", lang).format(name=name))]
+        return [Reply(i18n.t("kedd.switched", lang))]
     if kind == "text" and t in {"/sifirla", "/reset"}:
         session.backend, session.pending, session.images = None, None, []
         session.history = []
-        return [Reply("Sıfırladım. Demo verisi baştan yüklendi.")]
+        return [Reply(i18n.t("reset.done", lang))]
     if kind == "text" and t in {"/yardim", "/help", "yardım", "merhaba", "selam"} and not session.pending:
         session.greeted = True
-        return [Reply(HELP)]
+        return [Reply(i18n.t("help", lang))]
 
     # -- approval --------------------------------------------------------------
     if session.pending and kind == "text" and t in YES:
         _history_add(session, "owner", text, now)
         shown_at = session.pending.get("shown_at", session.pending["at"])   # key missing = card from an older deploy
         if shown_at is None or (sent_at is not None and sent_at < shown_at):
-            replies = [Reply("Bu onay, kart sana ulaşmadan önce gelmiş görünüyor. Kartı okuyup tekrar *evet* "
-                             "yazar mısın?")]
+            replies = [Reply(i18n.t("approval.race", lang))]
             _remember_replies(session, replies, now)
             return replies
         replies = _execute_pending(session, notify, checkpoint)
@@ -177,7 +186,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     if session.pending and kind == "text" and t in NO:
         _history_add(session, "owner", text, now)
         session.pending = None
-        replies = [Reply("Tamam, hiçbir şey yapmadım. Planı iptal ettim.")]
+        replies = [Reply(i18n.t("approval.cancelled", lang))]
         _remember_replies(session, replies, now)
         return replies
 
@@ -189,23 +198,29 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
             n = len(session.images)
             _history_add(session, "owner", f"[{n} fotoğraf]", now)
             if n == 1:
-                replies = [Reply(f"📷 {n} fotoğraf aldım. Ne yapayım? Sesli not ya da mesajla söyle.")]
+                unit = i18n.t("photo.unit_one", lang)
+                replies = [Reply(i18n.t("photo.received", lang).format(n=n, unit=unit))]
                 _remember_replies(session, replies, now)
                 return replies
             return []
         kind = "text"  # the caption is the instruction
 
     if kind not in ("text", "audio"):
-        return [Reply("Bunu okuyamadım. Yazı, sesli not ya da fotoğraf gönderebilirsin.")]
+        return [Reply(i18n.t("error.unreadable", lang))]
 
     # -- new instruction → plan ------------------------------------------------
     replies: list[Reply] = []
     if session.pending:
         session.pending = None
-        replies.append(Reply("Önceki planı iptal ettim, yeni isteğine bakıyorum."))
+        replies.append(Reply(i18n.t("plan.superseded", lang)))
     if not session.greeted:
         session.greeted = True
-    notify("⏳ Bakıyorum…" + (f" ({len(session.images)} fotoğraf)" if session.images else ""))
+    if session.images:
+        unit = i18n.t("photo.unit_one" if len(session.images) == 1 else "photo.unit_many", lang)
+        notify(i18n.t("notify.looking", lang)
+               + i18n.t("notify.photo_suffix", lang).format(n=len(session.images), unit=unit))
+    else:
+        notify(i18n.t("notify.looking", lang))
 
     run_dir = _new_run_dir(session)
     backend = session.get_backend()
@@ -221,12 +236,14 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
         return replies
     session.images = []
     if ctx.instruction_source == "voice":
-        notify(f"🎙️ Anladığım: “{ctx.instruction}”")
+        _maybe_set_lang(session, ctx.instruction)
+        lang = session.lang
+        notify(i18n.t("notify.voice", lang).format(text=ctx.instruction))
     # The planner sees the conversation so far, not the message it is about to answer.
     ctx.history = [dict(h) for h in session.history]
     _history_add(session, "owner", ctx.instruction if kind == "audio" else text, now)
 
-    run = agent.plan(ctx, backend)
+    run = agent.plan(ctx, backend, lang=lang)
     (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     if run.answer:                       # a question, not a job: answer and keep nothing pending
         log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
@@ -236,7 +253,8 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
     executor.prepare_social_previews(run.proposal, ctx, run_dir)
-    card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log))
+    card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log),
+                                lang=lang)
     (run_dir / "proposal.json").write_text(json.dumps(run.proposal, ensure_ascii=False, indent=2))
     (run_dir / "approval_card.txt").write_text(card)
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
@@ -265,7 +283,8 @@ def _execute_pending(session: Session, notify: Notify,
     p, session.pending = session.pending, None      # one approval, one execution — even if this crashes
     if checkpoint:
         checkpoint()                                # persist "consumed" before any side effect
-    notify("✅ Onaylandı, uyguluyorum…")
+    lang = session.lang
+    notify(i18n.t("notify.approved", lang))
     backend = session.get_backend()
     run_dir = Path(p["run_dir"])
     steps = executor.execute(p["proposal"], p["ctx"], backend, out_dir=run_dir)
@@ -273,33 +292,26 @@ def _execute_pending(session: Session, notify: Notify,
     try:
         rep = report.build_report(steps, backend)
         (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
-        summary = report.summarize_for_merchant(rep)
+        summary = report.summarize_for_merchant(rep, lang=lang)
     except Exception:  # noqa: BLE001
         log.exception("report failed after execution; falling back to the step list")
-        summary = _plain_summary(steps)
+        summary = _plain_summary(steps, lang)
     failed = [s for s in steps if s["status"] != "ok"]
     if failed:
-        summary += "\n\n⚠️ Bir adım başarısız oldu, sonrasını güvenlik için durdurdum: " + str(failed[0]["result"])[:200]
+        summary += i18n.t("report.failed", lang).format(err=str(failed[0]["result"])[:200])
     visual = next((s["result"]["visual_path"] for s in steps
                    if s["action"] == "generate_visual" and s["status"] == "ok"), "")
     return [Reply(summary, image_path=visual)]
 
 
-_STEP_TR = {"add_catalog_item": "Kataloğa eklendi", "create_discount": "İndirim tanımlandı",
-            "generate_visual": "Kampanya görseli hazırlandı", "send_campaign": "Kampanya gönderildi",
-            "publish_social_post": "Sosyal medya gönderisi paylaşıldı",
-            "create_appointment": "Randevu oluşturuldu", "reschedule_appointment": "Randevu taşındı",
-            "cancel_appointment": "Randevu iptal edildi", "apply_bulk_price": "Toplu fiyat güncellendi",
-            "adjust_loyalty": "Puan güncellendi", "ads_action": "Reklam güncellendi"}
-
-
-def _plain_summary(steps: list[dict[str, Any]]) -> str:
+def _plain_summary(steps: list[dict[str, Any]], lang: str = "tr") -> str:
     """Deterministic, model-free account of what ran. Used when the normal report cannot be built."""
-    lines = ["Yapılanlar:"]
+    lines = [i18n.t("report.fallback_title", lang)]
     for s in steps:
         r = s["result"] if isinstance(s["result"], dict) else {}
         detail = r.get("name") or r.get("label") or (f"%{r['percent']}" if "percent" in r else "") or (
-            f"{r['recipients']} kişi" if "recipients" in r else "")
+            i18n.t("report.recipients", lang).format(n=r["recipients"]) if "recipients" in r else "")
         mark = "✅" if s["status"] == "ok" else "⚠️"
-        lines.append(f"{mark} {_STEP_TR.get(s['action'], s['action'])}" + (f": {detail}" if detail else ""))
+        lines.append(f"{mark} {i18n.t(f'step.{s['action']}', lang, s['action'])}"
+                     + (f": {detail}" if detail else ""))
     return "\n".join(lines)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from . import core, worker
+from . import core, i18n, worker
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -19,7 +19,10 @@ BRIEF_INSTRUCTION = ("Sabah özeti hazırla: bugünün randevuları, boş saatle
                      "dünkü ciro. Sonunda tek bir somut öneri sun; öneriyi uygulamak için onay "
                      "gerekiyorsa propose_actions ile plan kur.")
 
-_MORNING = "Günaydın ☀️ "
+BRIEF_INSTRUCTION_EN = ("Prepare a morning brief: today's appointments, free slots, messages awaiting a "
+                        "reply, yesterday's revenue. End with one concrete suggestion; if applying it "
+                        "needs approval, build a plan with propose_actions.")
+
 _GREETINGS = ("günaydın", "gunaydin", "merhaba", "selam", "iyi sabahlar", "good morning")
 
 
@@ -32,9 +35,10 @@ def _starts_with_greeting(text: str) -> bool:
 
 def build_morning_brief(session: core.Session) -> list[core.Reply]:
     """Run the brief instruction through `core.handle`; greet if the reply does not."""
-    replies = core.handle(session, "text", BRIEF_INSTRUCTION, async_delivery=True)
+    instruction = BRIEF_INSTRUCTION_EN if session.lang == "en" else BRIEF_INSTRUCTION
+    replies = core.handle(session, "text", instruction, async_delivery=True)
     if replies and not _starts_with_greeting(replies[0].text):
-        replies[0].text = _MORNING + replies[0].text
+        replies[0].text = i18n.t("brief.greeting", session.lang) + replies[0].text
     return replies
 
 

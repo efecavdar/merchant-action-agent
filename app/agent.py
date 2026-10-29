@@ -247,12 +247,15 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
     raise KeyError(name)
 
 
-def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRun:
+def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str = "tr") -> AgentRun:
     """Phase 1: run the tool loop until a valid proposal (or a plain answer) is produced."""
     run = AgentRun()
     client = meta.client()
     known_temp = {p.temp_id for p in ctx.products}
     catalog = {i["id"]: i for i in backend.list_catalog()}
+    owner_lang = "English" if lang == "en" else "Turkish"
+    instructions = (SYSTEM_PROMPT + "\n- Reply to the owner in " + owner_lang + ". Customer-facing texts "
+                    "(messages, captions, catalog names/descriptions) are always Turkish.")
 
     user_msg = (
         "Here is what the owner sent, already processed:\n"
@@ -261,7 +264,7 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3) -> AgentRu
     )
     response = client.responses.create(
         model=settings.orchestrator_model,
-        instructions=SYSTEM_PROMPT,
+        instructions=instructions,
         reasoning={"effort": settings.reasoning_effort},
         input=user_msg,
         tools=TOOLS,

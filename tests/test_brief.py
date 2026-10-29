@@ -30,14 +30,14 @@ def _salon(tmp_path):
 
 
 def _answering(seen, text):
-    def _plan(ctx, backend, max_revisions=3):
+    def _plan(ctx, backend, max_revisions=3, lang="tr"):
         seen.append(ctx)
         return SimpleNamespace(proposal=None, answer=text, tool_log=[], turns=1, usage={})
     return _plan
 
 
 def _proposing():
-    def _plan(ctx, backend, max_revisions=3):
+    def _plan(ctx, backend, max_revisions=3, lang="tr"):
         seg = backend.find_customers(inactive_days=60)
         return SimpleNamespace(
             proposal={"summary_tr": "Sabah kampanyası.", "actions": [
@@ -75,7 +75,7 @@ def test_brief_greeting_prefix_only_when_missing(monkeypatch, cfg, tmp_path):
 def test_brief_card_is_pending_and_needs_evet(monkeypatch, cfg, tmp_path):
     cfg("out_dir", tmp_path)
     monkeypatch.setattr(agent, "plan", _proposing())
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     s = _salon(tmp_path)
     r = brief.build_morning_brief(s)
     assert s.pending is not None and r[0].text.startswith("Günaydın ☀️ *Çırak")

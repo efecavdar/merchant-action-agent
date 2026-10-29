@@ -71,7 +71,7 @@ def test_signature():
 # core
 # --------------------------------------------------------------------------- #
 
-def _fake_plan(ctx, backend, max_revisions=2):
+def _fake_plan(ctx, backend, max_revisions=2, lang="tr"):
     seg = backend.find_customers(inactive_days=60)
     run = SimpleNamespace(turns=1, usage={"input_tokens": 1, "output_tokens": 1}, segments={seg["segment_id"]},
                           answer=None, tool_log=[{"tool": "find_customers", "args": {}, "result": seg}])
@@ -84,7 +84,7 @@ def _fake_plan(ctx, backend, max_revisions=2):
 def test_core_flow_plan_approve_execute(monkeypatch, cfg, tmp_path):
     cfg("out_dir", tmp_path)
     monkeypatch.setattr(agent, "plan", _fake_plan)
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     notes = []
 
@@ -111,7 +111,7 @@ def test_core_stale_backend_is_reseeded_and_report_failure_is_honest(monkeypatch
     monkeypatch.setattr(agent, "plan", _fake_plan)
     core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver")
 
-    def boom(rep):
+    def boom(rep, lang="tr"):
         raise RuntimeError("model down")
     monkeypatch.setattr(report, "summarize_for_merchant", boom)
     r = core.handle(s, "text", "evet")
@@ -122,7 +122,7 @@ def test_core_stale_backend_is_reseeded_and_report_failure_is_honest(monkeypatch
 
 def test_core_answer_path_leaves_nothing_pending(monkeypatch, cfg, tmp_path):
     cfg("out_dir", tmp_path)
-    monkeypatch.setattr(agent, "plan", lambda ctx, backend, max_revisions=3: SimpleNamespace(
+    monkeypatch.setattr(agent, "plan", lambda ctx, backend, max_revisions=3, lang="tr": SimpleNamespace(
         proposal=None, answer="Bugün 9 randevu, ciro 1300 TL.", tool_log=[], turns=1, usage={}))
     s = core.Session(sender="905321", backend=MockBackend("salon", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     r = core.handle(s, "text", "Bugün ne oldu?")
@@ -156,7 +156,7 @@ def _salon(tmp_path):
 
 
 def _answering(seen, text="Ayşe E.'nin randevusunu 17:15'e alayım mı?"):
-    def _plan(ctx, backend, max_revisions=3):
+    def _plan(ctx, backend, max_revisions=3, lang="tr"):
         seen.append(ctx)
         return SimpleNamespace(proposal=None, answer=text, tool_log=[], turns=1, usage={})
     return _plan
@@ -198,7 +198,7 @@ def test_core_history_records_photos_voice_cards_and_reports(monkeypatch, cfg, t
                         core.pipeline.MediaContext(instruction="yarın boşluk var mı",
                                                    instruction_source="voice"))
     monkeypatch.setattr(agent, "plan", _answering([], text="Yarın 14:00 boş 👍"))
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     core.handle(s, "audio", media_path="v.ogg")
     assert s.history[-2:] == [{"role": "owner", "text": "yarın boşluk var mı", "at": s.history[-2]["at"]},
                               {"role": "cirak", "text": "Yarın 14:00 boş 👍", "at": s.history[-1]["at"]}]
@@ -369,7 +369,7 @@ def test_core_surfaces_pipeline_valueerror_to_owner(monkeypatch, cfg, tmp_path):
 def _pending_session(monkeypatch, cfg, tmp_path, **kw):
     cfg("out_dir", tmp_path)
     monkeypatch.setattr(agent, "plan", _fake_plan)
-    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep: "Hallettim.")
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver", **kw)
     assert s.pending
@@ -575,7 +575,7 @@ def _social_plan(monkeypatch, publish_at=None):
     if publish_at:
         action["publish_at"] = publish_at
 
-    def fake_plan(ctx, backend, max_revisions=2):
+    def fake_plan(ctx, backend, max_revisions=2, lang="tr"):
         return SimpleNamespace(turns=1, usage={}, answer=None, tool_log=[],
                                proposal={"summary_tr": "Instagram gönderisi.", "actions": [dict(action)]})
 
@@ -615,7 +615,7 @@ def test_t14_social_preview_uses_photo_crops(monkeypatch, cfg, tmp_path):
     from app.meta_client import Box
     cfg("out_dir", tmp_path)
 
-    def fake_plan(ctx, backend, max_revisions=2):
+    def fake_plan(ctx, backend, max_revisions=2, lang="tr"):
         assert [p.temp_id for p in ctx.products] == ["tmp1"]
         return SimpleNamespace(
             turns=1, usage={}, answer=None, tool_log=[],
