@@ -1,0 +1,5 @@
+{"messages": [{"from": "customer", "text": "Merhaba, kurulum ne kadar sürer?",
+              "at": "2026-10-29T09:15"},
+             {"from": "business", "text": "Merhaba, 1 iş günü sürer.",
+              "at": "2026-10-29T09:20"}],
+ "has_more": false}

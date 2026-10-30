@@ -198,6 +198,12 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                 record(a, "ok", {"entry_id": res["id"], "question": a.get("question"),
                                  "label": a.get("label")})
 
+            elif t == "reply_to_conversation":
+                res = backend.reply_to_conversation(a["conversation_id"], a["text"], **idem)
+                record(a, "ok", {"conversation_id": a["conversation_id"],
+                                 "message_id": res["message_id"],
+                                 "customer": res.get("customer"), "label": a.get("label")})
+
             elif t == "apply_bulk_price":
                 res = backend.apply_bulk_price(a["preview_id"], **idem)
                 record(a, "ok", {"preview_id": res["preview_id"], "updated": res["count"],

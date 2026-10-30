@@ -115,6 +115,18 @@ def _remember_replies(session: Session, replies: list[Reply], now: float) -> Non
         _history_add(session, "cirak", r.text, now)
 
 
+# A summary of the inbox quotes customers. Keeping it would hand customer text to the next run's planner, which
+# did not read the inbox and so is not quarantined: remember only that it happened.
+_INBOX_REDACTED = "[Gelen kutusu gösterildi; müşteri metinleri hafızaya alınmadı.]"
+
+
+def _remember_run(session: Session, replies: list[Reply], now: float, inbox_read: bool) -> None:
+    if inbox_read:
+        _history_add(session, "cirak", _INBOX_REDACTED, now)
+    else:
+        _remember_replies(session, replies, now)
+
+
 def _new_run_dir(session: Session) -> Path:
     d = settings.out_dir / "runs" / session.sender[-4:] / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     d.mkdir(parents=True, exist_ok=True)
@@ -249,7 +261,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     if run.answer:                       # a question, not a job: answer and keep nothing pending
         log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
         replies = replies + [Reply(run.answer)]
-        _remember_replies(session, replies, now)
+        _remember_run(session, replies, now, getattr(run, "inbox_read", False))
         return replies
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
@@ -265,7 +277,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     preview = next((a.get("_preview_path") or "" for a in run.proposal["actions"]
                     if a.get("type") == "publish_social_post"), "")
     replies = replies + [Reply(card, image_path=preview)]
-    _remember_replies(session, replies, now)
+    _remember_run(session, replies, now, getattr(run, "inbox_read", False))
     return replies
 
 
