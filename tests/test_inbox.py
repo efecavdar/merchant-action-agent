@@ -455,7 +455,7 @@ def test_executor_runs_replies_and_failed_reply_stops_plan(tmp_path):
 def test_coverage_lists_inbox_as_live():
     cov_path = Path(__file__).parent.parent / "app" / "static" / "coverage.json"
     cov = json.loads(cov_path.read_text())
-    assert any(c["area"] == "inbox" and c["status"] == "live" for c in cov)
+    assert any(c["area"] == "inbox" and c["status"] == "owner" for c in cov)
     assert "Inbox summaries and approved replies" in " ".join(c["what_en"] for c in cov)
 
 
