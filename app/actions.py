@@ -14,6 +14,8 @@ from .config import settings
 from .tools.backend import render_campaign_template
 
 MAX_ACTIONS_PER_PLAN = 12
+MAX_REPLIES_PER_PLAN = 5
+MAX_REPLY_CHARS = 1000
 MAX_NAME_CHARS = 60
 MAX_DESCRIPTION_CHARS = 500
 MAX_CATEGORY_CHARS = 40
@@ -21,6 +23,7 @@ MAX_CATEGORY_CHARS = 40
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
                 "complete_appointment", "create_quote_draft", "teach_chatbot",
+                "reply_to_conversation",
                 "apply_bulk_price", "adjust_loyalty", "ads_action", "publish_social_post",
                 "create_customer", "update_customer", "create_lead", "set_lead_stage",
                 "add_lead_note", "create_task", "complete_task"}
@@ -149,6 +152,12 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "valid_days": {"type": "integer",
                                    "description": "how long the quote stays valid, 1-60 days"},
                     # teach_chatbot
+                    "conversation_id": {"type": "string",
+                                        "description": "from list_inbox in this run"},
+                    "text": {"type": "string",
+                             "description": "reply text, Turkish, 1-1000 chars, no contact details, "
+                                          "prices only from list_catalog in this run, no percents "
+                                          "or offer words"},
                     "question": {"type": "string",
                                  "description": "what the chatbot should answer, at most 200 chars, "
                                               "no contact details"},
@@ -367,7 +376,10 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       requires_template: bool | None = None,
                       known_leads: set[str] | None = None,
                       known_tasks: set[str] | None = None,
-                      appointment_services: dict[str, str] | None = None) -> list[str]:
+                      appointment_services: dict[str, str] | None = None,
+                      inbox_read: bool = False,
+                      known_conversations: set[str] | None = None,
+                      catalog_read: bool = False) -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
@@ -377,7 +389,11 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     `requires_template` reflects the session's backend (True on KEDD: templates only);
     None falls back to the global BACKEND setting (older callers).
     `appointment_services` maps appointment id -> service name (from find_appointments or
-    get_schedule); a completion without an amount is charged the service's catalog price."""
+    get_schedule); a completion without an amount is charged the service's catalog price.
+    `inbox_read` quarantines the run: after list_inbox/read_thread only
+    reply_to_conversation may be proposed (customer text is untrusted). `catalog_read`
+    records whether the model called list_catalog in this run (a reply may only quote
+    prices it actually saw)."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
     known_previews = known_previews or {}
@@ -386,6 +402,7 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     known_leads = known_leads or set()
     known_tasks = known_tasks or set()
     appointment_services = appointment_services or {}
+    known_conversations = known_conversations or set()
     needs_template = settings.backend == "kedd" if requires_template is None else requires_template
     errors: list[str] = []
     if not isinstance(proposal, dict):
@@ -397,6 +414,20 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
         return errors + ["actions must be a non-empty list"]
     if len(actions) > MAX_ACTIONS_PER_PLAN:
         errors.append(f"actions must be at most {MAX_ACTIONS_PER_PLAN} per plan (got {len(actions)})")
+    if inbox_read:
+        # Quarantine: customer text reached the model, so nothing it wrote may cause a
+        # write anywhere else. Anything beyond replies waits for the owner's next message.
+        for i, a in enumerate(actions):
+            t = a.get("type") if isinstance(a, dict) else None
+            if t != "reply_to_conversation":
+                errors.append(f"actions[{i}] ({t}): not allowed after an inbox read — a run that "
+                              "called list_inbox or read_thread may only propose "
+                              "reply_to_conversation")
+    n_replies = sum(1 for a in actions if isinstance(a, dict)
+                    and a.get("type") == "reply_to_conversation")
+    if n_replies > MAX_REPLIES_PER_PLAN:
+        errors.append(f"at most {MAX_REPLIES_PER_PLAN} reply_to_conversation actions per plan "
+                      f"(got {n_replies})")
 
     new_refs: dict[str, float] = {}        # temp_id / ref -> price of items being added
     crm_refs: dict[str, str] = {}          # ref -> "customer" | "lead" | "task", created earlier
@@ -810,6 +841,37 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                         errors.append(f"{where}: {field} too long ({len(value)} > {maxi} chars)")
                     _check_no_contacts(where, field, value, errors)
             _check_answer_prices(where, answer, catalog, plan_prices, errors)
+
+        elif t == "reply_to_conversation":
+            if not a.get("label"):
+                errors.append(f"{where}: label is required (what the owner will read on the card)")
+            if a.get("conversation_id") not in known_conversations:
+                errors.append(f"{where}: conversation_id must come from a list_inbox call "
+                              f"(known: {sorted(known_conversations)})")
+            text = a.get("text")
+            if not isinstance(text, str) or not text.strip():
+                errors.append(f"{where}: text is required")
+            else:
+                if len(text) > MAX_REPLY_CHARS:
+                    errors.append(f"{where}: text too long ({len(text)} > {MAX_REPLY_CHARS} chars)")
+                _check_no_contacts(where, "text", text, errors)
+                pcts, prices = _promised_numbers(text)
+                if pcts:
+                    errors.append(f"{where}: reply must not contain percents (no discounts can "
+                                  "exist in a quarantined run)")
+                offer = _OFFER_WORDS_RE.search(text)
+                if offer:
+                    errors.append(f"{where}: {offer.group(0)!r} promises a deal but no discount "
+                                  "can exist in a quarantined run")
+                if prices and not catalog_read:
+                    errors.append(f"{where}: reply mentions a price but list_catalog was not "
+                                  "called in this run")
+                else:
+                    known = {float(v["price"]) for v in catalog.values()
+                             if _is_number(v.get("price"))}
+                    for p in sorted(prices - known):
+                        errors.append(f"{where}: reply mentions {p:g} TL but no catalog item in "
+                                      "this run has that price")
 
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
     types = {a.get("type") for a in actions}

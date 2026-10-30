@@ -60,7 +60,7 @@ def _kb(*fixtures: str, **overrides) -> KeddBackend:
                                     "crm_lead_create", "crm_lead_stage", "crm_lead_note",
                                     "crm_task_create", "crm_task_complete", "appt_complete",
                                     "appt_complete_free", "quote_create",
-                                    "knowledge_create"} else "GET"
+                                    "knowledge_create", "reply_send"} else "GET"
         routes[(method, _PATHS[name])] = _load(name)
     routes.update(overrides)
     kb = KeddBackend(BASE, "s3cret", "+905321")
@@ -109,6 +109,9 @@ _PATHS = {
     "quote_create": "/agent/quotes",
     "knowledge_create": "/agent/chatbot/knowledge",
     "knowledge_search": "/agent/chatbot/knowledge",
+    "inbox": "/agent/inbox",
+    "thread": "/agent/inbox/thread",
+    "reply_send": "/agent/inbox/reply",
 }
 
 
@@ -293,6 +296,16 @@ CASES = [
     ("search_chatbot_knowledge", ["knowledge_search"],
      lambda m: m.search_chatbot_knowledge("ödeme"),
      lambda k: k.search_chatbot_knowledge("ödeme"), ["entries"]),
+    ("list_inbox", ["inbox"],
+     lambda m: m.list_inbox(), lambda k: k.list_inbox(), ["items"]),
+    ("list_inbox_filtered", ["inbox"],
+     lambda m: m.list_inbox(q="kurulum", unread_only=True),
+     lambda k: k.list_inbox(q="kurulum", unread_only=True), []),
+    ("read_thread", ["thread"],
+     lambda m: m.read_thread("conv-3"), lambda k: k.read_thread("conv-1"), ["messages"]),
+    ("reply_to_conversation", ["reply_send"],
+     lambda m: m.reply_to_conversation("conv-1", "Merhaba, 1 iş günü sürer."),
+     lambda k: k.reply_to_conversation("conv-1", "Merhaba, 1 iş günü sürer."), []),
 ]
 
 

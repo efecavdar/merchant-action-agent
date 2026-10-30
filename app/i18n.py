@@ -275,6 +275,17 @@ STRINGS: dict[str, dict[str, str]] = {
     "step.complete_appointment": {"tr": "Randevu tamamlandı", "en": "Appointment completed"},
     "step.create_quote_draft": {"tr": "Teklif taslağı hazırlandı", "en": "Quote drafted"},
     "step.teach_chatbot": {"tr": "Chatbot'a öğretildi", "en": "Taught the chatbot"},
+    # -- approval.py: inbox card lines ----------------------------------------------------
+    "card.inbox_head": {"tr": "💬 {who}: “{last}”", "en": "💬 {who}: “{last}”"},
+    "card.inbox_reply": {"tr": "   ➜ Cevap: “{text}” (müşteriye gider)",
+                         "en": "   ➜ Reply: “{text}” (goes to the customer)"},
+    # -- executor progress lines: inbox ---------------------------------------------------
+    "progress.reply": {"tr": "✅ {i}/{n} Cevap gitti: {customer}",
+                       "en": "✅ {i}/{n} Reply sent: {customer}"},
+    "progress.reply_bare": {"tr": "✅ {i}/{n} Cevap gitti", "en": "✅ {i}/{n} Reply sent"},
+    "progress.fail.reply_to_conversation": {"tr": "Cevap gönderilemedi",
+                                            "en": "Couldn't send the reply"},
+    "step.reply_to_conversation": {"tr": "Cevap gönderildi", "en": "Reply sent"},
 }
 
 
@@ -487,6 +498,11 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
         return t("progress.quote", lang).format(**head, total=_money(r.get("total")))
     if kind == "teach_chatbot":
         return t("progress.chatbot", lang).format(**head, q=_clean(r.get("question"), 80))
+    if kind == "reply_to_conversation":
+        if r.get("customer"):
+            return t("progress.reply", lang).format(
+                **head, customer=_clean(r.get("customer"), _NAME_CHARS))
+        return t("progress.reply_bare", lang).format(**head)
     return f"✅ {i}/{n} {kind}"
 
 

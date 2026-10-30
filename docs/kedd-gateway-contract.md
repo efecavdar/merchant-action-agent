@@ -54,6 +54,8 @@ is a sale-price window on catalog items.
 | GET | `/agent/tasks` | `status` = `open` \| `overdue` \| `completed` \| `all` | `{tasks: [{id, title, due_date, status, overdue, customer_id?, customer_name?, lead_id?, lead_name?}], truncated}` (≤ 30). Gateway K11 — agreed shape, pending deploy |
 | GET | `/agent/insights` | `days` 1–90 (default 7) | `{days, period, prev_period, revenue: {paid_total, paid_count, prev_paid_total, diff}, top_items: [{name, revenue, count}], new_customers, funnel: {new, contacted, qualified, proposal, won, lost}, appointments: {total, completed, cancelled, occupancy_pct}}`. Gateway K11 — agreed shape, pending deploy |
 | GET | `/agent/chatbot/knowledge` | `q` | `{entries: [{id, question, answer}], truncated}` (≤ 20). Gateway K12 — agreed shape, pending deploy |
+| GET | `/agent/inbox` | `q`, `unread_only` (optional) | `{items: [{id, customer, last, at}], truncated}` (≤ 20). `customer` = first name + initial, never a phone number; `last` is masked. Gateway K13 — agreed shape, pending deploy |
+| GET | `/agent/inbox/thread` | `conversation_id`, `limit` 1–50, `before` (optional) | `{messages: [{from: customer\|business, text, at}], has_more}` chronological, masked. Gateway K13 — agreed shape, pending deploy |
 
 ### Writes (owner/admin role required)
 
@@ -78,6 +80,7 @@ is a sale-price window on catalog items.
 | POST | `/agent/appointments/complete` | `{appointment_id, amount? (0 < x ≤ 100000), method?: cash\|card\|transfer\|other, note? ≤500}` | `{id, status: "completed", revenue_id?, amount?}` (no revenue fields for free/package completions). 404 `not_found`, 409 `already_cancelled` / `already_completed`, 400 `future_appointment`, `event_reservation`, `no_credits`, `subscription_inactive`, `package_expired`, `service_not_allowed`. Gateway K12 — agreed shape, pending deploy |
 | POST | `/agent/quotes` | `{customer_id \| lead_id (exactly one), items: [{catalog_item_id, qty 1–100, unit_price? ≥0}], valid_days? 1–60, note? ≤500}` | `{id, total, status: "draft"}`. Never sent to anyone. Server rejects a unit price below half the catalog price. Gateway K12 — agreed shape, pending deploy |
 | POST | `/agent/chatbot/knowledge` | `{question ≤200, answer ≤1000}` | `{id}`. 409 `no_assistant` when the business has no chatbot assistant. Gateway K12 — agreed shape, pending deploy |
+| POST | `/agent/inbox/reply` | `{conversation_id, text 1–1000}` | `{message_id}`. 404 `not_found`, 409 `window_closed` (24 h window) / `repeat` (60 s) / `no_phone`, 429 `rate_limited`, 502 `send_failed`. A retry with the same idempotency key does not send twice. Gateway K13 — agreed shape, pending deploy |
 
 Writes re-validate every limit server-side (discount caps, recipient caps, slot clashes,
 business hours) and never trust the client's checks.

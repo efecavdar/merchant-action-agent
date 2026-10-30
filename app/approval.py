@@ -20,6 +20,9 @@ _NOTE_CHARS = 80   # lead notes show a preview; the full note is stored
 _QUESTION_CHARS = 200  # chatbot questions show whole (≤200 by validation)
 _ANSWER_CHARS = 120    # chatbot answers show the first 120 chars
 _QUOTE_ROWS_SHOWN = 3  # quote rows listed before "+N kalem"
+_LAST_CHARS = 120      # quoted customer text: first 120 chars, digit runs masked
+_MASK_RE = re.compile(r"\d(?:[\s().-]*\d){9,}")  # 10+ digits, separators allowed: the
+# gateway masks last messages; mask again if it slips. Prices and dates stay (too few digits).
 
 # Controls, Unicode line/paragraph separators, NEL and bidi/format characters (U+202E can reorder a line).
 # ZWJ stays so joined emoji survive.
@@ -40,7 +43,7 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
     action's own fields — never from model-written labels, so the owner approves what will really run."""
     f: dict[str, Any] = {"previews": {}, "customers": {}, "campaigns": {}, "appointments": {},
                        "items": {}, "templates": {}, "campaign_previews": {}, "members": {},
-                       "leads": {}, "tasks": {}}
+                       "leads": {}, "tasks": {}, "conversations": {}}
     for e in tool_log:
         r = e.get("result")
         if not isinstance(r, dict):
@@ -78,6 +81,11 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
                     f["appointments"][s["id"]] = {"customer": s.get("customer", "?"),
                                                  "service": s.get("service", "?"),
                                                  "company": s.get("company")}
+        elif tool == "list_inbox":
+            f["conversations"].update({c["id"]: {"customer": c.get("customer", "?"),
+                                                "last": c.get("last", "?")}
+                                       for c in r.get("items") or []
+                                       if isinstance(c, dict) and c.get("id")})
         elif tool == "list_tasks":
             f["tasks"].update({t["id"]: {"title": t.get("title", "?"),
                                          "due_date": t.get("due_date", "?")}
@@ -274,6 +282,16 @@ def _money_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
         a=clean_display(a.get("answer"), _ANSWER_CHARS))
 
 
+def _reply_lines(a: dict[str, Any], f: dict[str, Any], lang: str) -> list[str]:
+    """One head line (customer + their masked last message) and the full reply verbatim:
+    the owner approves exactly the text that will be sent, never a truncation."""
+    conv = f.get("conversations", {}).get(a.get("conversation_id")) or {}
+    last = _MASK_RE.sub("‹tel›", str(conv.get("last", "?")))
+    head = i18n.t("card.inbox_head", lang).format(who=clean_display(conv.get("customer", "?")),
+                                                 last=clean_display(last, _LAST_CHARS))
+    return [head, i18n.t("card.inbox_reply", lang).format(text=a.get("text", ""))]
+
+
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int],
                 facts: dict[str, Any] | None = None, lang: str = "tr") -> str:
     """The text the merchant sees (WhatsApp-style). Action lines first, then the model's note,
@@ -372,6 +390,8 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             lines.append(_crm_line(t, a, facts, lang, created))
         elif t in _MONEY_TYPES:
             lines.append(_money_line(t, a, facts, lang, created))
+        elif t == "reply_to_conversation":
+            lines.extend(_reply_lines(a, facts, lang))
     for note in proposal.get("_social_notes") or []:
         lines.append(f"⚠️ {note}")
     if any(a.get("type") == "create_customer" for a in proposal["actions"]):
