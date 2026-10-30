@@ -571,3 +571,17 @@ def test_coverage_lists_completion_quotes_chatbot_as_live():
     what = " ".join(c["what_en"] for c in cov)
     assert "Complete appointments + revenue" in what
     assert "Quote drafts" in what and "Teach the AI chatbot" in what
+
+
+def test_demo_key_refuses_teach_chatbot_before_network():
+    import pytest
+    from app.tools.backend import KeddBackend
+    kb = KeddBackend("https://kedd.example", "s", "+900000000001", key_id="demo")
+
+    class _S:
+        def post(self, *a, **k):
+            raise AssertionError("network must not be touched")
+
+    kb._s = _S()
+    with pytest.raises(ValueError, match="Demo"):
+        kb.teach_chatbot("Kurulum ne kadar sürer?", "1 iş günü.")

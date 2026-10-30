@@ -2287,6 +2287,9 @@ class KeddBackend:
 
     def teach_chatbot(self, question: str, answer: str,
                       idempotency_key: str | None = None) -> dict[str, Any]:
+        if self._key_id == "demo":
+            # Public demo: visitors must not teach the shared demo chatbot (the gateway refuses it too).
+            raise ValueError("Demo işletmede chatbot'a öğretme kapalı.")
         try:
             res = self._post("/agent/chatbot/knowledge", {"question": question, "answer": answer},
                              idempotency_key)
