@@ -39,7 +39,7 @@ def process_inbound(msg: dict, load: Callable[[str], core.Session | None],
     except Exception:  # noqa: BLE001 — a stale pickle after a deploy must not take the channel down
         log.warning("could not load session for …%s; starting fresh", m.sender[-4:])
         session = None
-    session = session or core.Session(sender=m.sender)
+    session = session or core.whatsapp_session(m.sender)
     wa.mark_read(m.id)
     try:
         media_path = ""

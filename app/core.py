@@ -96,6 +96,13 @@ def _maybe_set_lang(session: Session, text: str) -> None:
     session.lang = i18n.detect_lang(text, session.lang)
 
 
+def whatsapp_session(sender: str) -> Session:
+    """A WhatsApp owner starts on their own KEDD business: the gateway resolves it from their number."""
+    if settings.kedd_api_url and settings.kedd_agent_secret:
+        return Session(sender=sender, business="kedd")
+    return Session(sender=sender)
+
+
 def _history_prune(session: Session, now: float) -> None:
     """Drop items older than HISTORY_TTL_S; keep the newest HISTORY_KEEP."""
     session.history = [h for h in session.history if now - h.get("at", now) <= HISTORY_TTL_S][-HISTORY_KEEP:]
