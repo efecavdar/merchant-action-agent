@@ -547,11 +547,64 @@ def test_t16_coverage_json_shape():
     assert isinstance(items, list) and len(items) >= 10
     for it in items:
         assert {"area", "what_en", "what_tr", "status"} <= set(it)
-        assert it["status"] in ("live", "soon")
+        assert it["status"] in ("live", "owner")
     assert any(it["status"] == "live" for it in items)
-    assert any(it["status"] == "soon" for it in items)
+    assert any(it["status"] == "owner" for it in items)
 
 
 def test_t16_index_has_toggle_and_coverage(client):
     assert 'id="langToggle"' in client.get("/").text
     assert 'id="coverage"' in client.get("/").text
+
+
+def test_t29_hero_headline_and_proof_before_problem():
+    html = (webchan.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert "Your shop's apprentice lives in WhatsApp." in html
+    assert "built on Meta's models" in html
+    # the proof (phone + KEDD panel) sits above the fold, before the story
+    assert html.index('id="phoneCol"') < html.index('class="problem')
+    assert html.index('id="keddLive"') < html.index('class="problem')
+    assert html.index('id="pulseLink"') < html.index('class="problem')
+
+
+def test_t29_coverage_has_no_soon():
+    import json
+    raw = (webchan.STATIC_DIR / "coverage.json").read_text(encoding="utf-8")
+    assert '"soon"' not in raw
+    items = json.loads(raw)
+    assert {it["status"] for it in items} <= {"live", "owner"}
+    by_area = {it["area"]: it["status"] for it in items}
+    assert [by_area[a] for a in ("campaigns", "ads", "social", "inbox", "chatbot")] == ["owner"] * 5
+
+
+def test_t29_i18n_keys_exist_in_both_languages():
+    import re
+    i18n = (webchan.STATIC_DIR / "i18n.js").read_text(encoding="utf-8")
+    keys = re.findall(r'^    "([^"]+)":', i18n, re.M)  # line-start keys only, both dicts
+    assert len(keys) > 60
+    for key in set(keys):
+        assert keys.count(key) == 2, key  # once in en, once in tr
+    for key in ("hero.meta", "problem.title", "before.title", "how.cap", "g7",
+                "attack.title", "attack.c1", "cov.owner", "cov.sell", "diff.title",
+                "close.try", "close.watch", "foot.sources"):
+        assert key in keys, key
+
+
+def test_t29_banner_is_a_nav_line_not_a_strip(cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    cfg("public_demo", True)
+    html = TestClient(webchan.create_app()).get("/").text
+    head = html.index('<header class="topbar">')
+    assert head < html.index("demobanner") < html.index("</header>")
+    assert "Nothing is sent to real customers" in html
+
+
+def test_t29_footer_sources_close_and_attack_wiring():
+    html = (webchan.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    js = (webchan.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "TurkStat, 2024" in html and "TurkStat, 2025" in html
+    assert "Try it live ↑" in html and 'id="tryLive2"' in html
+    assert 'id="watchDemo"' in html and 'href="#video"' in html and "VIDEO_URL" in js
+    assert "Built for the Meta Global AI Developer Hackathon 2026" in html
+    assert html.count("data-attack=") == 3
+    assert "data-attack" in js and "MutationObserver" in js

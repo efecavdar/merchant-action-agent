@@ -514,24 +514,53 @@
     paintQuick();
   }
 
+  // Coverage grouped under four verbs; compact chips with a status dot (the legend
+  // above the grid explains it). Unknown future areas fall through to the last group.
+  const COV_VERBS = [
+    ["cov.sell", ["catalog", "pricing", "discounts", "quotes"]],
+    ["cov.book", ["appointments", "completion"]],
+    ["cov.reach", ["segments", "campaigns", "social", "inbox", "ads"]],
+    ["cov.run", ["brief", "insights", "crm", "tasks", "loyalty", "chatbot"]],
+  ];
+
+  function covChip(it) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    const owner = it.status !== "live";
+    const dot = document.createElement("span");
+    dot.className = "dot " + (owner ? "owner" : "live");
+    dot.title = owner ? t("cov.owner") : t("cov.live");
+    chip.appendChild(dot);
+    chip.appendChild(document.createTextNode((lang === "tr" ? it.what_tr : it.what_en) || ""));
+    return chip;
+  }
+
   function paintCoverage() {
     coverageEl.innerHTML = "";
+    const byArea = new Map(coverageItems.map((it) => [it.area, it]));
+    const seen = new Set();
+    const groups = [];
+    for (const [verbKey, areas] of COV_VERBS) {
+      const group = document.createElement("div");
+      group.className = "verb";
+      const h = document.createElement("h3");
+      h.textContent = t(verbKey);
+      group.appendChild(h);
+      const chips = document.createElement("div");
+      chips.className = "chips";
+      for (const area of areas) {
+        const it = byArea.get(area);
+        if (!it) continue;
+        seen.add(area);
+        chips.appendChild(covChip(it));
+      }
+      group.appendChild(chips);
+      groups.push([group, chips]);
+      coverageEl.appendChild(group);
+    }
+    const tail = groups.length ? groups[groups.length - 1][1] : null;
     for (const it of coverageItems) {
-      const card = document.createElement("div");
-      card.className = "cov-card";
-      const area = document.createElement("div");
-      area.className = "cov-area";
-      area.textContent = it.area || "";
-      const what = document.createElement("p");
-      what.className = "cov-what";
-      what.textContent = (lang === "tr" ? it.what_tr : it.what_en) || "";
-      const pill = document.createElement("span");
-      pill.className = "pill " + (it.status === "live" ? "live" : "soon");
-      pill.textContent = it.status === "live" ? t("cov.live") : t("cov.soon");
-      card.appendChild(area);
-      card.appendChild(what);
-      card.appendChild(pill);
-      coverageEl.appendChild(card);
+      if (!seen.has(it.area) && tail) tail.appendChild(covChip(it));
     }
   }
 
@@ -572,6 +601,7 @@
   }
 
   function paintTrace(ol, emptyEl, data) {
+    if (!ol) return;   // the long section is gone; only the drawer under the phone remains
     ol.innerHTML = "";
     if (!data || !data.steps || !data.steps.length) {
       emptyEl.hidden = false;
@@ -597,6 +627,7 @@
   }
 
   function paintModels(data) {
+    if (!traceModelsEl) return;
     traceModelsEl.innerHTML = "";
     if (!data || !data.models || !data.models.length) {
       traceModelsEl.textContent = "—";
@@ -629,6 +660,7 @@
   const keddRowsEl = document.getElementById("keddRows");
   const keddRetryEl = document.getElementById("keddRetry");
   const keddErrorEl = document.getElementById("keddError");
+  const keddDotEl = document.getElementById("keddDot");
   let keddData = null;
 
   function keddRow(title, lines) {
@@ -662,6 +694,7 @@
     if (!keddData) {
       keddPillEl.textContent = t("kedd.off");
       keddPillEl.className = "pill soon";
+      if (keddDotEl) keddDotEl.classList.remove("on");
       return;
     }
     const d = keddData;
@@ -669,6 +702,7 @@
       : d.state === "fallback" ? ["kedd.fallback", "fallback"] : ["kedd.mock", "soon"];
     keddPillEl.textContent = t(pill[0]);
     keddPillEl.className = "pill " + pill[1];
+    if (keddDotEl) keddDotEl.classList.toggle("on", d.state === "live");
     keddBusinessEl.textContent = d.business_name || "";
     keddRetryEl.hidden = d.state !== "fallback";
     keddErrorEl.hidden = !d.error;
@@ -711,6 +745,74 @@
     paintKedd();
   }
 
+  function scrollToPhone() {
+    const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    phoneColEl.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+    textInput.focus({ preventScroll: true });
+  }
+
+  // Demo video: hidden until a URL is set here.
+  const VIDEO_URL = "";
+
+  function countUp(el) {
+    const target = parseFloat(el.dataset.count || "0");
+    const decimals = parseInt(el.dataset.decimals || "0", 10);
+    const suffix = el.dataset.suffix || "";
+    const fmt = (v) => v.toLocaleString("en-US", { minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals }) + suffix;
+    if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.textContent = fmt(target);
+      return;
+    }
+    const t0 = performance.now(), dur = 1200;
+    function tick(now) {
+      const p = Math.min(1, (now - t0) / dur);
+      el.textContent = fmt(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function initRevealAndCounts() {
+    if (document.body) document.body.classList.add("reveals-on");
+    if (!("IntersectionObserver" in window)) {
+      for (const el of document.querySelectorAll(".reveal")) el.classList.add("in");
+      for (const el of document.querySelectorAll("[data-count]")) countUp(el);
+      return;
+    }
+    const rio = new IntersectionObserver((es) => {
+      for (const e of es) {
+        if (!e.isIntersecting) continue;
+        e.target.classList.add("in");
+        rio.unobserve(e.target);
+      }
+    }, { threshold: 0.12 });
+    for (const el of document.querySelectorAll(".reveal")) rio.observe(el);
+    const cio = new IntersectionObserver((es) => {
+      for (const e of es) {
+        if (!e.isIntersecting) continue;
+        countUp(e.target);
+        cio.unobserve(e.target);
+      }
+    }, { threshold: 0.4 });
+    for (const el of document.querySelectorAll("[data-count]")) cio.observe(el);
+  }
+
+  // The demo moment: a progress line landing in the chat means the business is
+  // changing, so a light pulse travels phone → panel and the writes row flashes.
+  // A MutationObserver keeps this purely additive — chat logic is untouched.
+  function firePulse() {
+    const link = document.getElementById("pulseLink");
+    if (!link || !keddRowsEl) return;
+    if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    link.classList.remove("fire");
+    void link.offsetWidth;
+    link.classList.add("fire");
+    keddRowsEl.classList.remove("flash");
+    void keddRowsEl.offsetWidth;
+    if (keddRowsEl.querySelector(".kedd-row")) keddRowsEl.classList.add("flash");
+  }
+
   function landingInit() {
     if (landingReady) return;
     landingReady = true;
@@ -718,11 +820,33 @@
     for (const b of document.querySelectorAll("#langToggle button")) {
       b.addEventListener("click", () => applyLang(b.dataset.lang));
     }
-    tryLiveBtn.addEventListener("click", () => {
-      const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
-      phoneColEl.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
-      textInput.focus({ preventScroll: true });
-    });
+    tryLiveBtn.addEventListener("click", scrollToPhone);
+    const tryLive2 = document.getElementById("tryLive2");
+    if (tryLive2) tryLive2.addEventListener("click", scrollToPhone);
+    const watchDemo = document.getElementById("watchDemo");
+    if (watchDemo && VIDEO_URL) {
+      watchDemo.href = VIDEO_URL;
+      watchDemo.hidden = false;
+    }
+    for (const b of document.querySelectorAll("[data-attack]")) {
+      b.addEventListener("click", () => {
+        textInput.value = b.dataset.attack || "";
+        scrollToPhone();
+      });
+    }
+    initRevealAndCounts();
+    if (window.MutationObserver && chat) {
+      new MutationObserver((muts) => {
+        for (const m of muts) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType === 1 && n.classList && n.classList.contains("status-line")) {
+              firePulse();
+              return;
+            }
+          }
+        }
+      }).observe(chat, { childList: true });
+    }
     try {
       phoneTimeEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     } catch (e) { /* keep the static fallback */ }
