@@ -58,7 +58,9 @@ def _kb(*fixtures: str, **overrides) -> KeddBackend:
                                     "campaigns_send", "loyalty_adjust", "ads_action",
                                     "ads_pause", "crm_customer_create", "crm_customer_update",
                                     "crm_lead_create", "crm_lead_stage", "crm_lead_note",
-                                    "crm_task_create", "crm_task_complete"} else "GET"
+                                    "crm_task_create", "crm_task_complete", "appt_complete",
+                                    "appt_complete_free", "quote_create",
+                                    "knowledge_create"} else "GET"
         routes[(method, _PATHS[name])] = _load(name)
     routes.update(overrides)
     kb = KeddBackend(BASE, "s3cret", "+905321")
@@ -102,6 +104,11 @@ _PATHS = {
     "crm_lead_note": "/agent/leads/note",
     "crm_task_create": "/agent/tasks",
     "crm_task_complete": "/agent/tasks/complete",
+    "appt_complete": "/agent/appointments/complete",
+    "appt_complete_free": "/agent/appointments/complete",
+    "quote_create": "/agent/quotes",
+    "knowledge_create": "/agent/chatbot/knowledge",
+    "knowledge_search": "/agent/chatbot/knowledge",
 }
 
 
@@ -268,6 +275,24 @@ CASES = [
     ("complete_task", ["crm_task_complete"],
      lambda m: m.complete_task(m.tasks[0].id),
      lambda k: k.complete_task("task-1"), []),
+    ("complete_appointment", ["appt_complete"],
+     lambda m: m.complete_appointment(m.appointments[0].id, amount=2500, method="transfer"),
+     lambda k: k.complete_appointment("appt-1", amount=2500, method="transfer"),
+     ["revenue_id"]),
+    ("complete_appointment_free", ["appt_complete_free"],
+     lambda m: m.complete_appointment(m.appointments[0].id),
+     lambda k: k.complete_appointment("appt-2"), []),
+    ("create_quote", ["quote_create"],
+     lambda m: m.create_quote(customer_id=m.customers[0].id,
+                              items=[{"catalog_item_id": m.items[0].id, "qty": 2}]),
+     lambda k: k.create_quote(customer_id="c-9",
+                              items=[{"catalog_item_id": "item-1", "qty": 2}]), []),
+    ("teach_chatbot", ["knowledge_create"],
+     lambda m: m.teach_chatbot("Kargo kaç gün?", "2 iş günü."),
+     lambda k: k.teach_chatbot("Kargo kaç gün?", "2 iş günü."), []),
+    ("search_chatbot_knowledge", ["knowledge_search"],
+     lambda m: m.search_chatbot_knowledge("ödeme"),
+     lambda k: k.search_chatbot_knowledge("ödeme"), ["entries"]),
 ]
 
 
@@ -371,7 +396,7 @@ def test_schedule_gaps_come_from_flat_slots_and_cancelled_is_dropped():
 def test_null_fallbacks_keep_mock_keys():
     appts = _kb("appointments").find_appointments()
     assert appts[1] == {"id": "appt-2", "customer": "", "service": "?", "staff": "",
-                        "starts": None, "ends": None, "status": "completed"}
+                        "starts": None, "ends": None, "status": "completed", "company": None}
     items = _kb("catalog").list_catalog()
     assert items[2]["price"] is None and items[2]["category"] == ""
 

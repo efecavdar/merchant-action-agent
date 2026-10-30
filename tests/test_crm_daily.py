@@ -396,7 +396,7 @@ def test_demo_key_creates_a_customer_without_a_phone():
 
 def test_mock_seeds_stay_green_and_filtered():
     m = MockBackend("salon", today=DAY0)
-    assert m.SCHEMA == 6
+    assert m.SCHEMA == 7
     assert m.find_leads()["truncated"] is False
     assert {l["stage"] for l in m.find_leads(stage="new")["leads"]} == {"new"}
     first = m.leads[0].name.split()[0]

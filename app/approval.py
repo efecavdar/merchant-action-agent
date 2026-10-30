@@ -17,6 +17,9 @@ _NAME_CHARS = 60   # = the validator's name/variable limit: the owner sees every
 _DESC_CHARS = 120  # catalog descriptions show what will be written, so they get more room
 _PROMPT_CHARS = 80
 _NOTE_CHARS = 80   # lead notes show a preview; the full note is stored
+_QUESTION_CHARS = 200  # chatbot questions show whole (≤200 by validation)
+_ANSWER_CHARS = 120    # chatbot answers show the first 120 chars
+_QUOTE_ROWS_SHOWN = 3  # quote rows listed before "+N kalem"
 
 # Controls, Unicode line/paragraph separators, NEL and bidi/format characters (U+202E can reorder a line).
 # ZWJ stays so joined emoji survive.
@@ -46,7 +49,9 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
         if tool == "preview_bulk_price" and r.get("preview_id"):
             f["previews"][r["preview_id"]] = r
         elif tool == "find_customer":
-            f["customers"].update({m["id"]: m.get("name", "?") for m in r.get("matches") or []})
+            f["customers"].update({m["id"]: {"name": m.get("name", "?"), "company": m.get("company")}
+                                   for m in r.get("matches") or []
+                                   if isinstance(m, dict) and m.get("id")})
         elif tool == "get_ads_performance":
             f["campaigns"].update({c["id"]: c for c in r.get("campaigns") or []})
         elif tool == "find_appointments":
@@ -62,8 +67,17 @@ def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
             f["members"].update({m["member_id"]: m for m in r.get("members") or []
                                  if isinstance(m, dict) and m.get("member_id")})
         elif tool == "find_leads":
-            f["leads"].update({l["id"]: {"name": l.get("name", "?"), "stage": l.get("stage", "?")}
+            f["leads"].update({l["id"]: {"name": l.get("name", "?"), "stage": l.get("stage", "?"),
+                                         "company": l.get("company")}
                                for l in r.get("leads") or [] if isinstance(l, dict) and l.get("id")})
+        elif tool == "get_schedule":
+            # Schedule-seen ids are completable too, but a schedule row is thinner than a
+            # find_appointments one: it only fills ids no fuller call has described yet.
+            for s in r.get("appointments") or []:
+                if isinstance(s, dict) and s.get("id") and s["id"] not in f["appointments"]:
+                    f["appointments"][s["id"]] = {"customer": s.get("customer", "?"),
+                                                 "service": s.get("service", "?"),
+                                                 "company": s.get("company")}
         elif tool == "list_tasks":
             f["tasks"].update({t["id"]: {"title": t.get("title", "?"),
                                          "due_date": t.get("due_date", "?")}
@@ -94,11 +108,12 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str = "tr") -
         reason = f" ({clean_display(a['reason'])})" if a.get("reason") else ""
         member = f["members"].get(a.get("customer_id")) or {}
         old = member.get("points")
+        _, company = _customer_name(f["customers"].get(a.get("customer_id")))
         if member.get("name") and isinstance(old, int) and isinstance(pts, int):
-            who, change = clean_display(member["name"]), f"{old}→{old + pts}"
+            who, change = clean_display(_with_co(member["name"], company)), f"{old}→{old + pts}"
         else:
-            who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
-            change = sign
+            name, _ = _customer_name(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+            who, change = clean_display(_with_co(name, company)), sign
         return i18n.t("fact.loyalty", lang).format(who=who, change=change, reason=reason)
     if t == "ads_action":
         c = f["campaigns"].get(a.get("campaign_id")) or {}
@@ -116,12 +131,13 @@ def _fact_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str = "tr") -
         return i18n.t("fact.ad", lang).format(name=name, verb=verb)
     if t == "create_appointment":
         svc = clean_display((f["items"].get(a.get("item_ref")) or {}).get("name", a.get("item_ref")))
-        who = clean_display(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+        name, company = _customer_name(f["customers"].get(a.get("customer_id"), a.get("customer_id")))
+        who = clean_display(_with_co(name, company))
         return i18n.t("fact.appt", lang).format(who=who, svc=svc, staff=clean_display(a.get("staff")),
                                                when=_when(a.get("starts")))
     ap = f["appointments"].get(a.get("appointment_id")) or {}
-    base = (f"{clean_display(ap.get('customer', '?'))} — {clean_display(ap.get('service', '?'))}, "
-            f"{_when(ap.get('starts'))}")
+    base = (f"{clean_display(_with_co(ap.get('customer', '?'), ap.get('company')))} — "
+            f"{clean_display(ap.get('service', '?'))}, {_when(ap.get('starts'))}")
     if t == "reschedule_appointment":
         staff = f", {clean_display(a['staff'])}" if a.get("staff") else ""
         return i18n.t("fact.appt_move", lang).format(base=base, when=_when(a.get("starts")), staff=staff)
@@ -132,6 +148,7 @@ _FACT_TYPES = {"apply_bulk_price", "adjust_loyalty", "ads_action", "create_appoi
                "reschedule_appointment", "cancel_appointment"}
 _CRM_TYPES = {"create_customer", "update_customer", "create_lead", "set_lead_stage",
               "add_lead_note", "create_task", "complete_task"}
+_MONEY_TYPES = {"complete_appointment", "create_quote_draft", "teach_chatbot"}
 
 
 def _crm_name(value: Any, fmap: dict[str, Any], created: dict[str, dict[str, str]],
@@ -145,6 +162,27 @@ def _crm_name(value: Any, fmap: dict[str, Any], created: dict[str, dict[str, str
     return entry or "?"
 
 
+def _with_co(name: str, company: Any) -> str:
+    """'Murat Demir' + 'Ada Kafe' → 'Murat Demir (Ada Kafe)'; no company adds nothing."""
+    return f"{name} ({company})" if isinstance(company, str) and company else name
+
+
+def _customer_name(entry: Any) -> tuple[str, Any]:
+    """A customers-fact entry — a {name, company} dict, or a bare name from older callers."""
+    if isinstance(entry, dict):
+        return entry.get("name", "?"), entry.get("company")
+    return entry or "?", None
+
+
+def _co_of(value: Any, fmap: dict[str, Any], created: dict[str, dict[str, str]],
+           kind: str) -> Any:
+    """The company fact for a tool-seen id (refs created in-plan have none)."""
+    if isinstance(value, str) and created.get(value, {}).get("kind") == kind:
+        return None
+    entry = fmap.get(value)
+    return entry.get("company") if isinstance(entry, dict) else None
+
+
 def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
               created: dict[str, dict[str, str]]) -> str:
     if t == "create_customer":
@@ -153,6 +191,8 @@ def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
         return i18n.t("card.new_customer", lang).format(name=clean_display(a.get("name")), tags=suffix)
     if t == "update_customer":
         name = _crm_name(a.get("customer_id"), f.get("customers", {}), created, "customer")
+        name = _with_co(name, _co_of(a.get("customer_id"), f.get("customers", {}), created,
+                                     "customer"))
         parts = i18n.update_parts(a.get("add_tags"), a.get("remove_tags"), a.get("note") is not None,
                                   a.get("name") is not None, clean_display(a.get("name")), lang)
         return i18n.t("card.customer_updated", lang).format(
@@ -166,6 +206,7 @@ def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
         return i18n.t("card.new_lead", lang).format(name=clean_display(a.get("name")), value=suffix)
     if t == "set_lead_stage":
         name = _crm_name(a.get("lead_id"), f.get("leads", {}), created, "lead")
+        name = _with_co(name, _co_of(a.get("lead_id"), f.get("leads", {}), created, "lead"))
         current = (f.get("leads", {}).get(a.get("lead_id")) or {}).get("stage")
         if current is None and isinstance(a.get("lead_id"), str) and a["lead_id"] in created:
             current = "new"  # a lead created earlier in this plan starts at "new"
@@ -179,6 +220,58 @@ def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
                                                when=i18n.format_task_due(a.get("due_date"), lang))
     name = _crm_name(a.get("task_id"), f.get("tasks", {}), created, "task")
     return i18n.t("card.task_done", lang).format(title=clean_display(name))
+
+
+def _money_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
+                created: dict[str, dict[str, str]]) -> str:
+    if t == "complete_appointment":
+        ap = f.get("appointments", {}).get(a.get("appointment_id")) or {}
+        who = _with_co(ap.get("customer", "?"), ap.get("company"))
+        paid = ""
+        if a.get("amount") is not None:
+            try:
+                money = f"{float(a['amount']):,.0f}"
+            except (TypeError, ValueError):
+                money = str(a.get("amount"))
+            method = i18n.t(f"card.method.{a.get('method')}", lang, "") if a.get("method") else ""
+            paid = i18n.t("card.appt_paid", lang).format(
+                amount=money, method=f" {method}" if method else "")
+        return i18n.t("card.appt_done", lang).format(who=clean_display(who),
+                                                    svc=clean_display(ap.get("service", "?")),
+                                                    paid=paid)
+    if t == "create_quote_draft":
+        if a.get("customer_id"):
+            name = _crm_name(a["customer_id"], f.get("customers", {}), created, "customer")
+            who = _with_co(name, _co_of(a["customer_id"], f.get("customers", {}), created,
+                                        "customer"))
+        else:
+            name = _crm_name(a.get("lead_id"), f.get("leads", {}), created, "lead")
+            who = _with_co(name, _co_of(a.get("lead_id"), f.get("leads", {}), created, "lead"))
+        parts, total = [], 0.0
+        for row in a.get("items") or []:
+            if not isinstance(row, dict):
+                continue
+            item = f.get("items", {}).get(row.get("catalog_item_id") or "") or {}
+            qty = row.get("qty")
+            qty = qty if isinstance(qty, int) and not isinstance(qty, bool) else "?"
+            unit = row.get("unit_price")
+            if unit is None:
+                unit = item.get("price")
+            try:
+                total += float(qty) * float(unit)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
+            parts.append(f"{clean_display(item.get('name') or row.get('catalog_item_id') or '?')} ×{qty}")
+        shown = " + ".join(parts[:_QUOTE_ROWS_SHOWN])
+        if len(parts) > _QUOTE_ROWS_SHOWN:
+            k = len(parts) - _QUOTE_ROWS_SHOWN
+            unit = i18n.t("card.item_one" if k == 1 else "card.item_many", lang)
+            shown += i18n.t("card.quote_more", lang).format(k=k, unit=unit)
+        return i18n.t("card.quote_draft", lang).format(who=clean_display(who), rows=shown or "?",
+                                                      total=f"{total:,.0f}")
+    return i18n.t("card.chatbot_teach", lang).format(
+        q=clean_display(a.get("question"), _QUESTION_CHARS),
+        a=clean_display(a.get("answer"), _ANSWER_CHARS))
 
 
 def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dict[str, int],
@@ -277,6 +370,8 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             lines.append(_fact_line(t, a, facts, lang))
         elif t in _CRM_TYPES:
             lines.append(_crm_line(t, a, facts, lang, created))
+        elif t in _MONEY_TYPES:
+            lines.append(_money_line(t, a, facts, lang, created))
     for note in proposal.get("_social_notes") or []:
         lines.append(f"⚠️ {note}")
     if any(a.get("type") == "create_customer" for a in proposal["actions"]):

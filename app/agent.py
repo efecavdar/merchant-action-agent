@@ -59,6 +59,14 @@ Rules:
   appointment with find_appointments, and check the slot with get_schedule before proposing. If several customers
   match a name, do not guess: reply_only and ask which one. Times are ISO datetimes (2026-10-31T15:00). Every
   appointment action carries a `label` the owner can read ("Elif K. — Demo Görüşmesi, Efe, Cuma 15:00").
+  Completing one (complete_appointment) takes the id from find_appointments or get_schedule; omit the
+  amount to charge the service's catalog price, or state what the owner took and how (cash/card/
+  transfer/other). A quote draft (create_quote_draft) names exactly one customer or lead plus catalog
+  rows; unit prices stay at half the catalog price or above. Quotes are drafts, never sent.
+- Chatbot: before teach_chatbot, search_chatbot_knowledge — if the question is already taught, say
+  so ("bu zaten öğretilmiş") instead of proposing. Questions/answers carry no contact details, and
+  an answer mentions only prices from this run's catalog. When a customer or lead has a company,
+  write the name as "Name (Company)".
 - Audience: call find_customers whenever the owner wants to notify customers; never invent a segment id.
   "uzun süredir gelmeyenler" ≈ inactive_days 60; "sadık / müdavim" ≈ min_visits 3; "yeni gelenler" ≈ 1 visit.
 - Leads and tasks: resolve ids with find_leads / list_tasks in this run (or chain a ref you create
@@ -66,7 +74,8 @@ Rules:
   New customers and leads start without marketing consent: never promise them a campaign message.
 - Numbers questions ("bu hafta nasıldı?", "huni ne durumda?") and the morning brief are answered
   from get_insights plus list_tasks; a morning brief ends with one line: this week vs last week
-  revenue, then open/overdue task counts.
+  revenue, then open/overdue task counts — plus, from get_insights(days=1), today's completed
+  appointments count and revenue when it has them.
 - Messages: Turkish, in the business's tone, personal, mention only discounts and prices that are in THIS plan,
   one emoji at most, under 350 characters. Do not promise anything the plan does not do.
 - Template campaigns: a business-initiated WhatsApp message is only delivered through an approved
@@ -120,12 +129,14 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
                     "required": ["name"], "additionalProperties": False}},
     {"type": "function", "name": "get_schedule",
-     "description": "Appointments and free slots per staff member for one day (services businesses).",
+     "description": "Appointments (with ids) and free slots per staff member for one day "
+                    "(services businesses).",
      "parameters": {"type": "object", "properties": {
          "day": {"type": "string", "description": "ISO date, e.g. 2026-10-28"}},
          "required": ["day"], "additionalProperties": False}},
     {"type": "function", "name": "find_appointments",
-     "description": "Existing appointments by customer name and/or day; returns appointment ids for reschedule/cancel.",
+     "description": "Existing appointments by customer name and/or day; returns appointment ids "
+                    "for reschedule/cancel/complete.",
      "parameters": {"type": "object", "properties": {
          "customer_name": {"type": "string"}, "day": {"type": "string", "description": "ISO date"}},
          "required": [], "additionalProperties": False}},
@@ -199,6 +210,13 @@ TOOLS: list[dict[str, Any]] = [
                     "properties": {"days": {"type": "integer",
                                             "description": "window, 1-90 (default 7)"}},
                     "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "search_chatbot_knowledge",
+     "description": "What the business chatbot already knows. Search before teach_chatbot to "
+                    "avoid teaching the same question twice.",
+     "parameters": {"type": "object",
+                    "properties": {"q": {"type": "string",
+                                         "description": "question or keywords to look up"}},
+                    "required": ["q"], "additionalProperties": False}},
     {"type": "function", "name": "propose_actions",
      "description": "Submit the final plan for human approval. Call exactly once when done.",
      "parameters": PROPOSAL_SCHEMA},
@@ -221,6 +239,7 @@ class AgentRun:
     templates: dict[str, dict[str, Any]] = field(default_factory=dict)
     leads: set[str] = field(default_factory=set)
     tasks: set[str] = field(default_factory=set)
+    appointment_services: dict[str, str] = field(default_factory=dict)
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     turns: int = 0
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
@@ -244,10 +263,18 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         run.customers.update(m["id"] for m in matches)
         return {"matches": matches}
     if name == "get_schedule":
-        return backend.get_schedule(args["day"])
+        res = backend.get_schedule(args["day"])
+        for a in res.get("appointments") or []:
+            if a.get("id"):
+                run.appointments.add(a["id"])
+            if a.get("id") and a.get("service"):
+                run.appointment_services[a["id"]] = a["service"]
+        return res
     if name == "find_appointments":
         found = backend.find_appointments(args.get("customer_name"), args.get("day"))
         run.appointments.update(a["id"] for a in found)
+        run.appointment_services.update({a["id"]: a["service"] for a in found
+                                         if a.get("id") and a.get("service")})
         return {"appointments": found}
     if name == "get_daily_summary":
         return backend.daily_summary(args["day"])
@@ -290,6 +317,8 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
         return res
     if name == "get_insights":
         return backend.get_insights(args.get("days", 7))
+    if name == "search_chatbot_knowledge":
+        return backend.search_chatbot_knowledge(args.get("q", ""))
     raise KeyError(name)
 
 
@@ -350,7 +379,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
                                            run.appointments, run.customers,
                                            run.previews, run.campaigns, run.templates,
                                            requires_template=isinstance(backend, KeddBackend),
-                                           known_leads=run.leads, known_tasks=run.tasks)
+                                           known_leads=run.leads, known_tasks=run.tasks,
+                                           appointment_services=run.appointment_services)
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:

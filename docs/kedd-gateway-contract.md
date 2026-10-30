@@ -40,7 +40,7 @@ is a sale-price window on catalog items.
 | GET | `/agent/profile` | — | store profile: name, city, sector, channels, tone, currency, business hours, staff, plus today's counts (customers by loyalty, catalog size) |
 | GET | `/agent/catalog` | `type` (optional) | catalog items: id, type, name, price, currency, category, description, image, duration (services), sale window |
 | GET | `/agent/schedule` | `day` (YYYY-MM-DD) | that day's confirmed appointments plus free slots per staff member |
-| GET | `/agent/customers` | `name` | up to 10 matches: id, name, last visit, visit count. No phone numbers |
+| GET | `/agent/customers` | `name` | up to 10 matches: id, name, last visit, visit count, `company?` (also matched against). No phone numbers. Gateway K12 adds the company match + field — agreed shape, pending deploy |
 | GET | `/agent/loyalty/members` | `name` | up to 10 matches: `{members: [{member_id, name, points, tier?}], truncated}`. No phone numbers. Gateway K5.1 — agreed shape, pending deploy |
 | GET | `/agent/daily-summary` | `day` | appointments, revenue total + by category, new customers/leads, unanswered messages, campaigns sent, catalog changes |
 | GET | `/agent/appointments` | `customer_name`, `day` (optional) | appointments: id, customer, service, staff, start/end, status |
@@ -50,9 +50,10 @@ is a sale-price window on catalog items.
 | GET | `/agent/report` | — | agent activity counters for the window: `{window_hours, total, by_capability: {name: {ok, error}}}`. Names are dotted capabilities (`catalog.create`, `appointments.reschedule`, `profile`, …) and include reads as well as writes; clients filter what they display |
 | POST (R) | `/agent/segments` | `{inactive_days, min_visits, tags}` | `{segment_id, criteria, count, excluded_no_consent, sample}` — the sample is at most 5 entries (name + last visit), never phone numbers |
 | POST (R) | `/agent/catalog/bulk-price/preview` | `{item_type, category, item_ids, mode, value}` (`mode`: `percent` \| `amount`) | `{preview_id, items: [{id, name, old_price, new_price}], count}` — changes nothing |
-| GET | `/agent/leads` | `stage`, `name` (optional) | `{leads: [{id, name, source, stage, last_contact\|null, value?}], truncated}` (≤ 20). Display names only, no contact details. Gateway K11 — agreed shape, pending deploy |
+| GET | `/agent/leads` | `stage`, `name` (optional) | `{leads: [{id, name, source, stage, last_contact\|null, value?, company?}], truncated}` (≤ 20). Display names only, no contact details. Gateway K11 — agreed shape, pending deploy; K12 adds the company match + field |
 | GET | `/agent/tasks` | `status` = `open` \| `overdue` \| `completed` \| `all` | `{tasks: [{id, title, due_date, status, overdue, customer_id?, customer_name?, lead_id?, lead_name?}], truncated}` (≤ 30). Gateway K11 — agreed shape, pending deploy |
 | GET | `/agent/insights` | `days` 1–90 (default 7) | `{days, period, prev_period, revenue: {paid_total, paid_count, prev_paid_total, diff}, top_items: [{name, revenue, count}], new_customers, funnel: {new, contacted, qualified, proposal, won, lost}, appointments: {total, completed, cancelled, occupancy_pct}}`. Gateway K11 — agreed shape, pending deploy |
+| GET | `/agent/chatbot/knowledge` | `q` | `{entries: [{id, question, answer}], truncated}` (≤ 20). Gateway K12 — agreed shape, pending deploy |
 
 ### Writes (owner/admin role required)
 
@@ -74,6 +75,9 @@ is a sale-price window on catalog items.
 | POST | `/agent/leads/note` | `{lead_id, note ≤500}` | `{id, note_id}`. Gateway K11 — agreed shape, pending deploy |
 | POST | `/agent/tasks` | `{title ≤120, due_date ISO (date or datetime), customer_id?, lead_id?}` | `{id, title, due_date, status}`. Gateway K11 — agreed shape, pending deploy |
 | POST | `/agent/tasks/complete` | `{task_id}` | `{id, status}`. Gateway K11 — agreed shape, pending deploy |
+| POST | `/agent/appointments/complete` | `{appointment_id, amount? (0 < x ≤ 100000), method?: cash\|card\|transfer\|other, note? ≤500}` | `{id, status: "completed", revenue_id?, amount?}` (no revenue fields for free/package completions). 404 `not_found`, 409 `already_cancelled` / `already_completed`, 400 `future_appointment`, `event_reservation`, `no_credits`, `subscription_inactive`, `package_expired`, `service_not_allowed`. Gateway K12 — agreed shape, pending deploy |
+| POST | `/agent/quotes` | `{customer_id \| lead_id (exactly one), items: [{catalog_item_id, qty 1–100, unit_price? ≥0}], valid_days? 1–60, note? ≤500}` | `{id, total, status: "draft"}`. Never sent to anyone. Server rejects a unit price below half the catalog price. Gateway K12 — agreed shape, pending deploy |
+| POST | `/agent/chatbot/knowledge` | `{question ≤200, answer ≤1000}` | `{id}`. 409 `no_assistant` when the business has no chatbot assistant. Gateway K12 — agreed shape, pending deploy |
 
 Writes re-validate every limit server-side (discount caps, recipient caps, slot clashes,
 business hours) and never trust the client's checks.

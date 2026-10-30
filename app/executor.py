@@ -178,6 +178,26 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                 res = backend.cancel_appointment(a["appointment_id"], a.get("reason") or "", **idem)
                 record(a, "ok", {"appointment_id": res["id"], "status": res["status"], "label": a.get("label")})
 
+            elif t == "complete_appointment":
+                res = backend.complete_appointment(a["appointment_id"], amount=a.get("amount"),
+                                                   method=a.get("method"), note=a.get("note"),
+                                                   **idem)
+                record(a, "ok", {"appointment_id": res["id"], "status": res["status"],
+                                 "revenue_id": res.get("revenue_id"), "amount": res.get("amount"),
+                                 "method": a.get("method"), "label": a.get("label")})
+
+            elif t == "create_quote_draft":
+                res = backend.create_quote(customer_id=a.get("customer_id"), lead_id=a.get("lead_id"),
+                                           items=a.get("items"), valid_days=a.get("valid_days"),
+                                           note=a.get("note"), **idem)
+                record(a, "ok", {"quote_id": res["id"], "total": res["total"],
+                                 "status": res["status"], "label": a.get("label")})
+
+            elif t == "teach_chatbot":
+                res = backend.teach_chatbot(a["question"], a["answer"], **idem)
+                record(a, "ok", {"entry_id": res["id"], "question": a.get("question"),
+                                 "label": a.get("label")})
+
             elif t == "apply_bulk_price":
                 res = backend.apply_bulk_price(a["preview_id"], **idem)
                 record(a, "ok", {"preview_id": res["preview_id"], "updated": res["count"],
