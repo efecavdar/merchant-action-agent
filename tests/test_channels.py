@@ -687,3 +687,17 @@ def test_review_model_cannot_plant_preview_path_or_notes(tmp_path, monkeypatch):
     assert all(not k.startswith("_") for a in proposal["actions"] for k in a)
     assert [a["type"] for a in proposal["actions"]] == ["add_catalog_item"]   # failed visual → dropped
     assert proposal["_social_notes"] and "indirim" not in " ".join(proposal["_social_notes"])
+
+
+def test_whatsapp_owner_starts_on_kedd_without_a_command(monkeypatch):
+    monkeypatch.setattr(core, "settings", SimpleNamespace(kedd_api_url="https://k", kedd_agent_secret="s",
+                                                          mock_business="butik"))
+    assert core.whatsapp_session("905000000000").business == "kedd"
+    monkeypatch.setattr(core, "settings", SimpleNamespace(kedd_api_url="", kedd_agent_secret="",
+                                                          mock_business="butik"))
+    assert core.whatsapp_session("905000000000").business != "kedd"      # no KEDD configured: mock
+
+
+def test_greeting_does_not_mention_developer_commands():
+    from app import i18n
+    assert "/kedd" not in i18n.t("help", "tr") and "/kedd" not in i18n.t("help", "en")

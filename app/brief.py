@@ -65,7 +65,7 @@ def send_morning_briefs(load: Callable[[str], core.Session | None],
             except Exception:  # noqa: BLE001 — a stale pickle must not cancel the morning brief
                 log.warning("could not load session for …%s; starting fresh", sender[-4:])
                 session = None
-            session = session or core.Session(sender=sender)
+            session = session or core.whatsapp_session(sender)
             try:
                 errors = worker.deliver_replies(sender, build_morning_brief(session))
                 core.mark_delivered(session, not errors)   # e.g. 24h window refusal → no live card at 09:00

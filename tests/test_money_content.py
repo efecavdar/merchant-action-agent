@@ -567,7 +567,8 @@ def test_coverage_lists_completion_quotes_chatbot_as_live():
     cov_path = Path(__file__).parent.parent / "app" / "static" / "coverage.json"
     cov = json.loads(cov_path.read_text())
     live = {c["area"] for c in cov if c["status"] == "live"}
-    assert {"completion", "quotes", "chatbot"} <= live
+    assert {"completion", "quotes"} <= live
+    assert any(c["area"] == "chatbot" and c["status"] == "owner" for c in cov)
     what = " ".join(c["what_en"] for c in cov)
     assert "Complete appointments + revenue" in what
     assert "Quote drafts" in what and "Teach the AI chatbot" in what

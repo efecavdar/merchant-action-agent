@@ -21,14 +21,12 @@ STRINGS: dict[str, dict[str, str]] = {
                "ürün fotoğrafı at.\n"
                "Örn: \"Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir "
                "gelmeyenlere haber ver.\"\n"
-               "Hiçbir şey senin *evet*'in olmadan yapılmaz.\n"
-               "Demo: /butik, /salon veya /kedd ile işletme değiştir, /sifirla ile baştan başla."),
+               "Hiçbir şey senin *evet*'in olmadan yapılmaz."),
         "en": ("Hi, I'm Çırak 👋 Tell me what you need by voice note or text, or send product "
                "photos first.\n"
                "E.g.: \"Add these, 850 lira each, 15% off this weekend, tell customers who haven't "
                "visited in a while.\"\n"
-               "Nothing happens without your *yes*.\n"
-               "Demo: switch business with /butik, /salon or /kedd, start over with /sifirla."),
+               "Nothing happens without your *yes*."),
     },
     "business.switched": {
         "tr": "Tamam, artık *{name}* (demo) için çalışıyorum.",
