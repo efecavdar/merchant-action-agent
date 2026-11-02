@@ -719,3 +719,5 @@ button:disabled { opacity: 0.45; cursor: default; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+.newwork { max-width: 760px; margin: 0 auto 24px; padding: 0 16px; text-align: center; font-size: 15px; line-height: 1.5; opacity: .85; }

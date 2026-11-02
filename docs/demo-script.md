@@ -12,6 +12,15 @@ Setup before recording: open the demo page at
 prompt ready to paste. Nothing here sends real messages: the demo runs on the
 KEDD demo business with customer-facing writes held as previews.
 
+## Rule: judges must be able to tell what is new
+
+The rules disqualify a project if judges cannot see what was built during the event. So:
+
+- **First 5 seconds, on screen:** "Built during the hackathon: the Çırak agent and the gateway into KEDD. KEDD itself already existed."
+- **Whenever the KEDD panel is visible, keep a corner label:** "Existing product: KEDD. New: everything Çırak does to it."
+- Show KEDD only as the target of the agent's work (a price changing, a 🤖 Çırak notification). Do not tour KEDD's own features.
+- Voiceover in the closing: "Everything you saw Çırak do was built in the last nine days."
+
 ## Scene 1 — Morning brief (0:00–0:30)
 
 - **Send (tap the ☀️ chip, or type):** `Sabah özeti`
