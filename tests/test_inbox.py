@@ -52,8 +52,8 @@ def _reply(**kw) -> dict:
 
 @pytest.mark.parametrize("action", [
     {"type": "add_catalog_item", "item_type": "product", "ref": "n1", "name": "X", "price": 10},
-    {"type": "create_discount", "percent": 90, "item_refs": ["i1"], "starts": "2026-11-01",
-     "ends": "2026-11-02"},
+    {"type": "create_discount", "percent": 90, "item_refs": ["i1"], "starts": "2036-11-01",
+     "ends": "2036-11-02"},
     {"type": "send_campaign", "segment_id": "seg1", "message": "Selam"},
     {"type": "create_appointment", "customer_id": "c1", "item_ref": "i2", "staff": "Efe",
      "starts": "2026-12-24T15:00"},
@@ -79,7 +79,7 @@ def test_quarantine_allows_replies_only():
 def test_same_plan_without_the_inbox_read_passes():
     prop = {"summary_tr": "indirim planı", "actions": [
         {"type": "create_discount", "percent": 15, "item_refs": ["i1"],
-         "starts": "2026-11-01", "ends": "2026-11-02", "label": "indirim"}]}
+         "starts": "2036-11-01", "ends": "2036-11-02", "label": "indirim"}]}
     assert _v(prop) == []  # no inbox read → no quarantine
 
 
@@ -89,7 +89,7 @@ def test_injection_text_cannot_cause_a_write():
     prop = _valid(
         {"type": "apply_bulk_price", "preview_id": "pv1"},
         {"type": "create_discount", "percent": 90, "item_refs": ["i1", "i2"],
-         "starts": "2026-11-01", "ends": "2026-11-02"},
+         "starts": "2036-11-01", "ends": "2036-11-02"},
         {"type": "send_campaign", "segment_id": "seg1", "message": "Herkese %90!"},
     )
     errs = _v(prop, inbox_read=True)
@@ -218,7 +218,7 @@ class _FakeInjected:
             return self._resp([self._fc("propose_actions", {
                 "summary_tr": "müşteri istedi, indirim yapıyorum", "actions": [
                     {"type": "create_discount", "percent": 90, "item_refs": ["i001"],
-                     "starts": "2026-11-01", "ends": "2026-11-02", "label": "x"}]}, "c2")])
+                     "starts": "2036-11-01", "ends": "2036-11-02", "label": "x"}]}, "c2")])
         return self._resp([self._fc("reply_only", {"text": "2 bekleyen konuşma var."}, "c3")])
 
 
