@@ -118,7 +118,7 @@ def test_t20_preview_masks_the_first_customer_name():
     kb = _kb("segments", "campaign_templates", "campaigns_dryrun")
     seg = kb.find_customers(inactive_days=60)  # samples cached for masking
     res = kb.preview_campaign(seg["segment_id"], TMPL, dict(VARS))
-    assert res["template_text"] == ("Merhaba ‹müşteri adı›! Hafta sonu %15 seni bekliyor, "
+    assert res["template_text"] == ("Merhaba ‹müşteri adı›! hafta sonu %15 seni bekliyor, "
                                     "kodun: FULAR15.")
     assert res["recipients"] == 23 and res["dry_run"] is True
     assert res["skipped"] == {"no_consent": 4, "other": 0}
@@ -127,13 +127,14 @@ def test_t20_preview_masks_the_first_customer_name():
                                                              "advantage": "hafta sonu %15"}
 
 
-def test_t20_preview_masks_an_unfilled_placeholder():
+def test_t20_preview_cannot_leak_a_name_outside_the_sample():
+    # The gateway fills {{1}} with the first eligible customer, who need not be one of the five samples.
     kb = _kb("segments", "campaign_templates", "campaigns_dryrun",
              routes_extra={("POST", "/agent/campaigns"): {**_load("campaigns_dryrun"),
-                                               "template_text": "Merhaba {{1}}!"}})
+                                               "template_text": "Merhaba Zeynep Örnekoğlu!"}})
     seg = kb.find_customers(inactive_days=60)
     res = kb.preview_campaign(seg["segment_id"], TMPL, dict(VARS))
-    assert res["template_text"] == "Merhaba ‹müşteri adı›!"
+    assert "Zeynep" not in res["template_text"] and "‹müşteri adı›" in res["template_text"]
 
 
 @pytest.mark.parametrize("code,status", [("segment_drift", 409), ("segment_used", 409),

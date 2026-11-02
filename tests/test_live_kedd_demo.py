@@ -8,6 +8,7 @@ gateway is a routing stub, never the network.
 
 import hashlib
 import hmac
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import agent, core, report
 from app.channels import web as webchan
@@ -318,6 +320,56 @@ def test_t17_cap_flips_session_to_mock_salon_on_fourth_approval(pubapp, kedd_stu
     assert body["business"] == "salon"
     catalog_posts = [x for x in kedd_stub.calls if x[0] == "POST" and x[1].endswith("/agent/catalog")]
     assert len(catalog_posts) == 3  # the fourth plan never ran
+
+
+def test_cap_also_counts_an_approval_sent_with_a_photo(pubapp, kedd_stub, monkeypatch):
+    # Files and text are handled separately, so "evet" next to any image used to skip the cap.
+    png = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(png, "PNG")
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
+    c = _client(pubapp)
+    for _ in range(3):
+        _approve_cycle(c)
+    c.post("/api/message", data={"text": "Fular ekle 850"})
+    r = c.post("/api/message", data={"text": "evet"},
+               files=[("images", ("x.png", png.getvalue(), "image/png"))])
+    assert "demo kotan doldu" in r.json()["replies"][0]["text"]
+    catalog_posts = [x for x in kedd_stub.calls if x[0] == "POST" and x[1].endswith("/agent/catalog")]
+    assert len(catalog_posts) == 3
+
+
+def _reads(stub):
+    return sum(1 for x in stub.calls if x[0] == "GET")
+
+
+def test_fresh_panel_reads_cannot_spend_the_gateway_limit(pubapp, kedd_stub):
+    c = _client(pubapp)
+    assert c.get("/api/kedd-state", params={"fresh": "1"}).json()["state"] == "live"
+    after_first = _reads(kedd_stub)
+    for _ in range(5):
+        assert c.get("/api/kedd-state", params={"fresh": "1"}).json()["state"] == "live"
+    assert _reads(kedd_stub) == after_first
+
+
+def test_panel_burst_is_served_from_cache_without_network(pubapp, kedd_stub, monkeypatch):
+    monkeypatch.setattr(webchan, "KEDD_STATE_IP_MINUTE_MAX", 2)
+    monkeypatch.setattr(webchan, "KEDD_STATE_CACHE_S", 0)   # every request would probe
+    c = _client(pubapp)
+    assert c.get("/api/kedd-state").json()["state"] == "live"
+    c.get("/api/kedd-state")
+    reads = _reads(kedd_stub)
+    for _ in range(10):
+        assert c.get("/api/kedd-state").json()["state"] == "live"
+    assert _reads(kedd_stub) == reads
+
+
+def test_refusal_does_not_touch_the_gateway_on_the_event_loop(pubapp, kedd_stub):
+    c = _client(pubapp)
+    c.get("/api/kedd-state")
+    calls = len(kedd_stub.calls)
+    r = c.post("/api/message", data={"text": "x" * 2000})
+    assert r.status_code == 200 and len(kedd_stub.calls) == calls
 
 
 def test_t17_cap_is_per_ip(pubapp, kedd_stub, monkeypatch):

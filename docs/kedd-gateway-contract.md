@@ -48,7 +48,7 @@ is a sale-price window on catalog items.
 | GET | `/agent/ads/suggestions` | — | suggested ad actions with reasons |
 | GET | `/agent/campaign-templates` | — | approved templates: name, body, variables. `{{1}}` is always the customer name and is filled per recipient by the gateway |
 | GET | `/agent/report` | — | agent activity counters for the window: `{window_hours, total, by_capability: {name: {ok, error}}}`. Names are dotted capabilities (`catalog.create`, `appointments.reschedule`, `profile`, …) and include reads as well as writes; clients filter what they display |
-| POST (R) | `/agent/segments` | `{inactive_days, min_visits, tags}` | `{segment_id, criteria, count, excluded_no_consent, sample}` — the sample is at most 5 entries (name + last visit), never phone numbers |
+| POST (R) | `/agent/segments` | `{inactive_days, min_visits, tags}` | `{segment_id, criteria, count, excluded_no_consent, examples}` — at most 5 entries (`name`, `lastVisit`), never phone numbers |
 | POST (R) | `/agent/catalog/bulk-price/preview` | `{item_type, category, item_ids, mode, value}` (`mode`: `percent` \| `amount`) | `{preview_id, items: [{id, name, old_price, new_price}], count}` — changes nothing |
 | GET | `/agent/leads` | `stage`, `name` (optional) | `{leads: [{id, name, source, stage, last_contact\|null, value?, company?}], truncated}` (≤ 20). Display names only, no contact details. Gateway K11 — agreed shape, pending deploy; K12 adds the company match + field |
 | GET | `/agent/tasks` | `status` = `open` \| `overdue` \| `completed` \| `all` | `{tasks: [{id, title, due_date, status, overdue, customer_id?, customer_name?, lead_id?, lead_name?}], truncated}` (≤ 30). Gateway K11 — agreed shape, pending deploy |
@@ -62,12 +62,13 @@ is a sale-price window on catalog items.
 | Method | Path | Inputs | Output |
 |---|---|---|---|
 | POST | `/agent/catalog` | `{type, name, price, category, description, image_path, duration_minutes}` | the created item |
-| POST | `/agent/discounts` | `{name, percent, item_ids, starts, ends}` | the discount plus the resulting sale prices |
+| POST | `/agent/discounts` | `{item_id, percent, start_day, end_day}` (one item per call) | the item's `sale_price`; a window starting today applies now, a later one is scheduled |
 | POST | `/agent/campaigns` | `{segment_id, template, variables: {code?, advantage?, discount?}, dry_run?}` | `{dry_run, template, segment_id, recipients, sent, skipped: {reason: count}, failed, failed_by_code, template_text?}`. `template_text` only on dry runs (`{{1}}` filled with the first customer's name). A segment can be sent once; a retry with the same Idempotency-Key returns the stored result |
-| POST | `/agent/appointments` | `{customer_id, item_id, staff, starts}` | the booked appointment; overbooking and out-of-hours slots fail |
+| POST | `/agent/appointments` | `{customer_id, catalog_item_id, date, time, staff_id?}` | the booked appointment; overbooking and out-of-hours slots fail |
 | POST | `/agent/appointments/reschedule` | `{appointment_id, starts, staff?}` | the moved appointment |
 | POST | `/agent/appointments/cancel` | `{appointment_id, reason?}` | the cancelled appointment |
 | POST | `/agent/catalog/bulk-price` | `{preview_id}` | applied rows `{id, old_price, new_price}`; unknown/expired previews fail |
+| POST | `/agent/social/post` | `{caption, platforms, publish_at?, image_base64}` | the created post; refused for the demo key |
 | POST | `/agent/loyalty/adjust` | `{member_id, delta (int, non-zero, |Δ| ≤ 1000), reason?}` | `{member_id, delta, points_before, points_after}` |
 | POST | `/agent/ads/action` | `{campaign_id, action: "pause" \| "resume" \| "set_budget", budget? (absolute, only with `set_budget`), reason (required)}` | `{campaign_id, action, budget_before?, budget_after?}`. Server limits: budget step ≤ ±20 %, ≤ 3× the original, ≤ 2 budget changes per business per day (409 `too_many_budget_ops`) |
 | POST | `/agent/customers` | `{name 2–80, phone?, email?, tags? ≤10×30, note? ≤500}` | `{id, name}`. Marketing consent is always false. 409 `customer_exists` (+`customer_id`) when the customer is already registered; demo key + phone → 400. Gateway K11 — agreed shape, pending deploy |
@@ -115,6 +116,8 @@ closed: after a failed step, later steps (like sending messages) do not run.
   `in_progress`; a replay after success gets the stored result unchanged.
 * A write that ends in a 500 is recorded as `unknown_outcome`: replays get 409 and the
   operation is never retried automatically, because the side effect may have happened.
+* A refusal that happens before any side effect and clears by itself (`rate_limited`, `repeat`,
+  `window_closed`, `quiet_hours`, `quota_exceeded`) is not stored: the same key may run again.
 * The agent sends one stable key per approved action (`<run_dir>-<action index>`), so a
   retried delivery of the same approval cannot execute twice.
 

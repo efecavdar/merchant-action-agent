@@ -197,6 +197,7 @@ STRINGS: dict[str, dict[str, str]] = {
                         "en": "🔔 It's all in the KEDD panel notifications."},
     # -- approval.py: CRM card lines ------------------------------------------------
     "card.new_customer": {"tr": "👤 Yeni müşteri: {name}{tags}", "en": "👤 New customer: {name}{tags}"},
+    "card.contact": {"tr": " (iletişim: {contact})", "en": " (contact: {contact})"},
     "card.new_customer_tags": {"tr": " (etiket: {tags})", "en": " (tags: {tags})"},
     "card.customer_updated": {"tr": "🏷️ {name}: {parts}", "en": "🏷️ {name}: {parts}"},
     "card.tag_added": {"tr": "+etiket {tags}", "en": "+tag {tags}"},
@@ -313,7 +314,7 @@ _TR_TIME_SUFFIX = {"0": "'da", "1": "'de", "2": "'de", "3": "'te", "4": "'de", "
 _TR_WEEKDAYS = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
 _EN_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _WS_RE = re.compile(r"\s+")
-_PHONE_RE = re.compile(r"\d{10,}")
+_PHONE_RE = re.compile(r"\d(?:[\s().-]?\d){9,}")
 _NAME_CHARS = 60
 _MSG_CHARS = 100
 

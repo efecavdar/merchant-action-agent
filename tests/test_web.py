@@ -486,6 +486,11 @@ def test_l7_secure_cookie_only_in_public_mode(cfg, tmp_path):
 # task 16: landing page + read-only trace
 # --------------------------------------------------------------------------- #
 
+def _session_tail(client):
+    client.get("/")
+    return client.cookies.get("cirak_sid")[-4:]
+
+
 def _seed_run(out_dir, sid_tail, entries):
     run = out_dir / "runs" / sid_tail / "20260101-000000-abcdef"
     run.mkdir(parents=True, exist_ok=True)
@@ -504,12 +509,11 @@ _TRACE_LOG = [
 
 def test_t16_trace_returns_only_tool_names_and_counts(cfg, tmp_path):
     cfg("out_dir", tmp_path)
-    run = _seed_run(tmp_path, "aaa1", _TRACE_LOG)
+    c = TestClient(webchan.create_app())
+    run = _seed_run(tmp_path, _session_tail(c), _TRACE_LOG)
     (run / "crops").mkdir()
     (run / "crops" / "tmp1.png").write_bytes(b"x")
     (run / "campaign_visual.png").write_bytes(b"x")
-    c = TestClient(webchan.create_app())
-    c.cookies.set("cirak_sid", "aaaaaaa1")
     r = c.get("/api/trace")
     assert r.status_code == 200
     body = r.json()
@@ -531,14 +535,21 @@ def test_t16_trace_404_before_any_run(cfg, tmp_path):
 
 def test_t16_trace_isolated_per_session(cfg, tmp_path):
     cfg("out_dir", tmp_path)
-    _seed_run(tmp_path, "aaa1", _TRACE_LOG)
     app_obj = webchan.create_app()
     a = TestClient(app_obj)
-    a.cookies.set("cirak_sid", "aaaaaaa1")
+    _seed_run(tmp_path, _session_tail(a), _TRACE_LOG)
     assert a.get("/api/trace").status_code == 200
     b = TestClient(app_obj)
-    b.cookies.set("cirak_sid", "bbbbbbb2")
+    _session_tail(b)
     assert b.get("/api/trace").status_code == 404
+
+
+def test_unknown_cookie_is_never_adopted_as_a_session_id(cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    c = TestClient(webchan.create_app())
+    c.cookies.set("cirak_sid", "chosen-by-attacker")
+    r = c.get("/")
+    assert r.status_code == 200 and r.cookies["cirak_sid"] != "chosen-by-attacker"
 
 
 def test_t16_coverage_json_shape():

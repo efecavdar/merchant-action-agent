@@ -39,7 +39,9 @@ def client() -> OpenAI:
     """OpenAI SDK pointed at Meta Model API (drop-in compatible)."""
     global _client
     if _client is None:
-        _client = OpenAI(base_url=settings.base_url, api_key=require_api_key())
+        # The SDK defaults (600 s, 2 retries) outlast the worker's 600 s limit: it would be killed mid-call, and
+        # the owner would hear nothing at all. A failed call has to reach the worker's error reply instead.
+        _client = OpenAI(base_url=settings.base_url, api_key=require_api_key(), timeout=180, max_retries=1)
     return _client
 
 
@@ -52,11 +54,15 @@ def _auth_headers() -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 MAX_SIDE = 1536  # keep uploads small; SAM boxes are returned in the pixels we send
+MAX_PIXELS = 40_000_000  # a 16 MB PNG can decode to gigabytes; the header is read before any pixel is
 
 
 def load_image(path: str | Path, max_side: int = MAX_SIDE) -> Image.Image:
-    img = Image.open(path).convert("RGB")
+    img = Image.open(path)
     w, h = img.size
+    if w * h > MAX_PIXELS:
+        raise ValueError("Fotoğraf çok büyük, daha küçük bir tane gönderir misin?")
+    img = img.convert("RGB")
     scale = min(1.0, max_side / max(w, h))
     if scale < 1.0:
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
@@ -107,6 +113,9 @@ def _wav_duration_s(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+_WAV_DIR_PREFIX = "cirak-wav-"
+
+
 def to_wav_24k_mono(src: str | Path) -> Path:
     """Convert any audio (ogg/opus from WhatsApp, m4a, mp3, webm...) to the WAV the endpoint
     accepts: RIFF/WAVE, mono, 16-bit PCM, 24 kHz. Requires ffmpeg on PATH. Rejects
@@ -123,7 +132,7 @@ def to_wav_24k_mono(src: str | Path) -> Path:
     duration = _audio_duration_s(src)
     if duration is not None and duration > MAX_VOICE_S:
         raise ValueError(_TOO_LONG_TR)
-    out = Path(tempfile.mkdtemp()) / (src.stem + ".wav")
+    out = Path(tempfile.mkdtemp(prefix=_WAV_DIR_PREFIX)) / (src.stem + ".wav")
     # Local files only (no network protocols via a crafted path), output capped past the
     # 3-minute limit so a lying header cannot produce an unbounded conversion.
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
@@ -158,18 +167,25 @@ def transcribe(audio_path: str | Path, language_bias: Iterable[str] = ("Turkish"
     kw = list(keywords)
     if kw:
         request["keywords"] = kw
-    with open(wav, "rb") as f:
-        resp = requests.post(
-            f"{settings.base_url}/asr/transcribe",
-            headers=_auth_headers(),
-            files={
-                "request": (None, json.dumps(request), "application/json"),
-                "audio": (wav.name, f, "audio/wav"),
-            },
-            timeout=120,
-        )
+    try:
+        with open(wav, "rb") as f:
+            resp = requests.post(
+                f"{settings.base_url}/asr/transcribe",
+                headers=_auth_headers(),
+                files={
+                    "request": (None, json.dumps(request), "application/json"),
+                    "audio": (wav.name, f, "audio/wav"),
+                },
+                timeout=120,
+            )
+    finally:
+        if wav.parent.name.startswith(_WAV_DIR_PREFIX):     # containers live for days: ~8 MB per voice note
+            shutil.rmtree(wav.parent, ignore_errors=True)
     resp.raise_for_status()
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:      # a ValueError's text goes to the owner verbatim, so it has to be ours
+        raise ValueError(_UNREADABLE_TR) from None
     if not (data.get("transcript") or "").strip():
         raise ValueError("Sesli notu anlayamadım, tekrar dener misin ya da yazar mısın?")
     log.info("transcribed %.1fs of audio", data.get("audioDurationMs", 0) / 1000)

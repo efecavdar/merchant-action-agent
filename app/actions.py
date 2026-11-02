@@ -6,10 +6,12 @@ these checks and (b) a human approves it. Business rules live here, in code.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .clock import now_tr, today_tr
 from .config import settings
 from .tools.backend import render_campaign_template
 
@@ -19,6 +21,12 @@ MAX_REPLY_CHARS = 1000
 MAX_NAME_CHARS = 60
 MAX_DESCRIPTION_CHARS = 500
 MAX_CATEGORY_CHARS = 40
+MAX_SUMMARY_CHARS = 400
+MAX_INTERNAL_NAME_CHARS = 120
+MAX_ESTIMATED_VALUE = 100_000_000
+MAX_UNIT_PRICE = 500_000
+# Free text with no rule of its own: it reaches the backend or the card, so it still gets a shape and a cap.
+_TEXT_CAPS = {"label": 200, "visual_prompt": 1000, "reason": 200, "staff": 60}
 
 ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
@@ -30,6 +38,8 @@ ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_
 SOCIAL_PLATFORMS = ("instagram", "facebook")
 MAX_CAPTION_CHARS = 2200
 MAX_HASHTAGS = 15
+_PUBLISH_TYPES = {"send_campaign", "publish_social_post"}
+_SETUP_TYPES = {"add_catalog_item", "create_discount", "apply_bulk_price"}
 APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment",
                      "complete_appointment"}
 ADS_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
@@ -50,7 +60,9 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "summary_tr": {"type": "string",
-                       "description": "2-3 short Turkish sentences the merchant will read on WhatsApp before approving."},
+                       "description": "2-3 short Turkish sentences (at most 400 chars) the merchant reads on WhatsApp "
+                                      "before approving. One plain note: no line breaks, no emojis from the card, "
+                                      "no approval question."},
         "actions": {
             "type": "array",
             "items": {
@@ -110,8 +122,10 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "task_id": {"type": "string",
                                 "description": "from list_tasks, or a ref you created earlier in this plan"},
                     "phone": {"type": "string",
-                              "description": "optional contact phone (E.164, e.g. +905XXXXXXXXX)"},
-                    "email": {"type": "string", "description": "optional contact e-mail"},
+                              "description": "optional contact phone (E.164, e.g. +905XXXXXXXXX); "
+                                             "only a number the owner wrote or said"},
+                    "email": {"type": "string",
+                              "description": "optional contact e-mail; only one the owner wrote or said"},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "at most 10 tags, 30 chars each, e.g. ['kafe', 'vip']"},
                     "note": {"type": "string",
@@ -189,19 +203,24 @@ def _iso(s: str) -> date:
     return date.fromisoformat(s)
 
 
-# "%15", "% 15", "yüzde 15"  /  "850 TL", "1.290 ₺", "850 lira"
-_PCT_RE = re.compile(r"(?:%\s?(\d{1,3})|yüzde\s+(\d{1,3}))", re.I)
-_PRICE_RE = re.compile(r"(\d{1,3}(?:[.\s]\d{3})*|\d+)\s?(?:TL|₺|lira)", re.I)
+# "%15", "% 15", "15%", "yüzde 15", "yüzde15". A number directly before "%20" is not a percent ("850 %20").
+_PCT_RE = re.compile(r"%\s?(\d{1,3})|(?<!\d)(\d{1,3})\s?%(?!\s?\d)|yüzde\s*(\d{1,3})", re.I)
+# "850 TL", "1.290 ₺", "850 lira", "850,50 TL", "₺850". The look-behinds stop a match inside "1.290".
+_AMOUNT = r"(\d{1,3}(?:[.\s]\d{3})+|\d+)([.,]\d{1,2})?"
+_PRICE_RE = re.compile(rf"(?<!\d)(?<!\d[.,]){_AMOUNT}\s?(?:TL|₺|lira)|₺\s?{_AMOUNT}", re.I)
 
 
 def _promised_numbers(message: str) -> tuple[set[int], set[float]]:
-    pcts = {int(a or b) for a, b in _PCT_RE.findall(message)}
-    prices = {float(p.replace(".", "").replace(" ", "")) for p in _PRICE_RE.findall(message)}
+    pcts = {int(a or b or c) for a, b, c in _PCT_RE.findall(message)}
+    prices: set[float] = set()
+    for whole_a, frac_a, whole_b, frac_b in _PRICE_RE.findall(message):
+        whole, frac = whole_a or whole_b, frac_a or frac_b
+        prices.add(float(re.sub(r"[.\s]", "", whole) + ("." + frac[1:] if frac else "")))
     return pcts, prices
 
 
-_URL_RE = re.compile(r"https?://|www\.|\b(?:wa|t)\.me\b|\b[\w-]+\.(?:com|net|org|me|ly|link|io|co|shop|store|app|tr)\b",
-                     re.I)
+_URL_RE = re.compile(r"https?://|www\.|\b(?:wa|t)\.me\b|\b[\w-]+\.(?:com|net|org|me|ly|link|io|co|shop|store|app|tr|"
+                     r"xyz|site|online|dev|info|biz|tech|club|top|live|blog|page)\b", re.I)
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_INTL_RE = re.compile(r"\+\d[\d\s().-]{7,}\d")
 _PHONE_TR_RE = re.compile(r"(?<!\d)0?5\d{2}[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d)")
@@ -212,11 +231,14 @@ _IBAN_TR_RE = re.compile(r"TR\d{24}", re.I)   # Turkish IBAN once spaces are rem
 # "hediyelik eşya" and "ücretsiz kargo" are not deals on the items.
 _OFFER_WORDS_RE = re.compile(r"\bbedava|\bücretsiz\b(?!\s+kargo)|\byarı\s+fiyat|\b1\s+alana\s+1\b|\bhediye(?!lik)",
                              re.I)
+# The card's own closing line and action icons. Model text must not be able to imitate them.
+_APPROVAL_PHRASE_RE = re.compile(r"onaylıyor\s+musun|evet\s*/\s*hayır|yes\s*/\s*no|approve\?", re.I)
+_CARD_ICON_RE = re.compile("[🛍🏷🖼📣📅🔁❌📱👤🧲📈🧠]")
 
 
 def _contains_phone(text: str) -> bool:
     return bool(_PHONE_INTL_RE.search(text) or _PHONE_TR_RE.search(text)
-                or _PHONE_DIGITS_RE.search(re.sub(r"[()\s.-]", "", text)))
+                or _PHONE_DIGITS_RE.search(re.sub(r"[()\s./_-]", "", text)))
 
 
 def _check_no_contacts(where: str, what: str, text: str, errors: list[str]) -> None:
@@ -238,6 +260,54 @@ def _check_crm_name(where: str, value: Any, errors: list[str], required: bool = 
         return
     if not isinstance(value, str) or not 2 <= len(value.strip()) <= MAX_NAME_CHARS:
         errors.append(f"{where}: name must be 2-{MAX_NAME_CHARS} chars")
+
+
+def _check_contact_fields(where: str, a: dict[str, Any], owner_text: str, errors: list[str]) -> None:
+    """A phone or e-mail goes into the CRM and later becomes a messaging target, and the card shows it only
+    masked. So it must be something the owner actually said, never a value the model produced."""
+    phone, email = a.get("phone"), a.get("email")
+    if phone is not None:
+        digits = re.sub(r"\D", "", phone) if isinstance(phone, str) else ""
+        if not 10 <= len(digits) <= 15:
+            errors.append(f"{where}: phone must be a phone number (10-15 digits)")
+        elif digits[-10:] not in re.sub(r"\D", "", owner_text):
+            errors.append(f"{where}: phone must appear in the owner's own message; "
+                          "drop the field if the owner did not give it")
+    if email is not None:
+        if not isinstance(email, str) or not _EMAIL_RE.fullmatch(email.strip()):
+            errors.append(f"{where}: email must be an e-mail address")
+        elif email.strip().casefold() not in owner_text.casefold():
+            errors.append(f"{where}: email must appear in the owner's own message; "
+                          "drop the field if the owner did not give it")
+
+
+def _check_free_text(where: str, a: dict[str, Any], errors: list[str]) -> None:
+    for key, cap in _TEXT_CAPS.items():
+        value = a.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append(f"{where}: {key} must be a string")
+        elif len(value) > cap:
+            errors.append(f"{where}: {key} too long ({len(value)} > {cap} chars)")
+
+
+def _check_internal_name(where: str, value: Any, errors: list[str]) -> None:
+    """Optional name of a discount or campaign: not on the card, but visible in the KEDD panel."""
+    if value is None:
+        return
+    if not isinstance(value, str) or len(value) > MAX_INTERNAL_NAME_CHARS:
+        errors.append(f"{where}: name must be a string of at most {MAX_INTERNAL_NAME_CHARS} chars")
+        return
+    _check_no_contacts(where, "name", value, errors)
+
+
+def _ref_list(where: str, a: dict[str, Any], errors: list[str]) -> list[str]:
+    refs = a.get("item_refs") or []
+    if not isinstance(refs, list) or any(not isinstance(r, str) for r in refs):
+        errors.append(f"{where}: item_refs must be a list of ids")
+        return []
+    return refs
 
 
 def _check_crm_note(where: str, value: Any, errors: list[str]) -> None:
@@ -287,6 +357,20 @@ def _check_answer_prices(where: str, answer: Any, catalog: dict[str, dict[str, A
                       f"that price (the chatbot must not learn wrong prices)")
 
 
+def _check_answer_offers(where: str, answer: Any, owner_text: str, plan_pcts: set[int],
+                         errors: list[str]) -> None:
+    """A standing offer may be taught ("ilk görüşme ücretsiz"), but only if the owner said it: the chatbot
+    repeats it to every customer, unattended."""
+    if not isinstance(answer, str):
+        return
+    for p in sorted(_promised_numbers(answer)[0] - plan_pcts - _promised_numbers(owner_text)[0]):
+        errors.append(f"{where}: answer mentions %{p} but neither the owner nor this plan said so")
+    offers = {m.group(0).casefold() for m in _OFFER_WORDS_RE.finditer(answer)}
+    said = {m.group(0).casefold() for m in _OFFER_WORDS_RE.finditer(owner_text)}
+    for word in sorted(offers - said):
+        errors.append(f"{where}: answer promises {word!r} but the owner did not say so")
+
+
 def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: str,
                               errors: list[str]) -> None:
     variables = a.get("variables")
@@ -319,14 +403,17 @@ def _check_template_variables(a: dict[str, Any], tmpl: dict[str, Any], where: st
 
 
 def _is_number(v: Any) -> bool:
-    """A real number for money math: int/float, never a bool."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    """A real number for money math: int/float, never a bool, NaN or infinity."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def _coerce_number(v: Any, want_int: bool) -> Any:
     """One sloppy tool-call number ("20", 20.0) → a plain number; anything else passes through
-    untouched so the caller — never this helper — reports it."""
+    untouched so the caller — never this helper — reports it. "1.500" and "1,500" are ambiguous
+    (1500 in Turkish, 1.5 in English), so they are left for the caller to refuse."""
     if isinstance(v, str):
+        if re.fullmatch(r"\s*\d{1,3}(?:[.,]\d{3})+\s*", v):
+            return v
         v = v.strip().replace(",", ".")
         try:
             v = float(v)
@@ -346,7 +433,7 @@ def _coerce_numbers(a: dict[str, Any]) -> None:
                           ("valid_days", True)):
         if key in a:
             v = _coerce_number(a[key], want_int)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if _is_number(v):
                 a[key] = v
 
 
@@ -379,7 +466,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       appointment_services: dict[str, str] | None = None,
                       inbox_read: bool = False,
                       known_conversations: set[str] | None = None,
-                      catalog_read: bool = False) -> list[str]:
+                      catalog_read: bool = False,
+                      owner_text: str = "") -> list[str]:
     """Return a list of problems (empty = valid).
 
     `catalog` maps existing item id -> item dict (needs at least "price", "type").
@@ -393,7 +481,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     `inbox_read` quarantines the run: after list_inbox/read_thread only
     reply_to_conversation may be proposed (customer text is untrusted). `catalog_read`
     records whether the model called list_catalog in this run (a reply may only quote
-    prices it actually saw)."""
+    prices it actually saw). `owner_text` is what the owner said (this message and the
+    recent ones): contact details and taught offers must come from there, not the model."""
     known_appointments = known_appointments or set()
     known_customers = known_customers or set()
     known_previews = known_previews or {}
@@ -407,8 +496,15 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     errors: list[str] = []
     if not isinstance(proposal, dict):
         return ["proposal must be an object"]
-    if not proposal.get("summary_tr"):
+    summary = proposal.get("summary_tr")
+    if not isinstance(summary, str) or not summary.strip():
         errors.append("summary_tr is required")
+        summary = ""
+    elif len(summary) > MAX_SUMMARY_CHARS:
+        errors.append(f"summary_tr too long ({len(summary)} > {MAX_SUMMARY_CHARS} chars)")
+    if _APPROVAL_PHRASE_RE.search(summary) or _CARD_ICON_RE.search(summary):
+        errors.append("summary_tr must be one plain note: no approval question and no card icons "
+                      "(the card writes those itself)")
     actions = proposal.get("actions")
     if not isinstance(actions, list) or not actions:
         return errors + ["actions must be a non-empty list"]
@@ -436,11 +532,14 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
     offer_texts: list[tuple[str, str]] = []  # (where, text) using offer words
     has_visual = False
     for i, a in enumerate(actions):
+        if not isinstance(a, dict):
+            errors.append(f"actions[{i}]: must be an object"); continue
         t = a.get("type")
         where = f"actions[{i}] ({t})"
         if t not in ACTION_TYPES:
             errors.append(f"{where}: unknown type"); continue
         _coerce_numbers(a)
+        _check_free_text(where, a, errors)
 
         if t == "add_catalog_item":
             if a.get("item_type") not in ("product", "service"):
@@ -454,16 +553,21 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
             elif handle in new_refs or handle in catalog:
                 errors.append(f"{where}: {handle} added twice / clashes with an existing id")
             price = a.get("price")
-            if not isinstance(price, (int, float)) or price <= 0 or price > 500_000:
+            if not _is_number(price) or price <= 0 or price > 500_000:
                 errors.append(f"{where}: price must be a positive number in TRY")
             else:
                 plan_prices.add(float(price))
             if not a.get("name"):
                 errors.append(f"{where}: name is required")
-            elif isinstance(a["name"], str):
+            elif not isinstance(a["name"], str):
+                errors.append(f"{where}: name must be a string")
+            else:
                 if len(a["name"]) > MAX_NAME_CHARS:
                     errors.append(f"{where}: name too long ({len(a['name'])} > {MAX_NAME_CHARS} chars)")
                 _check_no_contacts(where, "name", a["name"], errors)
+            for key in ("description", "category"):
+                if a.get(key) is not None and not isinstance(a[key], str):
+                    errors.append(f"{where}: {key} must be a string")
             if isinstance(a.get("description"), str):
                 if len(a["description"]) > MAX_DESCRIPTION_CHARS:
                     errors.append(f"{where}: description too long "
@@ -474,20 +578,22 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                               f"({len(a['category'])} > {MAX_CATEGORY_CHARS} chars)")
             if a.get("item_type") == "service":
                 dur = a.get("duration_minutes")
-                if dur is not None and (not isinstance(dur, int) or not 5 <= dur <= 600):
+                if dur is not None and (isinstance(dur, bool) or not isinstance(dur, int)
+                                        or not 5 <= dur <= 600):
                     errors.append(f"{where}: duration_minutes must be 5..600")
             if handle:
-                new_refs[handle] = float(price) if isinstance(price, (int, float)) else 0.0
+                new_refs[handle] = float(price) if _is_number(price) else 0.0
 
         elif t == "create_discount":
             pct = a.get("percent")
-            if not isinstance(pct, int) or not (1 <= pct <= settings.max_discount_pct):
+            if isinstance(pct, bool) or not isinstance(pct, int) \
+                    or not 1 <= pct <= settings.max_discount_pct:
                 errors.append(f"{where}: percent must be an integer 1..{settings.max_discount_pct}")
             else:
                 plan_pcts.add(pct)
-            refs = a.get("item_refs") or []
-            if isinstance(refs, list):
-                refs = list(dict.fromkeys(refs))  # de-duplicated, order kept
+            _check_internal_name(where, a.get("name"), errors)
+            refs = list(dict.fromkeys(_ref_list(where, a, errors)))  # de-duplicated, order kept
+            if isinstance(a.get("item_refs"), list):
                 a["item_refs"] = refs
             bad = [r for r in refs if r not in new_refs and r not in catalog]
             if not refs:
@@ -504,15 +610,15 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     errors.append(f"{where}: ends before starts")
                 if (e - s).days > 60:
                     errors.append(f"{where}: discount longer than 60 days needs manual setup")
-                if s < date.today():
+                if s < today_tr():
                     errors.append(f"{where}: starts is in the past (starts must be today or later)")
-            except ValueError:
+            except (ValueError, TypeError):
                 errors.append(f"{where}: starts/ends must be ISO dates")
 
         elif t == "generate_visual":
             if not a.get("visual_prompt"):
                 errors.append(f"{where}: visual_prompt is required")
-            refs = a.get("item_refs") or []
+            refs = _ref_list(where, a, errors)
             bad = [r for r in refs if r not in new_refs and r not in known_temp_ids and r not in catalog]
             if bad:
                 errors.append(f"{where}: unknown item refs {bad}")
@@ -527,6 +633,7 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                               f"(known: {sorted(known_segments)})")
             if a.get("attach_visual") and not has_visual:
                 errors.append(f"{where}: attach_visual=true but no generate_visual action before it")
+            _check_internal_name(where, a.get("name"), errors)
             has_template = bool(a.get("template"))
             if has_template and a.get("attach_visual"):
                 # Approved WhatsApp templates carry text only: the card must not promise a visual nobody gets.
@@ -557,20 +664,27 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                               f"(call list_campaign_templates and fill its variables)")
             else:
                 msg = a.get("message") or ""
-                if not msg:
+                if not isinstance(msg, str):
+                    errors.append(f"{where}: message must be a string")
+                    msg = ""
+                elif not msg:
                     errors.append(f"{where}: message is required "
                                   f"(or pick a template from list_campaign_templates)")
                 elif len(msg) > 350:
                     errors.append(f"{where}: message too long ({len(msg)} > 350 chars)")
                 else:
                     _check_no_contacts(where, "message", msg, errors)
+                if _APPROVAL_PHRASE_RE.search(msg):
+                    errors.append(f"{where}: message must not imitate the approval question")
                 _check_promised_numbers(where, msg, plan_pcts, plan_prices, errors)
                 if _OFFER_WORDS_RE.search(msg):
                     offer_texts.append((where, msg))
 
         elif t == "publish_social_post":
             caption = a.get("caption") or ""
-            if not caption:
+            if not isinstance(caption, str):
+                errors.append(f"{where}: caption must be a string")
+            elif not caption:
                 errors.append(f"{where}: caption is required (what the owner will read on the card)")
             elif len(caption) > MAX_CAPTION_CHARS:
                 errors.append(f"{where}: caption too long ({len(caption)} > {MAX_CAPTION_CHARS} chars)")
@@ -578,10 +692,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 tags = len(re.findall(r"#\w", caption))
                 if tags > MAX_HASHTAGS:
                     errors.append(f"{where}: too many hashtags ({tags} > {MAX_HASHTAGS})")
-                if _URL_RE.search(caption):
-                    errors.append(f"{where}: caption must not contain a URL")
-                if _contains_phone(caption):
-                    errors.append(f"{where}: caption must not contain a phone number")
+                _check_no_contacts(where, "caption", caption, errors)
+                if _APPROVAL_PHRASE_RE.search(caption):
+                    errors.append(f"{where}: caption must not imitate the approval question")
                 _check_promised_numbers(where, caption, plan_pcts, plan_prices, errors)
             plats = a.get("platforms")
             if not isinstance(plats, list) or not plats:
@@ -598,14 +711,14 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 except (ValueError, TypeError):
                     errors.append(f"{where}: publish_at must be an ISO datetime like 2026-11-01T10:00")
                 else:
-                    now = datetime.now()
+                    now = now_tr()
                     if when < now + timedelta(minutes=5):
                         errors.append(f"{where}: publish_at must be at least 5 minutes in the future")
                     elif when > now + timedelta(days=30):
                         errors.append(f"{where}: publish_at must be within 30 days")
             if not a.get("visual_prompt"):
                 errors.append(f"{where}: visual_prompt is required (the preview is generated pre-approval)")
-            refs = a.get("item_refs") or []
+            refs = _ref_list(where, a, errors)
             bad = [r for r in refs if r not in new_refs and r not in known_temp_ids and r not in catalog]
             if bad:
                 errors.append(f"{where}: unknown item refs {bad} (add_catalog_item must come first)")
@@ -634,7 +747,7 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 except (ValueError, TypeError):
                     errors.append(f"{where}: starts must be an ISO datetime like 2026-10-31T15:00")
                 else:
-                    if starts <= datetime.now():
+                    if starts <= now_tr():
                         errors.append(f"{where}: starts must be in the future")
             if t == "complete_appointment":
                 amount = a.get("amount")
@@ -728,6 +841,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 if not seen:
                     errors.append(f"{where}: {key} must come from a {tool} call in this run or a "
                                   f"ref created earlier (known: {sorted(known)})")
+            if t in ("create_customer", "create_lead"):
+                _check_contact_fields(where, a, owner_text, errors)
             if t in ("create_customer", "update_customer"):
                 _check_crm_name(where, a.get("name"), errors, required=t == "create_customer")
                 _check_crm_note(where, a.get("note"), errors)
@@ -741,9 +856,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 _check_crm_note(where, a.get("note"), errors)
                 _check_crm_tags(where, "tags", a.get("tags"), errors)
                 v = a.get("estimated_value")
-                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
-                                      or v < 0):
-                    errors.append(f"{where}: estimated_value must be 0 or more")
+                if v is not None and (not _is_number(v) or not 0 <= v <= MAX_ESTIMATED_VALUE):
+                    errors.append(f"{where}: estimated_value must be 0..{MAX_ESTIMATED_VALUE}")
             elif t == "set_lead_stage":
                 if a.get("stage") not in LEAD_STAGES:
                     errors.append(f"{where}: stage must be one of {' | '.join(LEAD_STAGES)}")
@@ -766,9 +880,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 except ValueError:
                     errors.append(f"{where}: due_date must be an ISO date or datetime (YYYY-MM-DD[THH:MM])")
                 else:
-                    if day < date.today():
+                    if day < today_tr():
                         errors.append(f"{where}: due_date is in the past")
-                    elif day > date.today() + timedelta(days=365):
+                    elif day > today_tr() + timedelta(days=365):
                         errors.append(f"{where}: due_date is more than a year out")
                 for key, kind, tool, known in (
                         ("customer_id", "customer", "find_customer", known_customers),
@@ -816,8 +930,9 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                         row["unit_price"] = unit
                     unit = row.get("unit_price")
                     if unit is not None:
-                        if not _is_number(unit) or unit < 0:
-                            errors.append(f"{where}: items[{j}]: unit_price must be 0 or more")
+                        if not _is_number(unit) or not 0 <= unit <= MAX_UNIT_PRICE:
+                            errors.append(f"{where}: items[{j}]: unit_price must be 0 or more, "
+                                          f"at most {MAX_UNIT_PRICE}")
                         elif _is_number(item.get("price")) \
                                 and unit < item["price"] * MIN_QUOTE_PRICE_RATIO:
                             errors.append(f"{where}: items[{j}]: unit_price is below half the "
@@ -841,6 +956,7 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                         errors.append(f"{where}: {field} too long ({len(value)} > {maxi} chars)")
                     _check_no_contacts(where, field, value, errors)
             _check_answer_prices(where, answer, catalog, plan_prices, errors)
+            _check_answer_offers(where, answer, owner_text, plan_pcts, errors)
 
         elif t == "reply_to_conversation":
             if not a.get("label"):
@@ -855,6 +971,8 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 if len(text) > MAX_REPLY_CHARS:
                     errors.append(f"{where}: text too long ({len(text)} > {MAX_REPLY_CHARS} chars)")
                 _check_no_contacts(where, "text", text, errors)
+                if _APPROVAL_PHRASE_RE.search(text):
+                    errors.append(f"{where}: text must not imitate the approval question")
                 pcts, prices = _promised_numbers(text)
                 if pcts:
                     errors.append(f"{where}: reply must not contain percents (no discounts can "
@@ -873,8 +991,17 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                         errors.append(f"{where}: reply mentions {p:g} TL but no catalog item in "
                                       "this run has that price")
 
+    order = [a.get("type") for a in actions if isinstance(a, dict)]
+    # Once a message is out it cannot be taken back, so everything it advertises must already exist: a failed
+    # step stops the steps after it, and only those.
+    first_publish = next((i for i, t in enumerate(order) if t in _PUBLISH_TYPES), None)
+    last_setup = max((i for i, t in enumerate(order) if t in _SETUP_TYPES), default=-1)
+    if first_publish is not None and first_publish < last_setup:
+        errors.append(f"actions[{first_publish}] ({order[first_publish]}): must come after every "
+                      f"{' / '.join(sorted(_SETUP_TYPES))} action in the plan")
+
     # Plan/summary consistency: an audience was built and the summary promises a message, but nothing is sent.
-    types = {a.get("type") for a in actions}
+    types = set(order)
     if "create_customer" in types and "send_campaign" in types:
         # Segments are opaque at plan time: the new customer (consent false) might be messaged.
         errors.append("create_customer cannot share a plan with send_campaign (new customers have no "
@@ -883,7 +1010,6 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
         for where, text in offer_texts:
             word = _OFFER_WORDS_RE.search(text).group(0)  # type: ignore[union-attr]
             errors.append(f"{where}: {word!r} promises a deal but the plan has no create_discount action")
-    summary = proposal.get("summary_tr") or ""
     if (known_segments and "send_campaign" not in types and _CAMPAIGN_WORDS_RE.search(summary)
             and not _NEGATED_CAMPAIGN_RE.search(summary)):
         errors.append("summary_tr talks about a campaign/message and a customer segment was built, but there is "

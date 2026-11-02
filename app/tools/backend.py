@@ -24,6 +24,7 @@ import hmac
 import io
 import json
 import random
+import threading
 import time
 import unicodedata
 import uuid
@@ -31,7 +32,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
+from ..clock import today_tr
 from ..config import settings
 
 
@@ -541,7 +544,7 @@ class MockBackend:
 
     name = "mock"
     # Bump when the attributes of MockBackend change: sessions pickled with an older shape get re-seeded.
-    SCHEMA = 8  # 8: inbox conversations (task 28)
+    SCHEMA = 9  # 9: _day_pinned (a session must not stay on the day it was seeded)
 
     PREVIEW_TTL_S = 15 * 60
 
@@ -552,7 +555,8 @@ class MockBackend:
             raise ValueError(f"unknown mock business {business!r}; choose from {sorted(_SEEDS)}")
         cfg = _SEEDS[business]
         self.business = business
-        self.today = today or date.today()
+        self._day_pinned = today is not None   # tests and demo scripts fix the day; live sessions follow it
+        self.today = today or today_tr()
         self.store_path = store_path or (settings.data_dir / "store.json")
         rng = random.Random(seed)
         self.profile = dict(cfg["profile"])
@@ -691,13 +695,17 @@ class MockBackend:
             entry["reason"] = reason
         self.appointment_changes.append(entry)
 
+    def stale_day(self) -> bool:
+        """The seed data and `today` belong to an earlier day. WhatsApp sessions outlive midnight."""
+        return not self._day_pinned and self.today != today_tr()
+
     def save(self) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "business": self.business,
             "profile": self.profile,
             "items": [asdict(i) for i in self.items],
-            "customers": [asdict(c) for c in self.customers],
+            "customers": [{k: v for k, v in asdict(c).items() if k != "phone"} for c in self.customers],
             "appointments": [asdict(a) for a in self.appointments],
             "discounts": [asdict(d) for d in self.discounts],
             "campaigns": [asdict(c) for c in self.campaigns],
@@ -1428,6 +1436,12 @@ class MockBackend:
 # KEDD adapter (private platform; HTTP only, no KEDD source code here)
 # --------------------------------------------------------------------------- #
 
+# Identical reads in the same second sign identically, and the gateway accepts each signature once. Several
+# sessions share one phone in the public demo, so this guard is per process, not per backend object.
+_recent_signed: set[tuple[str, ...]] = set()
+_recent_signed_lock = threading.Lock()
+
+
 class KeddError(ValueError):
     """The KEDD gateway failed (unreachable, 5xx, 429, 403 …), not the request itself.
 
@@ -1555,6 +1569,10 @@ class KeddBackend:
 
     def __init__(self, base_url: str, secret: str, merchant_phone: str, key_id: str = "main"):
         import requests  # local import keeps mock mode dependency-light
+        host = urlsplit(base_url)
+        if host.scheme != "https" and host.hostname not in ("localhost", "127.0.0.1"):
+            # Requests are signed, responses are not: over http anyone on the path could rewrite a segment id.
+            raise RuntimeError("KEDD_API_URL must be https")
         self._s = requests.Session()
         self.base = base_url.rstrip("/")
         self._secret = secret.encode()
@@ -1569,8 +1587,7 @@ class KeddBackend:
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state.pop("_s", None)       # a requests.Session cannot be pickled; recreated on load
-        state.pop("_secret", None)
-        state.pop("_recent", None)  # never persist the HMAC secret with a session; re-read from config on load
+        state.pop("_secret", None)  # never persist the HMAC secret with a session; re-read from config on load
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -1586,14 +1603,15 @@ class KeddBackend:
         self._seg_names = state.get("_seg_names", {})
 
     def _unused_timestamp(self, signed: tuple[str, ...]) -> str:
-        # The gateway rejects any signature it has already seen (replay guard), and two identical reads in
-        # the same second sign identically. Wait for the next second instead of being refused.
+        # The gateway rejects any signature it has already seen. Wait for the next second instead of being refused.
         while True:
             ts = str(int(time.time()))
-            recent = {r for r in getattr(self, "_recent", set()) if r[0] == ts}
-            if (ts, *signed) not in recent:
-                self._recent = recent | {(ts, *signed)}
-                return ts
+            entry = (ts, self._key_id, self._phone, *signed)
+            with _recent_signed_lock:
+                _recent_signed.intersection_update({e for e in _recent_signed if e[0] == ts})
+                if entry not in _recent_signed:
+                    _recent_signed.add(entry)
+                    return ts
             time.sleep(0.05)
 
     def _headers(self, method: str, path: str, body: str, idempotency_key: str = "") -> dict[str, str]:
@@ -1673,7 +1691,15 @@ class KeddBackend:
                 raise KeddError("KEDD'ye ulaşılamadı.") from None
         if r.status_code >= 400:
             raise self._gateway_error(r.status_code, self._error_payload(r))
-        return r.json()
+        return self._json(r, "KEDD beklenmedik bir cevap verdi.")
+
+    @staticmethod
+    def _json(r: Any, unreadable: str) -> Any:
+        # A 200 with a proxy page must not reach the owner as "Expecting value: line 1 column 1".
+        try:
+            return r.json()
+        except ValueError:
+            raise KeddError(unreadable) from None
 
     def _post(self, path: str, body: dict, idempotency_key: str | None = None):
         import requests  # local import keeps mock mode dependency-light
@@ -1684,10 +1710,11 @@ class KeddBackend:
         try:
             r = self._s.post(f"{self.base}{path}", data=payload.encode(), headers=headers, timeout=30)
         except requests.exceptions.RequestException:
-            raise KeddError("KEDD'ye ulaşılamadı; işlemin durumu belirsiz, tekrar denemedim.") from None
+            raise KeddError("KEDD'ye ulaşılamadı; işlemin durumu belirsiz, tekrar denemedim. "
+                            "Yeniden onaylamadan önce panelden kontrol et.") from None
         if r.status_code >= 400:
             raise self._gateway_error(r.status_code, self._error_payload(r))
-        return r.json()
+        return self._json(r, "KEDD beklenmedik bir cevap verdi; işlemin durumu belirsiz, panelden kontrol et.")
 
     # -- shape helpers (all static; gateway truth enters only through these) -- #
 
@@ -1950,7 +1977,7 @@ class KeddBackend:
             campaigns.append({
                 "id": c.get("id", ""), "name": c.get("name", ""), "platform": None,
                 "status": c.get("status", ""), "daily_budget": budget, "spend": spend,
-                "impressions": int(c.get("impressions") or 0), "clicks": int(c.get("clicks") or 0),
+                "impressions": _as_int(c.get("impressions")) or 0, "clicks": _as_int(c.get("clicks")) or 0,
                 "results": results,
                 "cost_per_result": round(spend / results, 2) if results else None})
         totals: dict[str, Any] = {
@@ -1987,7 +2014,7 @@ class KeddBackend:
                 "name": res.get("name", name), "price": self._f(res.get("price", price)) or 0.0,
                 "currency": "TRY", "category": category, "description": description, "image_path": "",
                 "duration_minutes": duration_minutes, "sale_price": None, "sale_starts": None,
-                "sale_ends": None, "active": True, "added": date.today().isoformat()}
+                "sale_ends": None, "active": True, "added": today_tr().isoformat()}
 
     def create_discount(self, name: str, percent: int, item_ids: list[str],
                         starts: str, ends: str,
@@ -1999,8 +2026,14 @@ class KeddBackend:
         sale_prices = {}
         for i, item_id in enumerate(item_ids):
             key = base_key if len(item_ids) == 1 else f"{base_key}#{i}"
-            res = self._post("/agent/discounts", {"item_id": item_id, "percent": percent,
-                                                  "start_day": start_day, "end_day": end_day}, key)
+            try:
+                res = self._post("/agent/discounts", {"item_id": item_id, "percent": percent,
+                                                      "start_day": start_day, "end_day": end_day}, key)
+            except KeddError as e:
+                if not sale_prices:
+                    raise
+                # The earlier items are already live: "failed" alone would tell the owner nothing happened.
+                raise KeddError(f"İndirim {i}/{len(item_ids)} ürüne uygulandı, kalanlarda durdum: {e}") from e
             sale_prices[item_id] = self._f(res.get("sale_price"))
         digest = hashlib.sha1(f"{start_day}|{end_day}|{','.join(sorted(item_ids))}".encode()
                               ).hexdigest()[:8]
@@ -2045,8 +2078,11 @@ class KeddBackend:
         body, named = self._template_body_and_vars(template, variables)
         res = self._post("/agent/campaigns", {"segment_id": segment_id, "template": template,
                                               "variables": named, "dry_run": True})
-        text = _mask_customer_name(str(res.get("template_text") or ""),
-                                   self._seg_names.get(segment_id, []))
+        # The gateway fills {{1}} with the first eligible customer, who need not be in the sample: render the
+        # approved body ourselves instead of trying to find that name in the result.
+        slots = {"1": MASKED_NAME, **{str(k): str(v) for k, v in (variables or {}).items()}}
+        text = render_campaign_template(body, slots) if body else _mask_customer_name(
+            str(res.get("template_text") or ""), self._seg_names.get(segment_id, []))
         return {"segment_id": segment_id, "template": template, "template_text": text,
                 "recipients": _as_int(res.get("recipients")) or 0,
                 "skipped": self._skipped_counts(res.get("skipped")), "dry_run": True}
@@ -2079,7 +2115,7 @@ class KeddBackend:
                                                if isinstance(v, str)}}),
                 "visual_path": "", "recipients": _as_int(res.get("recipients")) or 0,
                 "template": template, "variables": dict(variables or {}), "status": "sent",
-                "replies": None, "conversions": None, "day": date.today().isoformat(),
+                "replies": None, "conversions": None, "day": today_tr().isoformat(),
                 "note": note}
 
     def create_appointment(self, customer_id: str, item_id: str, staff: str,

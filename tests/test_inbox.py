@@ -414,7 +414,7 @@ def test_execute_sends_with_stable_idempotency_key(tmp_path):
 
 def test_mock_seeds_three_conversations_with_injection_and_closed_window():
     m = _mock()
-    assert m.SCHEMA == 8
+    assert m.SCHEMA == 9
     assert [c.id for c in m.conversations] == ["conv-1", "conv-2", "conv-3"]
     assert "%90" in m.list_inbox(q="sıfırla")["items"][0]["last"]
     assert {i["id"] for i in m.list_inbox(unread_only=True)["items"]} == {"conv-1", "conv-2"}

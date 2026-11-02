@@ -6,6 +6,7 @@ Deployed on Modal by modal_app.py; runnable locally with `uvicorn app.server:loc
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 from typing import Callable
@@ -35,7 +36,8 @@ def create_app(dispatch: Dispatch, first_time: SeenCheck,
     @api.get("/webhook")
     def verify(mode: str = Query("", alias="hub.mode"), token: str = Query("", alias="hub.verify_token"),
                challenge: str = Query("", alias="hub.challenge")):
-        if mode == "subscribe" and settings.wa_verify_token and token == settings.wa_verify_token:
+        if mode == "subscribe" and settings.wa_verify_token \
+                and hmac.compare_digest(token.encode(), settings.wa_verify_token.encode()):
             return PlainTextResponse(challenge)
         raise HTTPException(status_code=403)
 

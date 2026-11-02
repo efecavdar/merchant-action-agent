@@ -18,7 +18,8 @@ _DESC_CHARS = 120  # catalog descriptions show what will be written, so they get
 _PROMPT_CHARS = 80
 _NOTE_CHARS = 80   # lead notes show a preview; the full note is stored
 _QUESTION_CHARS = 200  # chatbot questions show whole (≤200 by validation)
-_ANSWER_CHARS = 120    # chatbot answers show the first 120 chars
+_ANSWER_CHARS = 1000   # chatbot answers show whole (≤1000 by validation): it repeats them to every customer
+_SUMMARY_CHARS = 400   # = the validator's summary_tr limit
 _QUOTE_ROWS_SHOWN = 3  # quote rows listed before "+N kalem"
 _LAST_CHARS = 120      # quoted customer text: first 120 chars, digit runs masked
 _MASK_RE = re.compile(r"\d(?:[\s().-]*\d){9,}")  # 10+ digits, separators allowed: the
@@ -36,6 +37,24 @@ def clean_display(text: Any, max_chars: int = _NAME_CHARS) -> str:
     s = _CONTROL_RE.sub(" ", str(text or "")).strip()
     s = s.replace("*", "").replace("_", "").replace("~", "")
     return s if len(s) <= max_chars else s[:max_chars - 1].rstrip() + "…"
+
+
+def masked_contact(a: dict[str, Any]) -> str:
+    """Phone and e-mail the owner is about to approve, masked: enough to recognise, not enough to leak."""
+    parts = []
+    digits = re.sub(r"\D", "", str(a.get("phone") or ""))
+    if digits:
+        parts.append(f"…{digits[-4:]}")
+    email = str(a.get("email") or "").strip()
+    if "@" in email:
+        local, domain = email.split("@", 1)
+        parts.append(clean_display(f"{local[:1]}…@{domain}"))
+    return ", ".join(parts)
+
+
+def _contact_suffix(a: dict[str, Any], lang: str) -> str:
+    contact = masked_contact(a)
+    return i18n.t("card.contact", lang).format(contact=contact) if contact else ""
 
 
 def card_facts(tool_log: list[dict[str, Any]]) -> dict[str, Any]:
@@ -196,7 +215,8 @@ def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
     if t == "create_customer":
         tags = ", ".join(str(x) for x in (a.get("tags") or []))
         suffix = i18n.t("card.new_customer_tags", lang).format(tags=clean_display(tags)) if tags else ""
-        return i18n.t("card.new_customer", lang).format(name=clean_display(a.get("name")), tags=suffix)
+        return i18n.t("card.new_customer", lang).format(name=clean_display(a.get("name")),
+                                                        tags=suffix + _contact_suffix(a, lang))
     if t == "update_customer":
         name = _crm_name(a.get("customer_id"), f.get("customers", {}), created, "customer")
         name = _with_co(name, _co_of(a.get("customer_id"), f.get("customers", {}), created,
@@ -211,7 +231,8 @@ def _crm_line(t: str, a: dict[str, Any], f: dict[str, Any], lang: str,
         except (KeyError, TypeError, ValueError):
             amount = ""
         suffix = i18n.t("card.lead_value", lang).format(amount=amount) if amount else ""
-        return i18n.t("card.new_lead", lang).format(name=clean_display(a.get("name")), value=suffix)
+        return i18n.t("card.new_lead", lang).format(name=clean_display(a.get("name")),
+                                                    value=suffix + _contact_suffix(a, lang))
     if t == "set_lead_stage":
         name = _crm_name(a.get("lead_id"), f.get("leads", {}), created, "lead")
         name = _with_co(name, _co_of(a.get("lead_id"), f.get("leads", {}), created, "lead"))
@@ -396,15 +417,16 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
         lines.append(f"⚠️ {note}")
     if any(a.get("type") == "create_customer" for a in proposal["actions"]):
         lines.append(i18n.t("card.consent_note", lang))
-    lines += ["", i18n.t("card.note", lang).format(note=proposal["summary_tr"].strip()), "",
-              i18n.t("card.approve", lang)]
+    # One clean line, last: the note must not be able to imitate action lines or a second approval question.
+    note = clean_display(proposal["summary_tr"], _SUMMARY_CHARS)
+    lines += ["", i18n.t("card.note", lang).format(note=note), "", i18n.t("card.approve", lang)]
     return "\n".join(lines)
 
 
 def ask_console(card: str) -> bool:
     print("\n" + "─" * 60 + "\n" + card + "\n" + "─" * 60)
     ans = input("> ").strip().lower()
-    return ans in {"evet", "e", "yes", "y", "onay", "ok", "tamam"}
+    return ans in {"evet", "yes", "onay"}   # as strict as the chat channels: "ok" and "tamam" never approve
 
 
 def auto_approve(card: str) -> bool:

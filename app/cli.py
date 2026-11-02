@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .config import settings
 from . import agent, approval, executor, pipeline, report
-from .tools.backend import get_backend
+from .tools.backend import MockBackend, get_backend
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -22,6 +22,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     backend = get_backend(args.business)
     print(f"[backend] {backend.name}" + (f" ({args.business})" if args.business else ""))
+    if args.auto_approve and not isinstance(backend, MockBackend):
+        print("[approval] --auto-approve works on the mock backend only: a live run needs a human.")
+        return 2
 
     # 1) understand media (Voice Transcribe + SAM 3.1 + Spark vision)
     ctx = pipeline.understand_media(args.text, args.audio, args.images, concept=args.concept, out_dir=out_dir)

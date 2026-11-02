@@ -323,7 +323,7 @@ def test_quote_overflow_answer_preview_and_free_completion():
     ], "tr")
     assert "KEDD Büyüme ×1 + Kurulum ×1 + KEDD Büyüme ×1 +2 kalem" in card
     assert "= 15,500 ₺" in card
-    assert f"→ “{'C' * 119}…”" in card  # answer preview: first 120 chars
+    assert f"→ “{'C' * 200}”" in card  # answer shows whole: the chatbot repeats it to every customer
     assert "✔️ Randevu tamamlandı: Murat Demir (Ada Kafe) — Kurulum + Eğitim\n" in card
 
 

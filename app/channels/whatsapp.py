@@ -54,8 +54,11 @@ def verify_signature(raw_body: bytes, header: str | None, app_secret: str | None
     secret = app_secret if app_secret is not None else settings.meta_app_secret
     if not secret or not header or not header.startswith("sha256="):
         return False
+    received = header.removeprefix("sha256=")
+    if not received.isascii():      # compare_digest raises on non-ASCII str: that would be a 500, not a 401
+        return False
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header.removeprefix("sha256="))
+    return hmac.compare_digest(expected, received)
 
 
 def parse_webhook(payload: dict[str, Any], phone_number_id: str | None = None) -> list[Inbound]:
@@ -74,6 +77,8 @@ def parse_webhook(payload: dict[str, Any], phone_number_id: str | None = None) -
                 continue
             for m in value.get("messages") or []:
                 t = m.get("type")
+                if t in ("reaction", "system"):     # not a message to the agent: a 👍 must not get "okuyamadım"
+                    continue
                 msg = Inbound(id=m.get("id", ""), sender=str(m.get("from", "")).lstrip("+"),
                               kind="other", timestamp=int(m.get("timestamp") or 0))
                 if t == "text":

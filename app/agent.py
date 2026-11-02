@@ -65,8 +65,12 @@ Rules:
   rows; unit prices stay at half the catalog price or above. Quotes are drafts, never sent.
 - Chatbot: before teach_chatbot, search_chatbot_knowledge — if the question is already taught, say
   so ("bu zaten öğretilmiş") instead of proposing. Questions/answers carry no contact details, and
-  an answer mentions only prices from this run's catalog. When a customer or lead has a company,
-  write the name as "Name (Company)".
+  an answer mentions only prices from this run's catalog, and discounts or free offers only if the
+  owner said them. When a customer or lead has a company, write the name as "Name (Company)".
+- Contact details: put a phone or e-mail on create_customer / create_lead only if the owner wrote or
+  said it. Never infer one from a photo, a name or earlier data.
+- Order: every add_catalog_item, create_discount and apply_bulk_price comes before send_campaign and
+  publish_social_post. Once a message is out it cannot be taken back.
 - Audience: call find_customers whenever the owner wants to notify customers; never invent a segment id.
   "uzun süredir gelmeyenler" ≈ inactive_days 60; "sadık / müdavim" ≈ min_visits 3; "yeni gelenler" ≈ 1 visit.
 - Leads and tasks: resolve ids with find_leads / list_tasks in this run (or chain a ref you create
@@ -306,7 +310,13 @@ def _run_tool(name: str, args: dict[str, Any], backend: Backend, run: AgentRun) 
                                          if a.get("id") and a.get("service")})
         return {"appointments": found}
     if name == "get_daily_summary":
-        return backend.daily_summary(args["day"])
+        res = backend.daily_summary(args["day"])
+        waiting = (res.get("unanswered_messages") or {}).get("messages") or []
+        if any(isinstance(m, dict) and m.get("preview") for m in waiting):
+            # Message previews are customer-written, exactly like list_inbox.
+            run.inbox_read = True
+            return {"untrusted_customer_text": True, **res}
+        return res
     if name == "preview_bulk_price":
         res = backend.preview_bulk_price(
             item_type=args.get("item_type"),
@@ -366,6 +376,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
     run = AgentRun()
     client = meta.client()
     known_temp = {p.temp_id for p in ctx.products}
+    owner_text = "\n".join([ctx.instruction] + [str(h.get("text", "")) for h in ctx.history
+                                                 if h.get("role") == "owner"])
     catalog = {i["id"]: i for i in backend.list_catalog()}
     owner_lang = "English" if lang == "en" else "Turkish"
     instructions = (SYSTEM_PROMPT + "\n- Reply to the owner in " + owner_lang + ". Customer-facing texts "
@@ -414,15 +426,20 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
                     return run
                 result = {"accepted": False, "errors": ["text is empty"]}
             elif call.name == "propose_actions":
-                errors = validate_proposal(args, known_temp, catalog, run.segments,
-                                           run.appointments, run.customers,
-                                           run.previews, run.campaigns, run.templates,
-                                           requires_template=isinstance(backend, KeddBackend),
-                                           known_leads=run.leads, known_tasks=run.tasks,
-                                           appointment_services=run.appointment_services,
-                                           inbox_read=run.inbox_read,
-                                           known_conversations=run.conversations,
-                                           catalog_read=run.catalog_read)
+                try:
+                    errors = validate_proposal(args, known_temp, catalog, run.segments,
+                                               run.appointments, run.customers,
+                                               run.previews, run.campaigns, run.templates,
+                                               requires_template=isinstance(backend, KeddBackend),
+                                               known_leads=run.leads, known_tasks=run.tasks,
+                                               appointment_services=run.appointment_services,
+                                               inbox_read=run.inbox_read,
+                                               known_conversations=run.conversations,
+                                               catalog_read=run.catalog_read,
+                                               owner_text=owner_text)
+                except (TypeError, ValueError, AttributeError, KeyError) as e:
+                    # A wrongly shaped field is a revision, not a crash in front of the owner.
+                    errors = [f"a field has the wrong type ({type(e).__name__}); use the schema's types"]
                 run.tool_log.append({"tool": "propose_actions", "errors": errors,
                                      **({"rejected_proposal": args} if errors else {})})
                 if not errors:
@@ -430,7 +447,8 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
                     return run
                 revisions += 1
                 codes = sorted({e.split(":")[0] if e.startswith("actions[") else "plan" for e in errors})
-                types = sorted({a.get("type", "?") for a in args.get("actions", [])})
+                listed = args.get("actions") if isinstance(args.get("actions"), list) else []
+                types = sorted({str(a.get("type", "?")) for a in listed if isinstance(a, dict)})
                 log.warning("proposal rejected (%d/%d): %d errors codes=%s types=%s",
                             revisions, max_revisions, len(errors), codes, types)
                 if revisions > max_revisions:

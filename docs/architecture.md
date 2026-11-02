@@ -50,16 +50,15 @@ Solid arrows are the main flow, dotted arrows are calls into a step.
 
 ## 1. The model proposes, code executes
 
-The planner (`app/agent.py`, `TOOLS`) gets seven read-only tools — `get_store_profile`, `list_catalog`,
-`find_customers`, `find_customer`, `get_schedule`, `find_appointments`, `get_daily_summary` — and two
-ways to finish: `propose_actions` (a structured plan) or `reply_only` (a plain answer such as
+The planner (`app/agent.py`, `TOOLS`) gets twenty read-only tools — business data such as
+`get_store_profile`, `list_catalog`, `find_customers` and `get_schedule`, plus previews and the inbox —
+and two ways to finish: `propose_actions` (a structured plan) or `reply_only` (a plain answer such as
 "Bugün ne oldu?"). There is no write tool. A question answered with `reply_only` is returned by
 `core.handle` directly and leaves nothing pending.
 
-Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows eleven action types:
-`add_catalog_item`, `create_discount`, `generate_visual`, `send_campaign`, `create_appointment`,
-`reschedule_appointment`, `cancel_appointment`, `apply_bulk_price`, `adjust_loyalty`, `ads_action`,
-`publish_social_post`.
+Writes exist only as data in a proposal. `app/actions.py` (`ACTION_TYPES`) allows twenty-two action
+types, covering catalog and prices, discounts, campaigns and social posts, appointments, loyalty, ads,
+CRM records, quote drafts, chatbot answers and inbox replies.
 A proposal is validated in code, shown to the owner as a card, and only then executed by
 `app/executor.py` (`execute`), which maps each action to one backend call in a fixed order.
 The model never sends a message, sets a price, or books anything by itself.
@@ -110,7 +109,7 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | Check | Failure it prevents |
 |---|---|
 | Proposal is an object with `summary_tr` and a non-empty `actions` list | Empty or shapeless plans |
-| Every action type is one of the 11 known types; at most 12 actions per plan | Made-up or runaway write operations |
+| Every action type is one of the 22 known types; at most 12 actions per plan | Made-up or runaway write operations |
 | Catalog name/description, messages and template variables carry no URL, e-mail, phone or IBAN | Contact details smuggled to customers |
 | Offer words (`bedava`, `ücretsiz`, …) require a `create_discount` in the plan | Messages promising an unplanned deal |
 | `add_catalog_item`: `item_type` is product or service | Wrong catalog entity |
@@ -139,6 +138,12 @@ proposal goes back to the model with structured errors (max 3 revisions in `agen
 | `publish_social_post`: `platforms` a non-empty subset of instagram/facebook | Posts to nowhere |
 | `publish_social_post`: `publish_at` 5 minutes–30 days out, else publishes now | Stale or far-future schedules |
 | `publish_social_post`: caption numbers must match planned prices/percents | Posts promising an unplanned deal |
+| `summary_tr` is one plain note of at most 400 chars, with no card icons and no approval question | A note imitating action lines or a second "Onaylıyor musun?" |
+| Customer-facing text must not imitate the approval question | Forged card endings inside a message or reply |
+| `create_customer`/`create_lead`: phone and e-mail must appear in the owner's own words | Contact records the model made up |
+| `teach_chatbot`: a percent or offer word must come from the owner or the plan | An unattended chatbot promising an invented deal |
+| `send_campaign`/`publish_social_post` come after every catalog, discount and bulk-price action | A message that is out before what it advertises exists |
+| Money and percent fields are finite numbers, never booleans; `"1.500"` is refused as ambiguous | `NaN`, `True` or a thousandfold price error |
 
 ## 3. Channel security (WhatsApp path)
 

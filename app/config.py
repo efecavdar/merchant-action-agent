@@ -64,6 +64,12 @@ class Settings:
     public_demo: bool = os.environ.get("PUBLIC_DEMO", "").strip().lower() in ("1", "true", "yes", "on")
     public_demo_daily_cap: int = int(os.environ.get("PUBLIC_DEMO_DAILY_CAP", "400"))
 
+    def __post_init__(self) -> None:
+        # Product traffic is merchant data, and contributor ids may train on it. Refuse to start, don't warn.
+        for model in (self.orchestrator_model, self.vision_model, self.image_model, self.sam_model, self.asr_model):
+            if model.endswith("-contributor"):
+                raise RuntimeError(f"{model}: contributor models are not allowed for product traffic")
+
 
 settings = Settings()
 

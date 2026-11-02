@@ -114,6 +114,7 @@ demo_counts = modal.Dict.from_name("cirak-demo-counts", create_if_missing=True)
 
 
 @app.function(image=image, secrets=[demo_secret], timeout=600, max_containers=1)
+@modal.concurrent(max_inputs=32)   # one judge's 60 s plan must not freeze everyone else, or their own progress poll
 @modal.asgi_app()
 def demo():
     """Public web UI for judges: mock only, rate-limited, no volume (ephemeral disk)."""
@@ -121,10 +122,11 @@ def demo():
     import os
     import tempfile
 
-    from app.channels.web import create_app
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     # No volume: uploads, runs and generated visuals live on ephemeral disk. Set before the
     # app import — Settings reads the env once, at import time.
     os.environ["DATA_DIR"] = os.environ["OUT_DIR"] = tempfile.mkdtemp(prefix="cirak-demo-")
+
+    from app.channels.web import create_app
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     return create_app(daily_counts=demo_counts)

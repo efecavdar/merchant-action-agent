@@ -7,13 +7,13 @@ with temp ids / refs resolved to real ids. Every step is logged for the report.
 from __future__ import annotations
 
 import logging
-from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
 from PIL import Image
 
 from . import meta_client as meta
+from .clock import today_tr
 from .config import settings
 from .pipeline import MediaContext
 from .tools.backend import Backend, KeddBackend
@@ -138,7 +138,7 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
 
             elif t == "send_campaign":
                 res = backend.send_campaign(
-                    name=a.get("name") or f"Kampanya {date.today().isoformat()}",
+                    name=a.get("name") or f"Kampanya {today_tr().isoformat()}",
                     segment_id=a["segment_id"], message=a.get("message") or "",
                     visual_path=(visual_path if a.get("attach_visual") else "") or "",
                     template=a.get("template"), variables=a.get("variables"),

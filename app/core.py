@@ -23,8 +23,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import agent, approval, executor, i18n, pipeline, report
+from .clock import today_tr
 from .config import settings
-from .tools.backend import Backend, KeddBackend, get_backend
+from .tools.backend import Backend, KeddBackend, MockBackend, get_backend
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ class Session:
         if self.backend is not None and getattr(self.backend, "_schema", None) != getattr(
                 type(self.backend), "SCHEMA", None):
             log.warning("stale backend in session (schema changed); re-seeding demo data")
+            self.backend = None
+        # A new day re-seeds the mock, but never under a pending card: its plan refers to this data.
+        if isinstance(self.backend, MockBackend) and self.backend.stale_day() and not self.pending:
             self.backend = None
         if self.backend is None:
             self.backend = get_backend(self.business, sender=self.sender)
@@ -193,8 +197,10 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
             replies = [Reply(i18n.t("approval.race", lang))]
             _remember_replies(session, replies, now)
             return replies
+        # A quarantined plan's labels were written with customer text in context: same rule as the card itself.
+        inbox_read = bool(session.pending.get("inbox_read"))
         replies = _execute_pending(session, notify, checkpoint)
-        _remember_replies(session, replies, now)
+        _remember_run(session, replies, now, inbox_read)
         return replies
     if session.pending and kind == "text" and t in NO:
         _history_add(session, "owner", text, now)
@@ -272,6 +278,7 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     (run_dir / "approval_card.txt").write_text(card)
     session.pending = {"proposal": run.proposal, "ctx": ctx, "seg_counts": seg_counts,
                        "run_dir": str(run_dir), "at": now, "usage": run.usage,
+                       "inbox_read": bool(getattr(run, "inbox_read", False)),
                        "shown_at": None if async_delivery else time.time()}
     log.info("plan ready: %d turns, usage %s", run.turns, run.usage)
     preview = next((a.get("_preview_path") or "" for a in run.proposal["actions"]
@@ -301,7 +308,7 @@ def _execute_pending(session: Session, notify: Notify,
     backend = session.get_backend()
     run_dir = Path(p["run_dir"])
     world_today = getattr(backend, "today", None)
-    today_iso = world_today.isoformat() if isinstance(world_today, date) else date.today().isoformat()
+    today_iso = world_today.isoformat() if isinstance(world_today, date) else today_tr().isoformat()
 
     def _announce(event: str, i: int, n: int, step: dict[str, Any] | None) -> None:
         line = i18n.render_progress(event, i, n, step, lang, today=today_iso)
@@ -314,6 +321,9 @@ def _execute_pending(session: Session, notify: Notify,
         rep = report.build_report(steps, backend)
         (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
         summary = report.summarize_for_merchant(rep, lang=lang)
+        if not report.numbers_verified(summary, rep):
+            log.warning("merchant summary quoted a number the report does not have; using the step list")
+            summary = _plain_summary(steps, lang)
     except Exception:  # noqa: BLE001
         log.exception("report failed after execution; falling back to the step list")
         summary = _plain_summary(steps, lang)
