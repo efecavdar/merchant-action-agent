@@ -8,6 +8,7 @@ gap encoding (see the task-11 PR description). No result may contain a phone num
 """
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -363,7 +364,9 @@ def test_discount_posts_once_per_item_with_stable_keys():
                              idempotency_key="run-3")
     posts = [c for c in kb._s.calls if c[0] == "POST"]
     assert [p[3]["item_id"] for p in posts] == ["item-1", "item-2"]
-    assert [p[2]["Idempotency-Key"] for p in posts] == ["run-3#0", "run-3#1"]
+    assert [p[2]["Idempotency-Key"] for p in posts] == ["run-3.0", "run-3.1"]
+    # Same rule as the gateway (security.ts IDEM_KEY_RE): a "#" was refused live.
+    assert all(re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", p[2]["Idempotency-Key"]) for p in posts)
     assert posts[0][3]["start_day"] == "2026-10-31" and posts[0][3]["percent"] == 15
     assert set(res["sale_prices"]) == {"item-1", "item-2"}
     kb2 = _kb("discounts")

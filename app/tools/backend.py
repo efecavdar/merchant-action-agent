@@ -2060,7 +2060,8 @@ class KeddBackend:
         base_key = idempotency_key or uuid.uuid4().hex
         sale_prices = {}
         for i, item_id in enumerate(item_ids):
-            key = base_key if len(item_ids) == 1 else f"{base_key}#{i}"
+            # The gateway accepts [A-Za-z0-9_.-] only: a "#" separator refused every multi-item discount.
+            key = base_key if len(item_ids) == 1 else f"{base_key}.{i}"
             try:
                 res = self._post("/agent/discounts", {"item_id": item_id, "percent": percent,
                                                       "start_day": start_day, "end_day": end_day}, key)
