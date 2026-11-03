@@ -360,3 +360,24 @@ def test_progress_polling_marks_for_app_js():
     src = (webchan.STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'fetch("/api/progress?since=" + progressSeq)' in src
     assert "setInterval(pollProgress, 700)" in src
+
+
+def test_campaign_line_counts_sent_not_segment_and_marks_demo_sandbox():
+    # Gateway K16: demo-business synthetic customers are counted, never messaged. The line must say so.
+    real = {"action": "send_campaign", "result": {"recipients": 21, "sent": 17}}
+    assert i18n.render_progress("ok", 1, 1, real, "tr") == "✅ 1/1 Kampanya: 17 kişiye gitti"
+    demo = {"action": "send_campaign", "result": {"recipients": 21, "sent": 0, "sandbox": 17}}
+    tr = i18n.render_progress("ok", 1, 1, demo, "tr")
+    en = i18n.render_progress("ok", 1, 1, demo, "en")
+    assert "17 demo müşterisi" in tr and "gerçek mesaj gönderilmedi" in tr and "kişiye gitti" not in tr
+    assert "17 demo customers" in en and "no real message sent" in en
+
+
+def test_kedd_send_campaign_passes_sandbox_count(monkeypatch):
+    b = KeddBackend("https://x.example", "s", "+900000000009")
+    monkeypatch.setattr(b, "_template_body_and_vars", lambda t, v: ("Merhaba {{1}}", {}))
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"recipients": 21, "sent": 0, "sandbox": 17,
+                                                     "skipped": {"no_marketing_consent": 4}, "failed": 0})
+    res = b.send_campaign("x", "seg", template="marketing_reengagement_promo_tr")
+    assert res["sent"] == 0 and res["sandbox"] == 17
+    assert "17 demo müşterisi (gerçek mesaj gönderilmedi)" in res["note"]

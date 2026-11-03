@@ -155,6 +155,9 @@ STRINGS: dict[str, dict[str, str]] = {
                             "en": "✅ {i}/{n} Campaign visual ready"},
     "progress.campaign": {"tr": "✅ {i}/{n} Kampanya: {k} kişiye gitti",
                           "en": "✅ {i}/{n} Campaign: sent to {k} people"},
+    "progress.campaign_sandbox": {
+        "tr": "✅ {i}/{n} Kampanya: {k} demo müşterisi seçildi, gerçek mesaj gönderilmedi (demo işletme) · {s} gitti",
+        "en": "✅ {i}/{n} Campaign: {k} demo customers reached, no real message sent (demo business) · {s} sent"},
     "progress.post_scheduled": {"tr": "✅ {i}/{n} {plats}: {day} {hm}{suffix} yayında",
                                 "en": "✅ {i}/{n} {plats}: going live {day} at {hm}"},
     "progress.post_now": {"tr": "✅ {i}/{n} {plats}: paylaşıldı", "en": "✅ {i}/{n} {plats}: published"},
@@ -428,7 +431,9 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
     if kind == "generate_visual":
         return t("progress.visual", lang).format(**head)
     if kind == "send_campaign":
-        k = r.get("recipients")
+        if r.get("sandbox"):
+            return t("progress.campaign_sandbox", lang).format(**head, k=r["sandbox"], s=r.get("sent") or 0)
+        k = r.get("sent", r.get("recipients"))
         return t("progress.campaign", lang).format(**head, k="?" if k is None else k)
     if kind == "publish_social_post":
         plats = ", ".join(str(p)[:1].upper() + str(p)[1:] for p in (r.get("platforms") or [])) or "?"

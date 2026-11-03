@@ -145,6 +145,7 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                     **idem,
                 )
                 record(a, "ok", {"campaign_id": res["id"], "recipients": res["recipients"],
+                                 **{k: res[k] for k in ("sent", "sandbox") if k in res},
                                  "note": res.get("note", "")})
 
             elif t == "publish_social_post":

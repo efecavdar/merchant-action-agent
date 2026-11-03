@@ -1003,7 +1003,8 @@ class MockBackend:
         c.replies = int(n * self._rng.uniform(0.18, 0.32))
         c.conversions = int(c.replies * self._rng.uniform(0.25, 0.45))
         self.campaigns.append(c)
-        return {**asdict(c), "note": "mock backend: messages are NOT sent; engagement is simulated"}
+        return {**asdict(c), "sent": c.recipients, "sandbox": 0,
+                "note": "mock backend: messages are NOT sent; engagement is simulated"}
 
     def publish_social_post(self, caption: str, image_path: str, platforms: list[str],
                             publish_at: str | None = None,
@@ -2102,9 +2103,13 @@ class KeddBackend:
                                               "variables": named, "dry_run": False},
                          idempotency_key)
         sent = _as_int(res.get("sent")) or 0
+        sandbox = _as_int(res.get("sandbox")) or 0
         failed = _as_int(res.get("failed")) or 0
         skipped = self._skipped_counts(res.get("skipped"))
         note = f"{sent} gönderildi"
+        if sandbox:
+            # Gateway K16: synthetic customers of the demo business are counted, never messaged.
+            note += f" · {sandbox} demo müşterisi (gerçek mesaj gönderilmedi)"
         if skipped["no_consent"] + skipped["other"]:
             note += f" · {skipped['no_consent'] + skipped['other']} atlandı"
         if failed:
@@ -2114,6 +2119,7 @@ class KeddBackend:
                     body, {"1": MASKED_NAME, **{str(k): v for k, v in (variables or {}).items()
                                                if isinstance(v, str)}}),
                 "visual_path": "", "recipients": _as_int(res.get("recipients")) or 0,
+                "sent": sent, "sandbox": sandbox,
                 "template": template, "variables": dict(variables or {}), "status": "sent",
                 "replies": None, "conversions": None, "day": today_tr().isoformat(),
                 "note": note}
