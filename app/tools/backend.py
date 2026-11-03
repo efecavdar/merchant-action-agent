@@ -2342,7 +2342,8 @@ class KeddBackend:
         payload = base64.b64encode(_jpg_under_limit(image_bytes)).decode()
         res = self._post("/agent/social/post",
                          {"caption": caption, "platforms": list(platforms), "publish_at": publish_at,
-                          "image_base64": payload},
+                          # _jpg_under_limit always re-encodes to JPEG; the gateway requires the mime.
+                          "image_base64": payload, "image_mime": "image/jpeg"},
                          idempotency_key)
         return {"campaign_id": res.get("id", ""),
                 "status": res.get("status") or ("scheduled" if publish_at else "published"),

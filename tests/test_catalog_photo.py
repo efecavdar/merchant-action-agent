@@ -111,3 +111,12 @@ def test_card_names_the_existing_item_and_the_change(tmp_path):
         _ctx(tmp_path), {}, approval.card_facts([{"tool": "list_catalog",
                                                   "result": {"items": list(CATALOG.values())}}]))
     assert "✏️ Güncelle: Web Site Bakımı — fotoğrafı eklenecek 📷" in card
+
+
+def test_social_post_sends_the_mime_the_gateway_requires(tmp_path):
+    # Seen live: every Instagram post failed with '"image_mime" image/jpeg ya da image/png olmalıdır'.
+    kb = _kb({"/agent/social/post": {"id": "c1", "status": "SCHEDULED"}})
+    kb.publish_social_post("Yeni hizmet!", _photo(tmp_path), ["instagram"], idempotency_key="k3")
+    body = kb._s.calls[0][1]
+    assert body["image_mime"] == "image/jpeg" and base64.b64decode(body["image_base64"])[:3] == b"\xff\xd8\xff"
+    assert "publish_at" not in body
