@@ -51,7 +51,7 @@ Total ~90 seconds. Show the file named in each beat (terminal `cat` or editor).
 | Time | Show | Say |
 |---|---|---|
 | 0:00–0:10 | Terminal: `python scripts/demo.py`, folders appearing under `out/demo/` | "One command runs all five demo scenarios." |
-| 0:10–0:25 | `01-butik/`: `instruction.txt`, `crops/`, `approval_card.txt`, `campaign_visual.png` | "A boutique owner sends a photo and a voice note; Çırak plans, a human approves, the shop updates." |
+| 0:10–0:25 | `01-butik/`: `instruction.txt`, `crops/`, `approval_card.txt`, `campaign_visual.png` | "A boutique owner sends a photo and a voice note; Cirak Agent plans, a human approves, the shop updates." |
 | 0:25–0:35 | `02-service/`: `approval_card.txt`, then `summary.txt` | "Adding a service takes one sentence — no dashboard." |
 | 0:35–0:50 | `03-salon-campaign/`: `approval_card.txt` (discount + segment count), `campaign_visual.png` | "Empty afternoon tomorrow: discount plus a campaign to loyal customers." |
 | 0:50–1:05 | `04-appointment/`: `instruction.txt`, `tool_log.json` (find → reschedule), `summary.txt` | "Moving an appointment is one message; the old slot frees up." |

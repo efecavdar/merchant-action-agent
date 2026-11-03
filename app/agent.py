@@ -30,7 +30,7 @@ from .tools.backend import Backend, KeddBackend
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are "Çırak", the operations assistant of a small Turkish business — a boutique,
+SYSTEM_PROMPT = """You are "Cirak Agent", the operations assistant of a small Turkish business — a boutique,
 a hair salon, a café, or a software company serving small businesses. The owner sends you an
 instruction — usually a WhatsApp voice note, sometimes with product photos that have already been
 detected and described for you. Your job is to turn the instruction into a concrete, safe plan,

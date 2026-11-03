@@ -27,7 +27,7 @@ Unmark = Callable[[str], None]             # forget an id again so a redelivery 
 
 def create_app(dispatch: Dispatch, first_time: SeenCheck,
                unmark: Unmark | None = None) -> FastAPI:
-    api = FastAPI(title="Çırak webhook", docs_url=None, redoc_url=None, openapi_url=None)
+    api = FastAPI(title="Cirak Agent webhook", docs_url=None, redoc_url=None, openapi_url=None)
 
     @api.get("/health")
     def health():

@@ -88,7 +88,7 @@ def test_core_flow_plan_approve_execute(monkeypatch, cfg, tmp_path):
     s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
     notes = []
 
-    assert "Çırak" in core.handle(s, "text", "merhaba")[0].text
+    assert "Cirak Agent" in core.handle(s, "text", "merhaba")[0].text
     r = core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver", notify=notes.append)
     assert s.pending and "onayına sunuyorum" in r[-1].text and "850" in r[-1].text and notes == ["⏳ Bakıyorum…"]
     assert s.backend.campaigns == []                                           # nothing ran yet

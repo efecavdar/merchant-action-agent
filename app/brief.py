@@ -1,4 +1,4 @@
-"""Proactive morning brief: Çırak writes first so the owner never opens a dashboard.
+"""Proactive morning brief: Cirak Agent writes first so the owner never opens a dashboard.
 
 The brief is just a fixed instruction run through the normal conversation path
 (`core.handle`), so it behaves like any other message: either an answer or an

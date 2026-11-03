@@ -43,8 +43,8 @@ global.fetch = () => {
   return Promise.resolve({ ok: true, json: async () => ({ replies: [{ text: "tamam" }], status: [] }) });
 };
 
-const CARD_EN = "*Çırak — for your approval*\n🛍️ Product: Scarf — 850 ₺\n\nApprove? (yes / no)";
-const CARD = "*Çırak — onayına sunuyorum*\n🛍️ Ürün: Fular — 850 ₺\n\n"
+const CARD_EN = "*Cirak Agent — for your approval*\n🛍️ Product: Scarf — 850 ₺\n\nApprove? (yes / no)";
+const CARD = "*Cirak Agent — onayına sunuyorum*\n🛍️ Ürün: Fular — 850 ₺\n\n"
   + "Onaylıyor musun? (evet / hayır)";
 
 (async () => {

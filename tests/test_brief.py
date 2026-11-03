@@ -78,7 +78,7 @@ def test_brief_card_is_pending_and_needs_evet(monkeypatch, cfg, tmp_path):
     monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     s = _salon(tmp_path)
     r = brief.build_morning_brief(s)
-    assert s.pending is not None and r[0].text.startswith("Günaydın ☀️ *Çırak")
+    assert s.pending is not None and r[0].text.startswith("Günaydın ☀️ *Cirak Agent")
     assert s.backend.campaigns == []                                     # the card alone sends nothing
     assert "ulaşmadan" in core.handle(s, "text", "evet")[0].text   # brief card not delivered yet
     core.mark_delivered(s, True)

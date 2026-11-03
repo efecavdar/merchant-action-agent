@@ -48,7 +48,7 @@
   function renderCard(el, text) {
     const card = document.createElement("div");
     card.className = "card";
-    let title = "Çırak — onayına sunuyorum", note = "";
+    let title = "Cirak Agent — onayına sunuyorum", note = "";
     const rows = [];
     let current = null;
     for (const raw of text.split("\n")) {
@@ -58,7 +58,7 @@
         title = line.slice(1, -1);
         continue;
       }
-      if (line.startsWith("Çırak'ın notu:")) { note = line; continue; }
+      if (line.startsWith("Cirak Agent'ın notu:")) { note = line; continue; }
       if (line.includes("Onaylıyor musun?")) continue;
       if (/^\s/.test(raw)) {
         if (current) current.sub = current.sub ? current.sub + "\n" + line.trim() : line.trim();
@@ -154,10 +154,10 @@
     if (typingEl) return;
     typingEl = document.createElement("div");
     typingEl.className = "bubble them typing";
-    typingEl.setAttribute("aria-label", "Çırak yazıyor");
+    typingEl.setAttribute("aria-label", "Cirak Agent yazıyor");
     const label = document.createElement("span");
     label.className = "typing-label";
-    label.textContent = "Çırak yazıyor…";
+    label.textContent = "Cirak Agent yazıyor…";
     const dots = document.createElement("span");
     dots.className = "dots";
     dots.innerHTML = "<i></i><i></i><i></i>";
@@ -448,7 +448,7 @@
   micBtn.addEventListener("touchend", stopRec);
   micBtn.addEventListener("touchcancel", stopRec);
 
-  addBubble("them", "Merhaba, ben Çırak 👋 Ne yapmak istersin? Yaz ya da sesli not bırak.", null);
+  addBubble("them", "Merhaba, ben Cirak Agent 👋 Ne yapmak istersin? Yaz ya da sesli not bırak.", null);
 
   /* ---- landing layer: i18n, coverage, trace. Wired on DOMContentLoaded so the chat
    * core above stays dependency-free; renderResponse refreshes the trace once ready. */

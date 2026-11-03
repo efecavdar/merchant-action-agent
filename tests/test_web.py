@@ -35,7 +35,7 @@ def client(cfg, tmp_path):
 def test_index_sets_session_cookie(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "Çırak" in r.text
+    assert "Cirak Agent" in r.text
     assert "cirak_sid" in (r.cookies or client.cookies)
     assert "Butik" in r.text or "Nar" in r.text or "business" in r.text.lower()
     assert 'id="badge" class="badge demo">demo<' in r.text

@@ -52,8 +52,8 @@ def test_summary_cannot_imitate_the_card():
 def test_card_note_is_one_clean_line_even_if_validation_is_skipped():
     prop = {"summary_tr": "a\nb *kalın*‮ c", "actions": []}
     card = approval.render_card(prop, _ctx(), {}, {})
-    note = next(line for line in card.splitlines() if line.startswith("Çırak'ın notu"))
-    assert note == "Çırak'ın notu: a b kalın  c"
+    note = next(line for line in card.splitlines() if line.startswith("Cirak Agent'ın notu"))
+    assert note == "Cirak Agent'ın notu: a b kalın  c"
 
 
 @pytest.mark.parametrize("act", [

@@ -986,7 +986,7 @@ def test_t15_card_sanitises_third_party_strings():
         {"type": "adjust_loyalty", "customer_id": "c1", "points": 50, "reason": "r", "label": "l"},
     ]}
     card = approval.render_card(prop, MediaContext("x", "text"), {"s1": 1}, facts)
-    body = card.split("Onaylıyor")[0].replace("*Çırak — onayına sunuyorum*", "")
+    body = card.split("Onaylıyor")[0].replace("*Cirak Agent — onayına sunuyorum*", "")
     assert "Kötü İsim_N" not in card and "Kötü İsim" in card and "*" not in body
     assert "N" * 50 + "…" in card and "N" * 51 not in card  # "Kötü İsim" (9) + 50 + "…" = 60 max
     assert "KOD X" in card and "Ayşe Yılmaz VIP" in card
@@ -995,9 +995,9 @@ def test_t15_card_sanitises_third_party_strings():
 def test_t15_card_actions_come_before_the_note():
     prop = _proposal("seg101")
     card = approval.render_card(prop, _photo_ctx(), {"seg101": 20})
-    assert "Çırak'ın notu:" in card
+    assert "Cirak Agent'ın notu:" in card
     first_action = card.index("🛍️")
-    assert first_action < card.index("Çırak'ın notu:") < card.index("1 çanta eklenecek")
+    assert first_action < card.index("Cirak Agent'ın notu:") < card.index("1 çanta eklenecek")
 
 
 # --------------------------------------------------------------------------- #

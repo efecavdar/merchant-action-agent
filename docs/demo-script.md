@@ -1,6 +1,6 @@
-# Çırak — 3-minute demo video script (for judges)
+# Cirak Agent — 3-minute demo video script (for judges)
 
-Format: split screen, whole video. **Left: WhatsApp chat with Çırak** (the merchant's view).
+Format: split screen, whole video. **Left: WhatsApp chat with Cirak Agent** (the merchant's view).
 **Right: the KEDD side** — the live demo page's *Live in KEDD* panel for scenes 1–4, the full
 demo page for scene 5. Total runtime ≈ 3:00 (5 × ~30 s scenes + 0:20 closing).
 Record the chat in Turkish; burn in the English subtitles below.
@@ -16,19 +16,19 @@ KEDD demo business with customer-facing writes held as previews.
 
 The rules disqualify a project if judges cannot see what was built during the event. So:
 
-- **First 5 seconds, on screen:** "Built during the hackathon: the Çırak agent and the gateway into KEDD. KEDD itself already existed."
-- **Whenever the KEDD panel is visible, keep a corner label:** "Existing product: KEDD. New: everything Çırak does to it."
-- Show KEDD only as the target of the agent's work (a price changing, a 🤖 Çırak notification). Do not tour KEDD's own features.
-- Voiceover in the closing: "Everything you saw Çırak do was built in the last nine days."
+- **First 5 seconds, on screen:** "Built during the hackathon: Cirak Agent and the gateway into KEDD. KEDD itself already existed."
+- **Whenever the KEDD panel is visible, keep a corner label:** "Existing product: KEDD. New: everything Cirak Agent does to it."
+- Show KEDD only as the target of the agent's work (a price changing, a 🤖 Cirak Agent notification). Do not tour KEDD's own features.
+- Voiceover in the closing: "Everything you saw Cirak Agent do was built in the last nine days."
 
 ## Scene 1 — Morning brief (0:00–0:30)
 
 - **Send (tap the ☀️ chip, or type):** `Sabah özeti`
-- **Subtitle:** "Every morning at 09:00, Çırak writes first: the day at a glance."
+- **Subtitle:** "Every morning at 09:00, Cirak Agent writes first: the day at a glance."
 - **Must be visible:** the brief bubble — today's appointments, free hours, waiting
   messages, yesterday's revenue, one concrete suggestion.
 - **Expected card:** none — the brief is read-only, no approval needed.
-- **Voiceover:** "Çırak starts the day for the merchant, before she even asks."
+- **Voiceover:** "Cirak Agent starts the day for the merchant, before she even asks."
 - **Fallback if slow:** the brief is one model call; if it stalls, cut to the already
   loaded *Live in KEDD* panel and narrate over it, then cut the brief in when it lands.
 
@@ -41,11 +41,11 @@ The rules disqualify a project if judges cannot see what was built during the ev
 - **Must be visible:** left — the "⏳ Bakıyorum…" status, then the approval card
   (new catalog item → weekend plan discount → win-back campaign with
   recipient count); right — the panel's catalog sample still showing the old range.
-- **Expected card:** `*Çırak — onayına sunuyorum*` with the 🛍️ add-on, 🏷️ %20 indirimi,
+- **Expected card:** `*Cirak Agent — onayına sunuyorum*` with the 🛍️ add-on, 🏷️ %20 indirimi,
   📣 WhatsApp audience line. Reply **`evet`**.
 - **After evet:** the campaign visual appears (designed from the real product crops),
   then the "Hallettim" summary; the panel's *Recent writes* row updates.
-- **Voiceover:** "He talks; Çırak sees the materials, plans the whole push, and waits for one word."
+- **Voiceover:** "He talks; Cirak Agent sees the materials, plans the whole push, and waits for one word."
 - **Fallback if slow:** SAM + vision + planning takes ~30–60 s — record it once, then
   jump-cut from send to card ("a minute later…"). Never fast-forward the card itself.
 
@@ -58,7 +58,7 @@ The rules disqualify a project if judges cannot see what was built during the ev
   Elif Kaya), the 30-minute Demo Görüşmesi at 14:00, the %20 plan discount and the
   campaign; right — the panel's *Today's appointments* for the KEDD team calendar.
 - **Expected card:** 📅 appointment + 🏷️ indirim + 📣 campaign lines. Reply **`evet`**.
-- **Voiceover:** "No photos needed — Çırak reads the calendar and fills the empty slots."
+- **Voiceover:** "No photos needed — Cirak Agent reads the calendar and fills the empty slots."
 - **Fallback if slow:** this plan is text-only and usually fast; if the card lags,
   narrate the appointments panel on the right while waiting.
 
@@ -94,5 +94,5 @@ The rules disqualify a project if judges cannot see what was built during the ev
 
 On screen: the phone showing the final "Hallettim" summary next to the live panel.
 
-> "Çırak: small merchants live in WhatsApp, so Çırak works where they live. The model
+> "Cirak Agent: small merchants live in WhatsApp, so Cirak Agent works where they live. The model
 > proposes, code executes, and the owner approves every step with a single word — evet."

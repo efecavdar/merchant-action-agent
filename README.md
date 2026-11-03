@@ -1,6 +1,6 @@
-# Çırak — Merchant Action Agent
+# Cirak Agent — Merchant Action Agent
 
-A WhatsApp agent for small businesses: the merchant talks, Çırak plans, the merchant approves with one word, deterministic code executes it in KEDD.
+A WhatsApp agent for small businesses: the merchant talks, Cirak Agent plans, the merchant approves with one word, deterministic code executes it in KEDD.
 
 **Meta Global AI Developer Hackathon 2026 — Startup track**
 

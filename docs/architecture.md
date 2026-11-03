@@ -84,7 +84,7 @@ A real proposal, from `tests/test_offline.py::_proposal`:
 the function, segment `seg101` = 20 customers):
 
 ```text
-*Çırak — onayına sunuyorum*
+*Cirak Agent — onayına sunuyorum*
 
 🛍️ Ürün: Deri Çanta — 850 ₺ 📷
 🏷️ İndirim: %15 (2026-10-31 → 2026-11-01) — Deri Çanta
@@ -92,7 +92,7 @@ the function, segment `seg101` = 20 customers):
 📣 WhatsApp: 20 müşteriye mesaj 📎 görsel eklenecek
    “Selam! Çanta 850 TL, hafta sonu %15 🎁”
 
-Çırak'ın notu: 1 çanta eklenecek, hafta sonu %15, 20 müşteriye mesaj.
+Cirak Agent'ın notu: 1 çanta eklenecek, hafta sonu %15, 20 müşteriye mesaj.
 
 Onaylıyor musun? (evet / hayır)
 ```

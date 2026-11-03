@@ -19,12 +19,12 @@ EN = "en"
 STRINGS: dict[str, dict[str, str]] = {
     # -- core.py: greeting, commands, status -----------------------------------
     "help": {
-        "tr": ("Merhaba, ben Çırak 👋 Sesli not ya da yazıyla ne istediğini söyle, istersen önce "
+        "tr": ("Merhaba, ben Cirak Agent 👋 Sesli not ya da yazıyla ne istediğini söyle, istersen önce "
                "ürün fotoğrafı at.\n"
                "Örn: \"Bunları ekle, tanesi 850 lira, hafta sonu %15 indirim, uzun süredir "
                "gelmeyenlere haber ver.\"\n"
                "Hiçbir şey senin *evet*'in olmadan yapılmaz."),
-        "en": ("Hi, I'm Çırak 👋 Tell me what you need by voice note or text, or send product "
+        "en": ("Hi, I'm Cirak Agent 👋 Tell me what you need by voice note or text, or send product "
                "photos first.\n"
                "E.g.: \"Add these, 850 lira each, 15% off this weekend, tell customers who haven't "
                "visited in a while.\"\n"
@@ -103,7 +103,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "step.adjust_loyalty": {"tr": "Puan güncellendi", "en": "Points updated"},
     "step.ads_action": {"tr": "Reklam güncellendi", "en": "Ad updated"},
     # -- approval.py: card labels (facts stay as they are) -----------------------
-    "card.title": {"tr": "*Çırak — onayına sunuyorum*", "en": "*Çırak — for your approval*"},
+    "card.title": {"tr": "*Cirak Agent — onayına sunuyorum*", "en": "*Cirak Agent — for your approval*"},
     "card.product": {"tr": "Ürün", "en": "Product"},
     "card.service": {"tr": "Hizmet", "en": "Service"},
     "card.discount_label": {"tr": "İndirim", "en": "Discount"},
@@ -130,7 +130,7 @@ STRINGS: dict[str, dict[str, str]] = {
                                 "en": "⚠️ template not found: {name}"},
     "card.post": {"tr": "{icon} {plats} gönderisi{when}", "en": "{icon} {plats} post{when}"},
     "card.scheduled": {"tr": " · {when}'de paylaşılacak", "en": " · will be posted at {when}"},
-    "card.note": {"tr": "Çırak'ın notu: {note}", "en": "Çırak's note: {note}"},
+    "card.note": {"tr": "Cirak Agent'ın notu: {note}", "en": "Cirak Agent's note: {note}"},
     "card.approve": {"tr": "Onaylıyor musun? (evet / hayır)", "en": "Approve? (yes / no)"},
     "card.customer_marker": {"tr": "(müşteriye Türkçe gider)", "en": "(sent to customers in Turkish)"},
     # -- approval.py: fact lines --------------------------------------------------

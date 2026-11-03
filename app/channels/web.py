@@ -566,7 +566,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             except ValueError:
                 session.backend = None
 
-    app = FastAPI(title="Çırak web", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Cirak Agent web", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware,
                        allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver", "*.modal.run"])
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
