@@ -381,3 +381,17 @@ def test_kedd_send_campaign_passes_sandbox_count(monkeypatch):
     res = b.send_campaign("x", "seg", template="marketing_reengagement_promo_tr")
     assert res["sent"] == 0 and res["sandbox"] == 17
     assert "17 demo müşterisi (gerçek mesaj gönderilmedi)" in res["note"]
+
+
+def test_gateway_utc_times_are_shown_in_turkiye_time_and_past_means_shared_now():
+    # Seen live: shared at 22:17 TR, reported as "bugün 19:17'de yayında" (the gateway's UTC).
+    from datetime import datetime, timedelta, timezone
+    now_utc = datetime.now(timezone.utc)
+    shared = {"action": "publish_social_post",
+              "result": {"platforms": ["instagram"], "scheduled_for": now_utc.isoformat().replace("+00:00", "Z")}}
+    assert i18n.render_progress("ok", 1, 1, shared, "tr") == "✅ 1/1 Instagram: paylaşıldı"
+    later = now_utc + timedelta(days=2)
+    sched = {"action": "publish_social_post",
+             "result": {"platforms": ["instagram"], "scheduled_for": later.strftime("%Y-%m-%dT%H:%M:%SZ")}}
+    tr_hm = (later + timedelta(hours=3)).strftime("%H:%M")
+    assert tr_hm in i18n.render_progress("ok", 1, 1, sched, "tr")

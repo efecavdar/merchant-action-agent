@@ -8,8 +8,10 @@ names/descriptions) is always Turkish and never goes through this module.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+
+from .clock import TR as TR_TZ, now_tr
 
 TR = "tr"
 EN = "en"
@@ -422,6 +424,22 @@ def _failed_line(i: int, n: int, step: dict[str, Any], lang: str) -> str:
     return t("progress.failed", lang).format(i=i, n=n, verb=verb, msg=msg_part, stop=stop)
 
 
+def _tr_wall_time(iso: str) -> str:
+    """Gateway times come back in UTC ("…Z"); the owner reads Türkiye time. Now or past → "" (shared now).
+
+    Seen live: a post shared at 22:17 was reported as "bugün 19:17'de yayında"."""
+    if not iso:
+        return ""
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    if when.tzinfo is None:          # a plan's own wall-clock time: already Türkiye time
+        return iso
+    when = when.astimezone(TR_TZ).replace(tzinfo=None)
+    return "" if when <= now_tr() + timedelta(minutes=1) else when.isoformat(timespec="minutes")
+
+
 def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
                     lang: str = TR, today: str | None = None) -> str:
     """One owner-facing progress line for an executor event, or "" when silent.
@@ -457,7 +475,7 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
         return t("progress.campaign", lang).format(**head, k="?" if k is None else k)
     if kind == "publish_social_post":
         plats = ", ".join(str(p)[:1].upper() + str(p)[1:] for p in (r.get("platforms") or [])) or "?"
-        sched = str(r.get("scheduled_for") or "")
+        sched = _tr_wall_time(str(r.get("scheduled_for") or ""))
         hm = sched[11:16] if len(sched) >= 16 and sched[10] in "T " else ""
         if not sched:
             return t("progress.post_now", lang).format(**head, plats=plats)
