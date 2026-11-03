@@ -32,8 +32,9 @@ from .tools.backend import Backend, KeddBackend, MockBackend, get_backend
 log = logging.getLogger(__name__)
 
 # Only explicit approval words. "ok", "tamam", "olur", "e" are everyday chat and must never run a plan.
-YES = {"evet", "onay", "onayla", "onaylıyorum", "evet onaylıyorum", "evet gönder", "yes"}
-NO = {"hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur"}
+YES = {"evet", "onay", "onayla", "onaylıyorum", "evet onaylıyorum", "evet gönder",
+       "yes", "yes please", "approve", "approved", "confirm", "go ahead", "do it"}
+NO = {"hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur", "cancel", "stop", "nope"}
 PENDING_TTL_S = 2 * 3600
 IMAGES_TTL_S = 30 * 60
 HISTORY_KEEP = 10

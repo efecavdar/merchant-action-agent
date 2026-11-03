@@ -371,3 +371,23 @@ def test_quick_chips_have_english_versions():
     src = (Path(__file__).resolve().parent.parent / "app" / "static" / "app.js").read_text()
     assert EN_INSTRUCTION in src
     assert "paintQuick" in src
+
+
+@pytest.mark.parametrize("word", ["Approve", "go ahead", "Yes please!", "confirm"])
+def test_english_approval_words_approve(monkeypatch, cfg, tmp_path, word):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Done.")
+    s = _session(tmp_path)
+    core.handle(s, "text", EN_INSTRUCTION)
+    core.handle(s, "text", word)
+    assert s.pending is None and len(s.backend.campaigns) == 1 and s.lang == "en"
+
+
+def test_english_cancel_word_cancels(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    s = _session(tmp_path)
+    core.handle(s, "text", EN_INSTRUCTION)
+    core.handle(s, "text", "cancel")
+    assert s.pending is None and s.backend.campaigns == []
