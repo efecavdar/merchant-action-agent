@@ -701,3 +701,35 @@ def test_whatsapp_owner_starts_on_kedd_without_a_command(monkeypatch):
 def test_greeting_does_not_mention_developer_commands():
     from app import i18n
     assert "/kedd" not in i18n.t("help", "tr") and "/kedd" not in i18n.t("help", "en")
+
+
+def test_long_planning_sends_heartbeat_notes_before_the_card_never_after(monkeypatch, cfg, tmp_path):
+    # Seen live: 20-40 s of silence after "Anladığım" looked like a crash. Notes fill the gap, then stop.
+    import time as _time
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(core, "HEARTBEAT_AFTER", (0.05, 0.1))
+
+    def slow_plan(*a, **k):
+        _time.sleep(0.3)
+        return _fake_plan(*a, **k)
+    monkeypatch.setattr(agent, "plan", slow_plan)
+    s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    notes = []
+    r = core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver", notify=notes.append)
+    assert notes == ["⏳ Bakıyorum…", "🧠 KEDD'deki bilgilere bakıp planı hazırlıyorum…",
+                     "⏳ Az kaldı, son kontrolleri yapıyorum…"]
+    assert "onayına sunuyorum" in r[-1].text
+    _time.sleep(0.2)
+    assert len(notes) == 3                                       # nothing after the card
+
+
+def test_fast_planning_sends_no_heartbeat(monkeypatch, cfg, tmp_path):
+    cfg("out_dir", tmp_path)
+    monkeypatch.setattr(core, "HEARTBEAT_AFTER", (0.05, 0.1))
+    monkeypatch.setattr(agent, "plan", _fake_plan)
+    s = core.Session(sender="905321", backend=MockBackend("butik", today=date(2026, 10, 27), store_path=tmp_path / "s"))
+    notes = []
+    core.handle(s, "text", "Fular ekle 850 lira, gelmeyenlere haber ver", notify=notes.append)
+    import time as _time
+    _time.sleep(0.2)
+    assert notes == ["⏳ Bakıyorum…"]

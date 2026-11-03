@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from . import agent, approval, executor, i18n, pipeline, report
 from .clock import today_tr
@@ -269,7 +271,8 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     ctx.history = [dict(h) for h in session.history]
     _history_add(session, "owner", ctx.instruction if kind == "audio" else text, now)
 
-    run = agent.plan(ctx, backend, lang=lang)
+    with _heartbeat(notify, lang):
+        run = agent.plan(ctx, backend, lang=lang)
     (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     if run.answer:                       # a question, not a job: answer and keep nothing pending
         log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
@@ -293,6 +296,33 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     replies = replies + [Reply(card, image_path=preview)]
     _remember_run(session, replies, now, getattr(run, "inbox_read", False))
     return replies
+
+
+HEARTBEAT_AFTER = (10.0, 30.0)   # seconds into planning; WhatsApp shows nothing while the model thinks
+
+
+@contextmanager
+def _heartbeat(notify: Notify, lang: str) -> Iterator[None]:
+    """Tell the owner we are still working while planning runs long. Silent once planning ends."""
+    stop = threading.Event()
+    lock = threading.Lock()   # a note must never land after the card: checked and sent under the lock
+
+    def beat() -> None:
+        for delay, key in zip(HEARTBEAT_AFTER, ("notify.thinking", "notify.almost")):
+            if stop.wait(delay):
+                return
+            with lock:
+                if stop.is_set():
+                    return
+                notify(i18n.t(key, lang))
+
+    thread = threading.Thread(target=beat, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        with lock:
+            stop.set()
 
 
 def mark_delivered(session: Session, ok: bool) -> None:

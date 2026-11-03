@@ -50,7 +50,9 @@ else:
 
 
 # One container, one message at a time: approvals and sessions can never race.
-@app.function(image=image, secrets=[secret], volumes={"/data": volume}, timeout=600, max_containers=1)
+# Kept warm: a cold start added seconds of silence before "Bakıyorum…" on every first message.
+@app.function(image=image, secrets=[secret], volumes={"/data": volume}, timeout=600, max_containers=1,
+              min_containers=1)
 def worker(msg: dict) -> dict[str, str] | None:
     import logging
 
@@ -115,7 +117,7 @@ else:
 demo_counts = modal.Dict.from_name("cirak-demo-counts", create_if_missing=True)
 
 
-@app.function(image=image, secrets=[demo_secret], timeout=600, max_containers=1)
+@app.function(image=image, secrets=[demo_secret], timeout=600, max_containers=1, min_containers=1)
 @modal.concurrent(max_inputs=32)   # one judge's 60 s plan must not freeze everyone else, or their own progress poll
 @modal.asgi_app()
 def demo():

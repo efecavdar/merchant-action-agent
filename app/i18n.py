@@ -75,6 +75,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "notify.looking": {"tr": "⏳ Bakıyorum…", "en": "⏳ Looking into it…"},
     "notify.photo_suffix": {"tr": " ({n} {unit})", "en": " ({n} {unit})"},
     "notify.voice": {"tr": "🎙️ Anladığım: “{text}”", "en": "🎙️ I understood: “{text}”"},
+    "notify.thinking": {"tr": "🧠 KEDD'deki bilgilere bakıp planı hazırlıyorum…",
+                        "en": "🧠 Checking your KEDD data and drafting the plan…"},
+    "notify.almost": {"tr": "⏳ Az kaldı, son kontrolleri yapıyorum…",
+                      "en": "⏳ Almost there, running the final checks…"},
     "notify.approved": {"tr": "✅ Onaylandı, uyguluyorum…", "en": "✅ Approved, applying it…"},
     # -- core.py: model-free report fallback ------------------------------------
     "report.fallback_title": {"tr": "Yapılanlar:", "en": "Done:"},
@@ -156,8 +160,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "progress.campaign": {"tr": "✅ {i}/{n} Kampanya: {k} kişiye gitti",
                           "en": "✅ {i}/{n} Campaign: sent to {k} people"},
     "progress.campaign_sandbox": {
-        "tr": "✅ {i}/{n} Kampanya: {k} demo müşterisi seçildi, gerçek mesaj gönderilmedi (demo işletme) · {s} gitti",
-        "en": "✅ {i}/{n} Campaign: {k} demo customers reached, no real message sent (demo business) · {s} sent"},
+        "tr": ("✅ {i}/{n} Kampanya: {k} demo müşterisi seçildi, gerçek mesaj gönderilmedi "
+               "(demo işletme) · {s} gitti"),
+        "en": ("✅ {i}/{n} Campaign: {k} demo customers reached, no real message sent "
+               "(demo business) · {s} sent")},
     "progress.post_scheduled": {"tr": "✅ {i}/{n} {plats}: {day} {hm}{suffix} yayında",
                                 "en": "✅ {i}/{n} {plats}: going live {day} at {hm}"},
     "progress.post_now": {"tr": "✅ {i}/{n} {plats}: paylaşıldı", "en": "✅ {i}/{n} {plats}: published"},
