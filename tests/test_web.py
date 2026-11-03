@@ -243,7 +243,7 @@ def test_public_kedd_refused_even_with_env(cfg, tmp_path, monkeypatch):
     c = TestClient(webchan.create_app())
     r = c.post("/api/message", data={"text": "/kedd"})
     assert r.status_code == 200
-    assert "yalnız örnek işletmelerle" in r.json()["replies"][0]["text"]
+    assert "only works with the demo businesses" in r.json()["replies"][0]["text"]
     assert built == [] and r.json()["business"] != "kedd"
 
 
@@ -290,10 +290,10 @@ def test_public_upload_magic_bytes(pub, monkeypatch):
     monkeypatch.setattr(webchan.core, "handle",
                         lambda *a, **k: calls.append(1) or [core.Reply("ok")])
     bad = pub.post("/api/message", files=[("images[]", ("x.jpg", b"not-an-image", "image/jpeg"))])
-    assert "jpg veya png" in bad.json()["replies"][0]["text"] and not calls
+    assert "jpg or png" in bad.json()["replies"][0]["text"] and not calls
     many = pub.post("/api/message", files=[("images[]", (f"{i}.png", PNG_BYTES, "image/png"))
                                            for i in range(5)])
-    assert "4 fotoğraf" in many.json()["replies"][0]["text"]
+    assert "Up to 4 photos" in many.json()["replies"][0]["text"]
     big = pub.post("/api/message", files=[("images[]", ("b.png", PNG_BYTES + b"x" * (6 * 1024 * 1024),
                                                        "image/png"))])
     assert "5 MB" in big.json()["replies"][0]["text"]
@@ -563,9 +563,10 @@ def test_t16_coverage_json_shape():
     assert any(it["status"] == "owner" for it in items)
 
 
-def test_t16_index_has_toggle_and_coverage(client):
-    assert 'id="langToggle"' in client.get("/").text
-    assert 'id="coverage"' in client.get("/").text
+def test_index_is_english_only_with_tour_and_coverage(client):
+    html = client.get("/").text
+    assert 'id="langToggle"' not in html     # judges get one language; the agent still follows the visitor's
+    assert 'id="coverage"' in html and 'id="tour"' in html
 
 
 def test_t29_hero_headline_and_proof_before_problem():

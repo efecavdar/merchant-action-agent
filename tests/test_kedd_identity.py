@@ -16,23 +16,21 @@ from app.tools.backend import KeddBackend
 HARNESS = Path(__file__).resolve().parent / "fixtures" / "chips_harness.js"
 APP_JS = Path(__file__).resolve().parent.parent / "app" / "static" / "app.js"
 
-KEDD_FILLS = [
-    "KEDD Büyüme'ye bu hafta sonu %20 indirim yap, bir süredir gelmeyen müşterilere haber ver",
-    "Yarın 14:00'e Nar Kuaför ile demo görüşmesi ayarla",
-    "Yeni WhatsApp asistanımız için Instagram gönderisi hazırla",
-    "Ada Kafe'ye 100 tavsiye puanı ekle",
-]
-KEDD_EN_FILLS = [
-    "Give 20% off KEDD Büyüme this weekend, tell customers who haven't visited in a while",
-    "Schedule a demo call with Nar Kuaför tomorrow at 14:00",
-    "Prepare an Instagram post for our new WhatsApp assistant",
-    "Add 100 referral points to Ada Kafe",
+# The live KEDD business is driven by the guided tour (app.js TOUR); the phone keeps one pointer to it.
+TOUR_TEXTS = [
+    "Good morning! What's waiting for me today?",
+    "Add this to the catalog as a new product. NFC digital business card, 750 lira.",
+    "Customers who haven't been in touch for 30 days: give them 15% off KEDD Büyüme this weekend and send "
+    "them a WhatsApp message about it.",
+    "Any unanswered messages?",
+    "Create a task: call Aras Bulut tomorrow at 11:00 about the setup.",
+    "Make an Instagram post announcing Cirak Agent, our new WhatsApp assistant for small businesses.",
+    "Set every price to 1 lira.",
 ]
 MOCK_FILLS = [
-    "Yeni ipek fular koleksiyonu ekle, tanesi 850 lira, hafta sonu %15 indirim, "
-    "uzun süredir gelmeyenlere haber ver",
-    "Yarın öğleden sonra boşluklarım var, saç boyamada %20 indirim, sadık müşterilere haber ver. "
-    "Bir de keratin bakımı ekle, 90 dakika, 2500 lira.",
+    "Add a new silk scarf collection, 850 lira each, 15% off this weekend, tell customers who haven't visited",
+    "I have free slots tomorrow afternoon, 20% off hair coloring, tell loyal customers. "
+    "Also add keratin treatment, 90 minutes, 2500 lira.",
 ]
 
 
@@ -64,8 +62,7 @@ def test_mock_chips_unchanged_and_visible_by_default(cfg, tmp_path):
     assert '<div class="quick" id="quickKedd" hidden>' in html
     for fill in MOCK_FILLS:
         assert f'data-fill="{fill}"' in _mock_set(html)
-    assert "Butik demosu" in _mock_set(html) and "Salon demosu" in _mock_set(html)
-    assert 'data-send="/kedd"' in _mock_set(html)
+    assert "Morning brief" in _mock_set(html)
 
 
 def test_live_business_gets_kedd_chips(cfg, tmp_path, monkeypatch):
@@ -79,18 +76,15 @@ def test_live_business_gets_kedd_chips(cfg, tmp_path, monkeypatch):
     assert '<div class="quick" id="quickKedd">' in html
     assert '<div class="quick" id="quickMock" hidden>' in html
     kedd = _kedd_set(html)
-    for fill in KEDD_FILLS:
-        assert f'data-fill="{fill}"' in kedd
-    assert "data-brief=" in kedd and "Sabah özeti" in kedd
-    assert "preview only on this page" in kedd
-    assert "/kedd" not in kedd  # already on the live business: no switch chip
+    assert "data-tour-jump" in kedd and "Follow the tour" in kedd
+    assert 'id="tour"' in html and 'id="tourSteps"' in html
 
 
-def test_kedd_chip_english_pairs_in_app_js():
+def test_tour_steps_live_in_app_js_in_english():
     src = APP_JS.read_text(encoding="utf-8")
-    for tr, en in zip(KEDD_FILLS, KEDD_EN_FILLS):
-        assert tr in src and en in src
-    assert "paintQuickSet" in src
+    for text in TOUR_TEXTS:
+        assert text in src, text
+    assert "paintQuickSet" in src and "function paintTour" in src
 
 
 def test_system_prompt_no_longer_hard_codes_boutique_salon():

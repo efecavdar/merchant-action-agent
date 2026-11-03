@@ -388,12 +388,13 @@ def test_gateway_message_stays_verbatim():
         kb.reply_to_conversation("conv-1", "Merhaba.")
 
 
-def test_demo_key_refuses_reply_before_network_but_reads():
+def test_demo_key_replies_go_to_the_gateway_sandbox():
+    # Gateway K20: the demo key may reply to synthetic demo conversations only (sandbox, never sent);
+    # any real conversation is refused there with 403 demo_scope. The adapter no longer refuses first.
     kb = _kb("inbox", "reply_send", key_id="demo")
-    assert kb.list_inbox()["items"]  # reads stay allowed
-    with pytest.raises(ValueError, match="Demo işletmede"):
-        kb.reply_to_conversation("conv-1", "Merhaba.")
-    assert all(c[0] == "GET" for c in kb._s.calls)  # no POST was attempted
+    assert kb.list_inbox()["items"]
+    assert kb.reply_to_conversation("conv-1", "Merhaba.")["message_id"] == "msg-77"
+    assert [c[1] for c in kb._s.calls if c[0] == "POST"] == [f"{BASE}/agent/inbox/reply"]
 
 
 def test_execute_sends_with_stable_idempotency_key(tmp_path):

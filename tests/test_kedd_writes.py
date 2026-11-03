@@ -298,12 +298,11 @@ def test_t20_demo_key_never_sends_or_touches_ads():
     assert pv["dry_run"] is True
     kb.adjust_loyalty("m-1", 50, "demo")  # reversible loyalty write: allowed
     with pytest.raises(ValueError, match="kapalı"):
-        kb.send_campaign("T", seg, template=TMPL, variables=dict(VARS))
-    with pytest.raises(ValueError, match="kapalı"):
         kb.ads_action("ad-1", "pause")
-    for _m, _u, _h, body in _posts(kb._s, "/agent/campaigns"):
-        assert body["dry_run"] is True
     assert _posts(kb._s, "/agent/ads/action") == []
+    # Gateway K20 decides campaign sends for the demo key: sandbox recipients only, else 403.
+    kb.send_campaign("T", seg, template=TMPL, variables=dict(VARS))
+    assert [b["dry_run"] for _m, _u, _h, b in _posts(kb._s, "/agent/campaigns")] == [True, False]
 
 
 # --------------------------------------------------------------------------- #

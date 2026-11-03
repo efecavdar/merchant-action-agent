@@ -136,7 +136,7 @@ def test_api_brief_returns_greeted_replies(monkeypatch, cfg, tmp_path):
     cfg("out_dir", tmp_path)
     monkeypatch.setattr(agent, "plan", _answering([], "Bugün 9 randevun var."))
     client = TestClient(webchan.create_app())
-    assert "Sabah özeti" in client.get("/").text                       # the quick button is there
+    assert "Morning brief" in client.get("/").text                       # the quick button is there
     r = client.post("/api/brief")
     assert r.status_code == 200
     assert r.json()["replies"][0]["text"].startswith("Günaydın ☀️ Bugün")

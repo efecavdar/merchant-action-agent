@@ -44,8 +44,8 @@ log = logging.getLogger(__name__)
 
 COOKIE = "cirak_sid"
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-_FAIL_MSG = "Bir sorun çıktı, hiçbir şey yapılmadı. Tekrar dener misin?"
-_KEDD_SLOW_MSG = "KEDD yavaş yanıt verdi, örnek salonu gösteriyorum."
+_FAIL_MSG = "Something went wrong and nothing was changed. Could you try again?"
+_KEDD_SLOW_MSG = "KEDD answered slowly, showing the sample salon instead."
 KEDD_FRESH_MIN_S = 5.0
 KEDD_STATE_IP_MINUTE_MAX = 20
 _probe_lock = threading.Lock()
@@ -72,32 +72,26 @@ SESSION_CREATE_HOUR_MAX = 20
 SESSION_CREATE_DAY_MAX = 60
 # Live KEDD demo (task 17).
 KEDD_DEMO_PHONE = "kedd-demo"
-CAP_APPROVED_HOUR_MAX = 3
+CAP_APPROVED_HOUR_MAX = 8   # the guided tour approves 5 plans; leave room for a second try
 KEDD_STATE_CACHE_S = 10
 KEDD_STATE_TIMEOUT_S = 10
 # Live progress (task 25): last rendered status lines per session for /api/progress.
 PROGRESS_KEEP = 50
 
-_KEDD_REFUSAL = "Bu demo yalnız örnek işletmelerle çalışır."
-_IP_LIMIT_MSG = ("Hız sınırına takıldın, biraz sonra tekrar dener misin? ⏳ "
-                 "You've hit the demo rate limit, please try again in a bit.")
-_GLOBAL_LIMIT_MSG = ("Bugünkü demo kotası doldu, yarın tekrar bekleriz. ⏳ "
-                     "Today's demo quota is used up, please come back tomorrow.")
-_TOO_MANY_IMAGES = "Bir mesaja en fazla 4 fotoğraf ekleyebilirsin. 📷 Up to 4 photos per message."
-_IMAGE_TOO_BIG = "Fotoğraflar 5 MB'tan küçük olmalı. 📷 Photos must be under 5 MB each."
-_IMAGE_BAD_TYPE = "Yalnızca jpg veya png fotoğraf gönderebilirsin. 📷 Photos must be jpg or png."
-_AUDIO_TOO_BIG = "Sesli not 2 MB'tan küçük olmalı. 🎙️ Voice notes must be under 2 MB."
-_TEXT_TOO_LONG = ("Mesajın biraz uzun, 1000 karakterden kısa dener misin? ✂️ "
-                  "Please keep messages under 1000 characters.")
-_TOO_LARGE = ("Mesajın çok büyük, daha küçük dener misin? 📦 Your message is too large.")
-_KEDD_DOWN = ("KEDD'ye şu an ulaşamıyorum, yazdıkların duruyor; birazdan tekrar dener misin? 🔌 "
-              "I can't reach KEDD right now, please try again in a bit.")
-_CAP_MSG = ("Saatte 3 planlık demo kotan doldu, örnek salonda devam ediyorsun. 🏁 "
-            "You've used your 3 demo plans for this hour, continuing on the sample salon.")
+_KEDD_REFUSAL = "This demo only works with the demo businesses."
+_IP_LIMIT_MSG = "You've hit the demo rate limit, please try again in a bit. ⏳"
+_GLOBAL_LIMIT_MSG = "Today's demo quota is used up, please come back tomorrow. ⏳"
+_TOO_MANY_IMAGES = "Up to 4 photos per message. 📷"
+_IMAGE_TOO_BIG = "Photos must be under 5 MB each. 📷"
+_IMAGE_BAD_TYPE = "Photos must be jpg or png. 📷"
+_AUDIO_TOO_BIG = "Voice notes must be under 2 MB. 🎙️"
+_TEXT_TOO_LONG = "Please keep messages under 1000 characters. ✂️"
+_TOO_LARGE = "Your message is too large, could you send something smaller? 📦"
+_KEDD_DOWN = "I can't reach KEDD right now, please try again in a bit. 🔌"
+_CAP_MSG = ("You've used your {n} approved demo plans for this hour, continuing on the sample salon. 🏁")
 _FREE_COMMANDS = {"/butik", "/salon", "/sifirla", "/reset", "/kedd"}
 _FREE_GREETINGS = {"/yardim", "/help", "yardım", "merhaba", "selam"}
-_BANNER_HTML = ('<div class="demobanner">Demo: örnek işletme verisi · Synthetic demo data · '
-                'Nothing is sent to real customers</div>')
+_BANNER_HTML = '<div class="demobanner">Live demo · Synthetic customers · Nothing is sent to real customers</div>'
 _MEDIA_HEADERS = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'"}
 
 
@@ -349,7 +343,7 @@ def _recent_writes(rep: dict[str, Any]) -> list[dict[str, str]]:
     for d in rep.get("active_discounts") or []:
         out.append({"kind": "discount", "label": f"{d.get('name', '')} (%{d.get('percent')})"})
     for c in rep.get("campaigns") or []:
-        out.append({"kind": "campaign", "label": f"{c.get('name', '')} → {c.get('recipients')} kişi"})
+        out.append({"kind": "campaign", "label": f"{c.get('name', '')} → {c.get('recipients')} people"})
     for p in rep.get("social_posts") or []:
         plats = ",".join(p.get("platforms") or [])
         out.append({"kind": "social", "label": f"{str(p.get('caption', ''))[:60]} ({plats})"})
@@ -451,7 +445,7 @@ def _kedd_state(session: core.Session, fresh: bool, cache: dict[str, Any],
             data = _fallback_state(str(e))
         except Exception:  # noqa: BLE001 — panel must render even on unexpected backend errors
             log.warning("kedd-state: live probe failed")
-            data = _fallback_state("KEDD'ye ulaşılamadı.")
+            data = _fallback_state("KEDD could not be reached.")
         cache["at"], cache["key"], cache["data"] = _now(), key, data
         return data
     finally:
@@ -532,6 +526,8 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                     with progress_guard:
                         progress.pop(oldest, None)
             sess = core.Session(sender=f"web-{sid}")
+            if settings.public_demo:
+                sess.lang = "en"   # the public page is English; a Turkish message still switches it
             if settings.public_demo and _demo_creds_ready():
                 sess.business = KEDD_DEMO_PHONE  # backend stays lazy; first read builds Kedd(demo)
             sessions[sid] = sess
@@ -706,7 +702,7 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
                     with _lock(sid):
                         session.business, session.backend, session.pending = "salon", None, None
                     log.info("message: capped")
-                    return _finalize(_refusal(session, _CAP_MSG), is_new, sid)
+                    return _finalize(_refusal(session, _CAP_MSG.format(n=CAP_APPROVED_HOUR_MAX)), is_new, sid)
 
         def _work() -> dict[str, Any]:
             with _lock(sid):
@@ -888,7 +884,8 @@ def create_app(daily_counts: Any | None = None) -> FastAPI:
             log.warning("kedd-state: probe timed out")
             data = _fallback_state(_KEDD_SLOW_MSG)
         log.info("kedd-state: state=%s", data["state"])
-        resp = JSONResponse(data)
+        # Per-session, so never cached: what this visitor's approvals changed, newest first.
+        resp = JSONResponse({**data, "your_changes": list(session.recent)})
         if is_new:
             resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax", secure=settings.public_demo)
         return resp

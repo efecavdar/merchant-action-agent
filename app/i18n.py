@@ -177,6 +177,10 @@ STRINGS: dict[str, dict[str, str]] = {
                "(demo business) · {s} sent")},
     "progress.post_scheduled": {"tr": "✅ {i}/{n} {plats}: {day} {hm}{suffix} yayında",
                                 "en": "✅ {i}/{n} {plats}: going live {day} at {hm}"},
+    "progress.post_preview": {"tr": "✅ {i}/{n} {plats}: önizleme (demo sayfası) — sahibin WhatsApp'ında gerçek "
+                                    "hesapta yayına girer",
+                              "en": "✅ {i}/{n} {plats}: preview only on this page — from the owner's WhatsApp "
+                                    "it goes live on the real account"},
     "progress.post_now": {"tr": "✅ {i}/{n} {plats}: paylaşıldı", "en": "✅ {i}/{n} {plats}: published"},
     "progress.appt_created": {"tr": "✅ {i}/{n} Randevu oluşturuldu: {when}",
                               "en": "✅ {i}/{n} Appointment created: {when}"},
@@ -475,6 +479,8 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
         return t("progress.campaign", lang).format(**head, k="?" if k is None else k)
     if kind == "publish_social_post":
         plats = ", ".join(str(p)[:1].upper() + str(p)[1:] for p in (r.get("platforms") or [])) or "?"
+        if r.get("status") == "preview":
+            return t("progress.post_preview", lang).format(**head, plats=plats)
         sched = _tr_wall_time(str(r.get("scheduled_for") or ""))
         hm = sched[11:16] if len(sched) >= 16 and sched[10] in "T " else ""
         if not sched:

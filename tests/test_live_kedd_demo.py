@@ -18,7 +18,7 @@ import requests
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app import agent, core, report
+from app import agent, core, i18n, report
 from app.channels import web as webchan
 from app.config import settings
 from app.tools.backend import KeddBackend, MockBackend, get_backend
@@ -206,21 +206,17 @@ def test_t17_gateway_failures_are_kedd_errors_not_plain_valueerrors(demo_env):
 # item 5: demo writes are refused client-side (gateway policy is the 2nd lock)
 # --------------------------------------------------------------------------- #
 
-def test_t17_demo_send_campaign_refused_without_touching_network(kedd_stub, demo_env):
-    kb = get_backend("kedd-demo")
-    with pytest.raises(ValueError, match="önizleme"):
-        kb.send_campaign("Ad", "seg-1", "mesaj")
-    assert kedd_stub.calls == []
-
-
-def test_t17_demo_publish_refused_even_as_dry_run(kedd_stub, demo_env, tmp_path):
+def test_t17_demo_publish_is_a_preview_and_never_touches_the_network(kedd_stub, demo_env, tmp_path):
+    # The public page must never post to KEDD's real Instagram: no call, and "preview", never "published".
     kb = get_backend("kedd-demo")
     img = tmp_path / "v.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
     for dry in (False, True):
-        with pytest.raises(ValueError, match="kapalı"):
-            kb.publish_social_post("cap", str(img), ["instagram"], dry_run=dry)
+        assert kb.publish_social_post("cap", str(img), ["instagram"], dry_run=dry)["status"] == "preview"
     assert kedd_stub.calls == []
+    line = i18n.render_progress("ok", 1, 1, {"action": "publish_social_post", "result": {
+        "status": "preview", "platforms": ["instagram"], "scheduled_for": None}}, "en")
+    assert "preview only" in line and "published" not in line
 
 
 def test_t17_main_key_dry_run_still_returns_preview(kedd_stub, demo_env, tmp_path):
@@ -260,7 +256,7 @@ def test_t17_kedd_command_still_refused_in_public_with_demo_creds(pubapp, kedd_s
     monkeypatch.setattr(webchan.core, "handle", lambda *a, **k: [core.Reply("ok")])
     c = _client(pubapp)
     r = c.post("/api/message", data={"text": "/kedd"})
-    assert "yalnız örnek işletmelerle" in r.json()["replies"][0]["text"]
+    assert "only works with the demo businesses" in r.json()["replies"][0]["text"]
     assert r.json()["business"] == "kedd-demo"  # default, not the main-key business
 
 
@@ -279,7 +275,7 @@ def test_t17_kedd_down_mid_conversation_keeps_state_and_retries(pubapp, kedd_stu
     r = c.post("/api/message", data={"text": "Başka bir fular daha ekle 900"})
     body = r.json()
     assert body["business"] == "kedd-demo"  # state kept, no silent flip to mock
-    assert "KEDD'ye şu an ulaşamıyorum" in body["replies"][0]["text"]
+    assert "I can't reach KEDD right now" in body["replies"][0]["text"]
     assert "onayına sunuyorum" not in "".join(x["text"] for x in body["replies"])
 
     kedd_stub.dead = False  # recovers: the very next message retries KEDD
@@ -291,7 +287,7 @@ def test_t17_brief_reports_kedd_down_instead_of_generic_failure(pubapp, kedd_stu
     kedd_stub.dead = True
     c = _client(pubapp)
     r = c.post("/api/brief")
-    assert "KEDD'ye şu an ulaşamıyorum" in r.json()["replies"][0]["text"]
+    assert "I can't reach KEDD right now" in r.json()["replies"][0]["text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -304,22 +300,22 @@ def _approve_cycle(c):
     return c.post("/api/message", data={"text": "evet"})
 
 
-def test_t17_cap_flips_session_to_mock_salon_on_fourth_approval(pubapp, kedd_stub, monkeypatch):
+def test_t17_cap_flips_session_to_mock_salon_after_the_hourly_approvals(pubapp, kedd_stub, monkeypatch):
     monkeypatch.setattr(agent, "plan", _fake_plan)
     monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     c = _client(pubapp)
-    for _ in range(3):
+    for _ in range(webchan.CAP_APPROVED_HOUR_MAX):
         r = _approve_cycle(c)
-        assert "demo kotan doldu" not in r.json()["replies"][0]["text"]
+        assert "approved demo plans" not in r.json()["replies"][0]["text"]
     catalog_posts = [x for x in kedd_stub.calls if x[0] == "POST" and x[1].endswith("/agent/catalog")]
-    assert len(catalog_posts) == 3  # the first three approvals really executed
+    assert len(catalog_posts) == webchan.CAP_APPROVED_HOUR_MAX  # these approvals really executed
 
     r = _approve_cycle(c)
     body = r.json()
-    assert "demo kotan doldu" in body["replies"][0]["text"]
+    assert "approved demo plans" in body["replies"][0]["text"]
     assert body["business"] == "salon"
     catalog_posts = [x for x in kedd_stub.calls if x[0] == "POST" and x[1].endswith("/agent/catalog")]
-    assert len(catalog_posts) == 3  # the fourth plan never ran
+    assert len(catalog_posts) == webchan.CAP_APPROVED_HOUR_MAX  # the next plan never ran
 
 
 def test_cap_also_counts_an_approval_sent_with_a_photo(pubapp, kedd_stub, monkeypatch):
@@ -329,14 +325,14 @@ def test_cap_also_counts_an_approval_sent_with_a_photo(pubapp, kedd_stub, monkey
     monkeypatch.setattr(agent, "plan", _fake_plan)
     monkeypatch.setattr(report, "summarize_for_merchant", lambda rep, lang="tr": "Hallettim.")
     c = _client(pubapp)
-    for _ in range(3):
+    for _ in range(webchan.CAP_APPROVED_HOUR_MAX):
         _approve_cycle(c)
     c.post("/api/message", data={"text": "Fular ekle 850"})
     r = c.post("/api/message", data={"text": "evet"},
                files=[("images", ("x.png", png.getvalue(), "image/png"))])
-    assert "demo kotan doldu" in r.json()["replies"][0]["text"]
+    assert "approved demo plans" in r.json()["replies"][0]["text"]
     catalog_posts = [x for x in kedd_stub.calls if x[0] == "POST" and x[1].endswith("/agent/catalog")]
-    assert len(catalog_posts) == 3
+    assert len(catalog_posts) == webchan.CAP_APPROVED_HOUR_MAX
 
 
 def _reads(stub):

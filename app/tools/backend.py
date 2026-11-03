@@ -2127,10 +2127,8 @@ class KeddBackend:
                       visual_path: str = "", template: str | None = None,
                       variables: dict[str, str] | None = None,
                       idempotency_key: str | None = None) -> dict[str, Any]:
-        if self._key_id == "demo":
-            # Preview-only demo: refuse before touching the network (the gateway's demo
-            # policy is the second lock). The approval card already showed the preview.
-            raise ValueError("Demo işletmede kampanya gönderimi kapalı; karttaki önizlemeyle yetin.")
+        # Demo key: gateway K20 lets it "send" only to the demo business's synthetic customers (sandbox,
+        # nothing leaves) and answers 403 demo_scope for any real recipient.
         if not template:
             raise ValueError("KEDD kampanya gönderimi şablon ister (şablonsuz mesaj gönderilemez)")
         body, named = self._template_body_and_vars(template, variables)
@@ -2330,10 +2328,9 @@ class KeddBackend:
                             idempotency_key: str | None = None,
                             dry_run: bool = False) -> dict[str, Any]:
         if self._key_id == "demo":
-            # Preview-only demo, even for dry runs: a "preview" outcome would render as
-            # "paylaşıldı", so refuse honestly instead of faking a share.
-            raise ValueError("Demo işletmede gönderi paylaşımı kapalı;"
-                             " karttaki görseli önizleme say.")
+            # The public page must never post to KEDD's real Instagram. No network call; the progress line
+            # says "preview only" (status "preview"), never "published".
+            return {"campaign_id": "", "status": "preview", "scheduled_for": None, "note": "demo"}
         if dry_run:
             return {"campaign_id": "", "status": "preview", "scheduled_for": publish_at, "note": ""}
         try:
@@ -2490,9 +2487,7 @@ class KeddBackend:
 
     def reply_to_conversation(self, conversation_id: str, text: str,
                               idempotency_key: str | None = None) -> dict[str, Any]:
-        if self._key_id == "demo":
-            # The public demo never messages customers; reads stay allowed.
-            raise ValueError("Demo işletmede müşteriye cevap gönderilemez.")
+        # Demo key: gateway K20 writes replies to synthetic demo conversations only (sandbox, never sent).
         try:
             res = self._post("/agent/inbox/reply",
                              {"conversation_id": conversation_id, "text": text},

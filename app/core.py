@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -38,6 +39,8 @@ NO = {"hayır", "hayir", "h", "iptal", "vazgeç", "vazgec", "no", "n", "dur", "c
 PENDING_TTL_S = 2 * 3600
 IMAGES_TTL_S = 30 * 60
 HISTORY_KEEP = 10
+RECENT_KEEP = 6
+_PROGRESS_HEAD = re.compile(r"^✅\s*\d+/\d+\s*")
 HISTORY_TTL_S = 2 * 3600
 HISTORY_REPLY_CHARS = 600
 
@@ -61,6 +64,9 @@ class Session:
     greeted: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)  # {"role": "owner"|"cirak", "text", "at"}
     lang: str = "tr"  # owner language, re-detected from every text message / transcript
+    # What the owner's approvals changed, newest first, as the owner-facing progress text (PII-free by the
+    # same rules). The demo page's KEDD panel shows it as "Your changes".
+    recent: list[dict[str, str]] = field(default_factory=list)
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         # A session pickled before a field existed (e.g. `history`) unpickles without it.
@@ -356,6 +362,10 @@ def _execute_pending(session: Session, notify: Notify,
             notify(line)
 
     steps = executor.execute(p["proposal"], p["ctx"], backend, out_dir=run_dir, on_step=_announce)
+    done = [s for s in steps if s["status"] == "ok"]
+    rows = [{"action": s["action"], "text": _PROGRESS_HEAD.sub("", i18n.render_progress(
+        "ok", i + 1, len(done), s, lang, today=today_iso))} for i, s in enumerate(done)]
+    session.recent = ([r for r in rows if r["text"]] + session.recent)[:RECENT_KEEP]
     # From here on things HAVE happened. A failing report must never turn into "nothing was done".
     try:
         rep = report.build_report(steps, backend)

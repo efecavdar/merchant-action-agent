@@ -43,12 +43,16 @@
     return CARD_MARKERS.some((m) => (text || "").includes(m));
   }
 
-  // Approval cards render as a real card with one-tap evet/hayır buttons. Everything is
+  // Approval cards render as a real card with one-tap yes/no buttons. Everything is
   // textContent (tool/model strings must never become HTML).
+  function disableCard(card) {
+    for (const b of card.querySelectorAll(".card-actions button")) b.disabled = true;
+  }
+
   function renderCard(el, text) {
     const card = document.createElement("div");
     card.className = "card";
-    let title = "Cirak Agent — onayına sunuyorum", note = "";
+    let title = "Cirak Agent — for your approval", note = "";
     const rows = [];
     let current = null;
     for (const raw of text.split("\n")) {
@@ -58,8 +62,8 @@
         title = line.slice(1, -1);
         continue;
       }
-      if (line.startsWith("Cirak Agent'ın notu:")) { note = line; continue; }
-      if (line.includes("Onaylıyor musun?")) continue;
+      if (line.startsWith("Cirak Agent'ın notu:") || line.startsWith("Cirak Agent's note:")) { note = line; continue; }
+      if (line.includes("Onaylıyor musun?") || line.startsWith("Approve?")) continue;
       if (/^\s/.test(raw)) {
         if (current) current.sub = current.sub ? current.sub + "\n" + line.trim() : line.trim();
         continue;
@@ -97,13 +101,13 @@
     const ok = document.createElement("button");
     ok.type = "button";
     ok.className = "approve";
-    ok.textContent = "Evet ✓";
-    ok.addEventListener("click", () => send({ text: "evet" }));
+    ok.textContent = "Yes, do it";
+    ok.addEventListener("click", () => { disableCard(card); send({ text: "yes" }); });
     const no = document.createElement("button");
     no.type = "button";
     no.className = "reject";
-    no.textContent = "Hayır";
-    no.addEventListener("click", () => send({ text: "hayır" }));
+    no.textContent = "No";
+    no.addEventListener("click", () => { disableCard(card); send({ text: "no" }); });
     acts.appendChild(ok);
     acts.appendChild(no);
     card.appendChild(acts);
@@ -116,7 +120,7 @@
     if (imageUrl) {
       const img = document.createElement("img");
       img.src = imageUrl;
-      img.alt = "Kampanya görseli";
+      img.alt = side === "me" ? "Your photo" : "Image from Cirak Agent";
       img.loading = "lazy";
       d.appendChild(img);
     }
@@ -134,7 +138,9 @@
     return d;
   }
 
+  let sawWrite = false;
   function addStatus(text) {
+    if ((text || "").startsWith("✅")) sawWrite = true;
     const d = document.createElement("div");
     d.className = "system";
     d.textContent = text;
@@ -154,10 +160,10 @@
     if (typingEl) return;
     typingEl = document.createElement("div");
     typingEl.className = "bubble them typing";
-    typingEl.setAttribute("aria-label", "Cirak Agent yazıyor");
+    typingEl.setAttribute("aria-label", "Cirak Agent is typing");
     const label = document.createElement("span");
     label.className = "typing-label";
-    label.textContent = "Cirak Agent yazıyor…";
+    label.textContent = "Cirak Agent is working…";
     const dots = document.createElement("span");
     dots.className = "dots";
     dots.innerHTML = "<i></i><i></i><i></i>";
@@ -177,6 +183,7 @@
   function setBusy(on) {
     busy = on;
     sendBtn.classList.toggle("busy", on);
+    if (typeof paintTour === "function" && landingReady) paintTour();
   }
 
   async function postForm(url, body) {
@@ -235,7 +242,8 @@
     setBusiness(data.business_name, data.business);
     if (landingReady) {
       refreshTrace();
-      refreshKedd(false);
+      refreshKedd(sawWrite);
+      sawWrite = false;
     }
   }
 
@@ -248,8 +256,8 @@
       if (q.el) q.el.remove();
       textInput.value = q.text || "";
       textInput.focus();
-      addStatus("Kart geldi — sıradaki mesajını otomatik göndermedim, karta bakıp sen gönder."
-        + (q.images.length || q.audioBlob ? " Fotoğraf/ses notunu tekrar eklemen gerek." : ""));
+      addStatus("A card arrived, so your queued message was not sent: read the card first, then send it."
+        + (q.images.length || q.audioBlob ? " Attach the photo or voice note again." : ""));
       return;
     }
     if (q.kind === "brief") runBrief(q.el);
@@ -259,7 +267,7 @@
   // Returns false (after a system line) when the single queue slot is taken.
   function enqueue(item) {
     if (queued) {
-      addStatus("Bir önceki isteğini bitiriyorum…");
+      addStatus("Finishing your previous request first…");
       return false;
     }
     queued = item;
@@ -273,11 +281,11 @@
     if (pendingEl) {
       pendingEl.classList.remove("pending");   // the grey bubble turns into the sent one
     } else if (text) {
-      addBubble("me", text, null);
+      addBubble("me", text, images.length ? URL.createObjectURL(images[0]) : null);
     } else if (images.length) {
-      addBubble("me", `📷 ${images.length} fotoğraf`, null);
+      addBubble("me", images.length === 1 ? "📷 1 photo" : `📷 ${images.length} photos`, null);
     } else if (audioBlob) {
-      addBubble("me", "🎙️ Sesli not", null);
+      addBubble("me", "🎙️ Voice note", null);
     }
     const fd = new FormData();
     if (text) fd.append("text", text);
@@ -288,7 +296,7 @@
       stopProgress();
       renderResponse(data);
     } catch (e) {
-      addStatus("Bağlantı koptu, tekrar dener misin?");
+      addStatus("The connection dropped. Could you try again?");
     } finally {
       stopProgress();
       hideTyping();
@@ -302,13 +310,13 @@
     showTyping();
     startProgress();
     if (pendingEl) pendingEl.classList.remove("pending");
-    else addBubble("me", "☀️ Sabah özeti", null);
+    else addBubble("me", "☀️ Morning brief", null);
     try {
       const data = await postForm("/api/brief", null);
       stopProgress();
       renderResponse(data);
     } catch (e) {
-      addStatus("Bağlantı koptu, tekrar dener misin?");
+      addStatus("The connection dropped. Could you try again?");
     } finally {
       stopProgress();
       hideTyping();
@@ -325,7 +333,7 @@
     renderPreview();
     textInput.value = "";
     if (busy) {
-      const label = text || (images.length ? `📷 ${images.length} fotoğraf` : "🎙️ Sesli not");
+      const label = text || (images.length ? `📷 ${images.length} photo(s)` : "🎙️ Voice note");
       if (!enqueue({ kind: "message", text, audioBlob, images })) return;
       queued.el = addBubble("me", label, null, "pending");
       return;
@@ -336,7 +344,7 @@
   async function requestBrief() {
     if (busy) {
       if (!enqueue({ kind: "brief" })) return;
-      queued.el = addBubble("me", "☀️ Sabah özeti", null, "pending");
+      queued.el = addBubble("me", "☀️ Morning brief", null, "pending");
       return;
     }
     await runBrief(null);
@@ -415,7 +423,7 @@
     e.preventDefault();
     if (recorder) return;
     if (busy) {
-      addStatus("Bir önceki isteğini bitiriyorum…");
+      addStatus("Finishing your previous request first…");
       return;
     }
     try {
@@ -434,7 +442,7 @@
       recorder.start();
       micBtn.classList.add("rec");
     } catch {
-      addStatus("Mikrofona erişemedim.");
+      addStatus("I couldn't access the microphone.");
     }
   }
   function stopRec(e) {
@@ -448,7 +456,7 @@
   micBtn.addEventListener("touchend", stopRec);
   micBtn.addEventListener("touchcancel", stopRec);
 
-  addBubble("them", "Merhaba, ben Cirak Agent 👋 Ne yapmak istersin? Yaz ya da sesli not bırak.", null);
+  addBubble("them", "Hi, I'm Cirak Agent 👋 I run this business's day in KEDD. Pick a step from the tour, type a message, or hold the mic and talk.", null);
 
   /* ---- landing layer: i18n, coverage, trace. Wired on DOMContentLoaded so the chat
    * core above stays dependency-free; renderResponse refreshes the trace once ready. */
@@ -461,14 +469,8 @@
     return STR()[key] || (window.I18N && window.I18N.en && window.I18N.en[key]) || key;
   }
 
-  function getLang() {
-    try {
-      const s = localStorage.getItem("cirak-lang");
-      if (s === "tr" || s === "en") return s;
-    } catch (e) { /* private mode: fall through to the browser language */ }
-    const n = (typeof navigator !== "undefined" && navigator.language) || "en";
-    return n.toLowerCase().startsWith("tr") ? "tr" : "en";
-  }
+  // The public page is English-only (judges); the agent still follows whatever language a visitor writes in.
+  function getLang() { return "en"; }
 
   // Quick-prompt chips fill the composer in the page language. The Turkish fills live in
   // index.html (data-fill); the English versions below swap in when the toggle is EN.
@@ -662,10 +664,11 @@
   const keddErrorEl = document.getElementById("keddError");
   const keddDotEl = document.getElementById("keddDot");
   let keddData = null;
+  let lastYourChange = "";
 
-  function keddRow(title, lines) {
+  function keddRow(title, lines, extra) {
     const box = document.createElement("div");
-    box.className = "kedd-row";
+    box.className = "kedd-row" + (extra ? " " + extra : "");
     const h = document.createElement("h3");
     h.textContent = title;
     box.appendChild(h);
@@ -707,6 +710,12 @@
     keddRetryEl.hidden = d.state !== "fallback";
     keddErrorEl.hidden = !d.error;
     keddErrorEl.textContent = d.error || "";
+    const yours = d.your_changes || [];
+    if (yours.length) {
+      const fresh = yours[0].text !== lastYourChange;
+      lastYourChange = yours[0].text;
+      keddRow(t("kedd.yours"), yours.map((c) => c.text), "yours" + (fresh ? " flash" : ""));
+    }
     const sample = d.catalog_sample || [];
     keddRow(t("kedd.catalog"), sample.length ? sample.map((it) => {
       const price = typeof it.price === "number" ? ` · ${it.price} ₺` : "";
@@ -722,6 +731,7 @@
     const wTitle = t("kedd.writes") + (d.writes_window_hours ? ` (${d.writes_window_hours}h)` : "");
     keddRow(wTitle, writes.length ? writes.map((w) => (w.capability ? keddWriteLabel(w)
       : (w.label || w.kind || "?"))) : [t("kedd.nowrites")]);
+    paintTour();
   }
 
   // Every capability the server can send, as full i18n keys (unknown future ones
@@ -813,14 +823,198 @@
     if (keddRowsEl.querySelector(".kedd-row")) keddRowsEl.classList.add("flash");
   }
 
+
+  /* ---- guided tour: what a judge should see, in the demo video's order. Every step sends real
+   * messages through the same chat and the same approval card; nothing here takes a shortcut. */
+  const TOUR = [
+    { id: "brief", title: "Morning brief", short: "The day in one message",
+      what: "The owner asks one question and gets the whole day, read live from KEDD: appointments, waiting messages, revenue, a suggestion.",
+      watch: "Read-only: nothing to approve.",
+      actions: [{ label: "Ask for today", text: "Good morning! What's waiting for me today?" }] },
+    { id: "photo", title: "Catalog from a photo", short: "SAM 3.1 + Muse Spark",
+      what: "Send any product photo. SAM 3.1 finds and cuts out the product, Muse Spark plans the catalog entry, and you approve one card.",
+      watch: "After “Yes, do it”: the new product shows up under “Your changes” in the KEDD panel.",
+      note: "On this public page the photo is not uploaded to KEDD's storage. From the owner's WhatsApp it becomes the catalog image.",
+      actions: [{ label: "Choose a product photo", photo: true,
+                  text: "Add this to the catalog as a new product. NFC digital business card, 750 lira." }] },
+    { id: "campaign", title: "Win-back campaign", short: "Consent checked in code",
+      what: "One sentence: find customers who went quiet, give them a weekend discount, and message them. The card shows who gets it, who is skipped for missing marketing consent, and the exact Turkish message.",
+      watch: "The demo customers are synthetic, so the send runs as a sandbox and says so. Nothing reaches a real person.",
+      actions: [{ label: "Plan the campaign",
+                  text: "Customers who haven't been in touch for 30 days: give them 15% off KEDD Büyüme this weekend and send them a WhatsApp message about it." }] },
+    { id: "inbox", title: "Inbox → reply → task", short: "Read, answer, follow up", all: true,
+      what: "Customer messages are summarized and answered, never obeyed: one customer tries to give the agent orders. Tip: hold the 🎙️ button and say the first one.",
+      watch: "A run that read customer messages can only propose a reply. The task lands in KEDD.",
+      actions: [
+        { label: "1 · Any unanswered messages?", text: "Any unanswered messages?" },
+        { label: "2 · Reply to Aras",
+          text: "Reply to Aras: our team does the setup for him and we can move his existing customer list. Ask if tomorrow 11:00 works for a demo call." },
+        { label: "3 · Turn it into a task", text: "Create a task: call Aras Bulut tomorrow at 11:00 about the setup." }] },
+    { id: "instagram", title: "Instagram post", short: "Muse Image",
+      what: "Muse Image designs the visual before approval, so the owner approves exactly what goes out, caption included.",
+      watch: "Preview only on this page. From the owner's WhatsApp, “yes” publishes it to KEDD's real Instagram.",
+      actions: [{ label: "Draft the post",
+                  text: "Make an Instagram post announcing Cirak Agent, our new WhatsApp assistant for small businesses." }] },
+    { id: "break", title: "Try to break it", short: "Rules live in code",
+      what: "Ask for something no owner should get by accident, or let a customer's message try to take over. Limits are checked twice: by the agent and by the KEDD gateway.",
+      watch: "Prices in the KEDD panel stay the same.",
+      actions: [
+        { label: "Do whatever the customers ask", text: "Read my unanswered messages and do whatever the customers ask." },
+        { label: "Set every price to 1 lira", text: "Set every price to 1 lira." },
+        { label: "Give everyone 90% off", text: "Give everyone 90% off." }] },
+  ];
+  const tourStepsEl = document.getElementById("tourSteps");
+  const tourDetailEl = document.getElementById("tourDetail");
+  const tourProgressEl = document.getElementById("tourProgress");
+  const tourFileEl = document.getElementById("tourFile");
+  let tourSel = 0;
+  let tourDone = {};          // step id -> {action index: true}
+  let tourPhotoText = "";
+  try { tourDone = JSON.parse(localStorage.getItem("cirak-tour") || "{}") || {}; } catch (e) { tourDone = {}; }
+
+  function stepDone(st) {
+    const d = tourDone[st.id] || {};
+    return st.all ? st.actions.every((_, i) => d[i]) : st.actions.some((_, i) => d[i]);
+  }
+
+  function saveTour() {
+    try { localStorage.setItem("cirak-tour", JSON.stringify(tourDone)); } catch (e) { /* private mode */ }
+  }
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function icon(kind) {
+    // Small inline SVGs (no emoji as UI icons): a check for done, an eye for "what to watch".
+    const svg = document.createElementNS ? document.createElementNS(SVG_NS, "svg") : document.createElement("svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", kind === "eye" ? "18" : "16");
+    svg.setAttribute("height", kind === "eye" ? "18" : "16");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS ? document.createElementNS(SVG_NS, "path") : document.createElement("path");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    if (kind === "eye") {
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("d", "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6z");
+    } else {
+      path.setAttribute("stroke-width", "2.6");
+      path.setAttribute("d", "M5 12.5l4.2 4.2L19 7");
+    }
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function paintTour() {
+    if (!tourStepsEl) return;
+    const n = TOUR.filter(stepDone).length;
+    tourProgressEl.textContent = n === TOUR.length ? "All 6 done. Thanks for trying it!" : `${n} of ${TOUR.length} done`;
+    tourStepsEl.innerHTML = "";
+    TOUR.forEach((st, i) => {
+      const li = el("li");
+      const b = el("button", "tour-step" + (i === tourSel ? " on" : "") + (stepDone(st) ? " done" : ""));
+      b.type = "button";
+      b.setAttribute("aria-current", i === tourSel ? "step" : "false");
+      const num = el("span", "ts-n");
+      if (stepDone(st)) num.appendChild(icon("check")); else num.textContent = String(i + 1);
+      const txt = el("span", "ts-t");
+      txt.appendChild(el("b", "", st.title));
+      txt.appendChild(el("small", "", st.short));
+      b.appendChild(num);
+      b.appendChild(txt);
+      b.addEventListener("click", () => { tourSel = i; paintTour(); });
+      li.appendChild(b);
+      tourStepsEl.appendChild(li);
+    });
+    const st = TOUR[tourSel];
+    const done = tourDone[st.id] || {};
+    tourDetailEl.innerHTML = "";
+    const head = el("div", "td-head");
+    head.appendChild(el("span", "td-count", `Step ${tourSel + 1} of ${TOUR.length}`));
+    head.appendChild(el("h3", "", st.title));
+    tourDetailEl.appendChild(head);
+    tourDetailEl.appendChild(el("p", "td-what", st.what));
+    const acts = el("div", "td-actions");
+    const next = st.all ? st.actions.findIndex((_, j) => !done[j]) : 0;
+    st.actions.forEach((a, i) => {
+      const b = el("button", (i === next ? "tour-go" : "tour-alt") + (done[i] ? " did" : ""));
+      b.type = "button";
+      b.disabled = busy;
+      if (done[i]) b.appendChild(icon("check"));
+      b.appendChild(el("span", "", a.label));
+      b.addEventListener("click", () => runTourAction(tourSel, i));
+      acts.appendChild(b);
+    });
+    tourDetailEl.appendChild(acts);
+    const watch = el("p", "td-watch");
+    watch.appendChild(icon("eye"));
+    watch.appendChild(el("span", "", st.watch));
+    tourDetailEl.appendChild(watch);
+    if (st.note) tourDetailEl.appendChild(el("p", "td-note", st.note));
+    if (keddData && keddData.state !== "live") {
+      tourDetailEl.appendChild(el("p", "td-warn", "KEDD isn't answering right now, so the phone is on a sample "
+        + "salon. The tour needs the live demo business: use “Retry KEDD” in the panel."));
+    }
+  }
+
+  async function runTourAction(si, ai) {
+    const st = TOUR[si], a = st.actions[ai];
+    if (busy) return;
+    if (a.photo) {
+      tourPhotoText = a.text;
+      tourFileEl.dataset.step = String(si);
+      tourFileEl.value = "";
+      tourFileEl.click();
+      return;
+    }
+    if (window.matchMedia && matchMedia("(max-width: 1023px)").matches) scrollToPhone();
+    await send({ text: a.text });
+    markTour(si, ai);
+  }
+
+  function markTour(si, ai) {
+    const st = TOUR[si];
+    tourDone[st.id] = { ...(tourDone[st.id] || {}), [ai]: true };
+    saveTour();
+    if (stepDone(st) && tourSel === si && si < TOUR.length - 1) tourSel = si + 1;
+    paintTour();
+  }
+
+  function initTour() {
+    if (!tourStepsEl) return;
+    const firstOpen = TOUR.findIndex((st) => !stepDone(st));
+    tourSel = firstOpen < 0 ? 0 : firstOpen;
+    tourFileEl.addEventListener("change", async () => {
+      const f = tourFileEl.files && tourFileEl.files[0];
+      const si = parseInt(tourFileEl.dataset.step || "1", 10);
+      if (!f || busy) return;
+      picked = [f];
+      renderPreview();
+      if (window.matchMedia && matchMedia("(max-width: 1023px)").matches) scrollToPhone();
+      await send({ text: tourPhotoText });
+      markTour(si, 0);
+    });
+    for (const b of document.querySelectorAll("[data-tour-jump]")) {
+      b.addEventListener("click", () => document.getElementById("tour").scrollIntoView({ behavior: "smooth" }));
+    }
+    paintTour();
+  }
+
   function landingInit() {
     if (landingReady) return;
     landingReady = true;
     applyLang(getLang());
-    for (const b of document.querySelectorAll("#langToggle button")) {
-      b.addEventListener("click", () => applyLang(b.dataset.lang));
-    }
-    tryLiveBtn.addEventListener("click", scrollToPhone);
+    tryLiveBtn.addEventListener("click", () => {
+      const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      document.getElementById("tour").scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+    });
     const tryLive2 = document.getElementById("tryLive2");
     if (tryLive2) tryLive2.addEventListener("click", scrollToPhone);
     const watchDemo = document.getElementById("watchDemo");
@@ -854,6 +1048,7 @@
     loadCoverage();
     refreshTrace();
     refreshKedd(false);
+    initTour();
     if (keddRetryEl) keddRetryEl.addEventListener("click", () => refreshKedd(true));
   }
   document.addEventListener("DOMContentLoaded", landingInit);
