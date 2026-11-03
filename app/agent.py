@@ -394,6 +394,9 @@ def plan(ctx: MediaContext, backend: Backend, max_revisions: int = 3, lang: str 
         "Here is what the owner sent, already processed:\n"
         + json.dumps(ctx.to_prompt_json(), ensure_ascii=False, indent=2)
         + "\n\nInspect the business with the tools, then call propose_actions or reply_only."
+        # Seen live: an English owner got a Turkish answer — the business data is Turkish and outweighed the
+        # system prompt. Restated last, where it binds hardest; core.py still checks the result.
+        + f"\nWrite reply_only text and summary_tr in {owner_lang}. Only customer-facing texts are Turkish."
     )
     response = client.responses.create(
         model=settings.orchestrator_model,

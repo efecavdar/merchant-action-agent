@@ -277,11 +277,13 @@ def handle(session: Session, kind: str, text: str = "", media_path: str = "",
     (run_dir / "tool_log.json").write_text(json.dumps(run.tool_log, ensure_ascii=False, indent=2, default=str))
     if run.answer:                       # a question, not a job: answer and keep nothing pending
         log.info("answered without actions: %d turns, usage %s", run.turns, run.usage)
-        replies = replies + [Reply(run.answer)]
+        replies = replies + [Reply(report.in_owner_language(run.answer, lang))]
         _remember_run(session, replies, now, getattr(run, "inbox_read", False))
         return replies
     seg_counts = {e["result"].get("segment_id"): e["result"].get("count")
                   for e in run.tool_log if e.get("tool") == "find_customers" and isinstance(e.get("result"), dict)}
+    # The note is the owner's; customer-facing texts in the actions stay Turkish.
+    run.proposal["summary_tr"] = report.in_owner_language(run.proposal["summary_tr"], lang)
     executor.prepare_social_previews(run.proposal, ctx, run_dir)
     card = approval.render_card(run.proposal, ctx, seg_counts, approval.card_facts(run.tool_log),
                                 lang=lang)

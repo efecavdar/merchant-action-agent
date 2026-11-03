@@ -391,3 +391,31 @@ def test_english_cancel_word_cancels(monkeypatch, cfg, tmp_path):
     core.handle(s, "text", EN_INSTRUCTION)
     core.handle(s, "text", "cancel")
     assert s.pending is None and s.backend.campaigns == []
+
+
+TR_ANSWER = "Günaydın! Bugün randevun yok. Seni bekleyenler: 4 cevap bekleyen mesaj, 7.500 TL ciro."
+
+
+def test_turkish_answer_to_an_english_owner_is_translated(monkeypatch, cfg, tmp_path):
+    # Seen live: "What's waiting for me today?" got a Turkish brief.
+    cfg("out_dir", tmp_path)
+    cfg("api_key", "test")
+    monkeypatch.setattr(agent, "plan", lambda *a, **k: SimpleNamespace(
+        answer=TR_ANSWER, tool_log=[], turns=1, usage={}, inbox_read=False))
+    monkeypatch.setattr(report.meta, "chat", lambda *a, **k:
+                        "Good morning! No appointments today. Waiting for you: 4 unanswered messages, 7,500 TL revenue.")
+    s = _session(tmp_path)
+    r = core.handle(s, "text", "Good morning! What's waiting for me today?")
+    assert s.lang == "en" and r[-1].text.startswith("Good morning!")
+
+
+def test_translation_that_changes_a_number_is_discarded(monkeypatch, cfg):
+    cfg("api_key", "test")
+    monkeypatch.setattr(report.meta, "chat", lambda *a, **k: "Good morning! 5 unanswered messages, 7,500 TL.")
+    assert report.in_owner_language(TR_ANSWER, "en") == TR_ANSWER
+
+
+def test_answer_already_in_the_owner_language_is_not_sent_to_the_model(monkeypatch, cfg):
+    cfg("api_key", "test")
+    monkeypatch.setattr(report.meta, "chat", lambda *a, **k: pytest.fail("no translation needed"))
+    assert report.in_owner_language("You have 4 unanswered messages today.", "en").startswith("You have")
