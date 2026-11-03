@@ -9,7 +9,7 @@ from . import i18n
 from .pipeline import MediaContext
 from .tools.backend import render_campaign_template
 
-_ICON = {"add_catalog_item": "🛍️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
+_ICON = {"add_catalog_item": "🛍️", "update_catalog_item": "✏️", "create_discount": "🏷️", "generate_visual": "🖼️", "send_campaign": "📣",
          "create_appointment": "📅", "reschedule_appointment": "🔁", "cancel_appointment": "❌",
          "publish_social_post": "📱"}
 
@@ -353,6 +353,15 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
             if desc:
                 line += f" — {desc}"
             lines.append(line)
+        elif t == "update_catalog_item":
+            item = facts["items"].get(a.get("item_id") or "") or {}
+            current = clean_display(item.get("name") or a.get("item_id") or "?")
+            changes = []
+            if a.get("temp_id"):
+                changes.append(i18n.t("card.update_photo", lang))
+            if a.get("name"):
+                changes.append(i18n.t("card.update_name", lang).format(name=clean_display(a["name"])))
+            lines.append(f"{ic} {i18n.t('card.update_label', lang)}: {current} — {', '.join(changes)}")
         elif t == "create_discount":
             refs = a.get("item_refs") or []
             resolved = [clean_display(new_items.get(r) or (facts["items"].get(r) or {}).get("name") or r)

@@ -115,7 +115,15 @@ def execute(proposal: dict[str, Any], ctx: MediaContext, backend: Backend,
                 )
                 id_map[handle] = res["id"]
                 record(a, "ok", {"item_id": res["id"], "type": res["type"], "name": res["name"],
-                                 "price": res["price"], "from_photo": card is not None})
+                                 "price": res["price"], "from_photo": card is not None,
+                                 "photo_saved": bool(res.get("image_path"))})
+
+            elif t == "update_catalog_item":
+                card = crops.get(a.get("temp_id") or "")
+                res = backend.update_catalog_item(a["item_id"], name=a.get("name"),
+                                                  image_path=card.crop_path if card else "", **idem)
+                record(a, "ok", {"item_id": res["id"], "name": res["name"],
+                                 "photo_saved": bool(res.get("image_path")), "renamed": bool(a.get("name"))})
 
             elif t == "create_discount":
                 ids = [id_map.get(r, r) for r in a["item_refs"]]

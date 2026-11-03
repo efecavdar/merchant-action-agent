@@ -28,7 +28,7 @@ MAX_UNIT_PRICE = 500_000
 # Free text with no rule of its own: it reaches the backend or the card, so it still gets a shape and a cap.
 _TEXT_CAPS = {"label": 200, "visual_prompt": 1000, "reason": 200, "staff": 60}
 
-ACTION_TYPES = {"add_catalog_item", "create_discount", "generate_visual", "send_campaign",
+ACTION_TYPES = {"add_catalog_item", "update_catalog_item", "create_discount", "generate_visual", "send_campaign",
                 "create_appointment", "reschedule_appointment", "cancel_appointment",
                 "complete_appointment", "create_quote_draft", "teach_chatbot",
                 "reply_to_conversation",
@@ -39,7 +39,7 @@ SOCIAL_PLATFORMS = ("instagram", "facebook")
 MAX_CAPTION_CHARS = 2200
 MAX_HASHTAGS = 15
 _PUBLISH_TYPES = {"send_campaign", "publish_social_post"}
-_SETUP_TYPES = {"add_catalog_item", "create_discount", "apply_bulk_price"}
+_SETUP_TYPES = {"add_catalog_item", "update_catalog_item", "create_discount", "apply_bulk_price"}
 APPOINTMENT_TYPES = {"create_appointment", "reschedule_appointment", "cancel_appointment",
                      "complete_appointment"}
 ADS_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
@@ -73,6 +73,10 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "item_type": {"type": "string", "enum": ["product", "service"]},
                     "temp_id": {"type": "string",
                                 "description": "detected product temp_id when the item comes from a photo; omit for items described in words"},
+                    # update_catalog_item
+                    "item_id": {"type": "string",
+                                "description": "update_catalog_item: id of an EXISTING item from list_catalog; "
+                                               "give temp_id to set its photo and/or name to rename it"},
                     "ref": {"type": "string",
                             "description": "your own short handle for a text-only item or a new "
                                            "customer/lead/task "
@@ -453,6 +457,22 @@ def _iso_dt(s: str) -> datetime:
     return dt
 
 
+def _existing_by_name(catalog: dict[str, dict[str, Any]], name: Any, item_type: Any) -> str | None:
+    """Id of a catalog item with the same name and type (case/space-insensitive), if any."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    def fold(v: str) -> str:   # Turkish I/İ first: casefold alone makes "BAKIMI" ≠ "Bakımı"
+        return " ".join(v.replace("I", "ı").replace("İ", "i").lower().split())
+
+    key = fold(name)
+    for item_id, item in catalog.items():
+        other = item.get("name")
+        if isinstance(other, str) and fold(other) == key \
+                and (item_type is None or item.get("type") in (None, item_type)):
+            return item_id
+    return None
+
+
 def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                       catalog: dict[str, dict[str, Any]], known_segments: set[str],
                       known_appointments: set[str] | None = None,
@@ -552,6 +572,11 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                 errors.append(f"{where}: give temp_id (photo item) or ref (text item)")
             elif handle in new_refs or handle in catalog:
                 errors.append(f"{where}: {handle} added twice / clashes with an existing id")
+            same = _existing_by_name(catalog, a.get("name"), a.get("item_type"))
+            if same:
+                # Seen live: "add this photo to the service" created a second, photo-less copy.
+                errors.append(f"{where}: \"{a.get('name')}\" already exists (id {same}); to change it, e.g. "
+                              "to add a photo, use update_catalog_item with item_id instead of adding it again")
             price = a.get("price")
             if not _is_number(price) or price <= 0 or price > 500_000:
                 errors.append(f"{where}: price must be a positive number in TRY")
@@ -583,6 +608,28 @@ def validate_proposal(proposal: dict[str, Any], known_temp_ids: set[str],
                     errors.append(f"{where}: duration_minutes must be 5..600")
             if handle:
                 new_refs[handle] = float(price) if _is_number(price) else 0.0
+
+        elif t == "update_catalog_item":
+            item_id = a.get("item_id")
+            if not isinstance(item_id, str) or item_id not in catalog:
+                errors.append(f"{where}: item_id must be an id from list_catalog")
+            tid = a.get("temp_id")
+            if tid is not None and tid not in known_temp_ids:
+                errors.append(f"{where}: temp_id must be one of {sorted(known_temp_ids)} (the photo to set)")
+            name = a.get("name")
+            if name is not None:
+                if not isinstance(name, str) or not name.strip():
+                    errors.append(f"{where}: name must be a non-empty string")
+                else:
+                    if len(name) > MAX_NAME_CHARS:
+                        errors.append(f"{where}: name too long ({len(name)} > {MAX_NAME_CHARS} chars)")
+                    _check_no_contacts(where, "name", name, errors)
+            if tid is None and name is None:
+                errors.append(f"{where}: give temp_id (new photo) and/or name; prices change with "
+                              "preview_bulk_price + apply_bulk_price")
+            for key in ("price", "description", "category", "duration_minutes"):
+                if a.get(key) is not None:
+                    errors.append(f"{where}: {key} cannot be changed here (only photo and name)")
 
         elif t == "create_discount":
             pct = a.get("percent")

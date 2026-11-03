@@ -100,6 +100,9 @@ Rules:
   caption (≤2200 chars, ≤15 hashtags, no URLs/phones, prices only from this plan), platforms,
   optional publish_at (ISO, 5 min–30 days out), an English visual_prompt naming the items,
   and item_refs (photo temp_ids give real crops).
+- An item that already exists (check list_catalog) is never added again. "Bu hizmete şu görseli ekle",
+  "fotoğrafını güncelle" or a rename → update_catalog_item {item_id from list_catalog, temp_id of the
+  photo and/or name}. Prices change only through preview_bulk_price + apply_bulk_price.
 - Order actions: add_catalog_item → create_discount → generate_visual → send_campaign;
   publish_social_post after the items it features; appointment actions
   may come anywhere.

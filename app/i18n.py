@@ -88,6 +88,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "\n\n⚠️ One step failed, so I stopped the rest for safety: {err}",
     },
     "step.add_catalog_item": {"tr": "Kataloğa eklendi", "en": "Added to catalog"},
+    "step.update_catalog_item": {"tr": "Katalog kalemi güncellendi", "en": "Catalog item updated"},
     "step.create_discount": {"tr": "İndirim tanımlandı", "en": "Discount created"},
     "step.generate_visual": {"tr": "Kampanya görseli hazırlandı", "en": "Campaign visual prepared"},
     "step.send_campaign": {"tr": "Kampanya gönderildi", "en": "Campaign sent"},
@@ -104,6 +105,9 @@ STRINGS: dict[str, dict[str, str]] = {
     "card.product": {"tr": "Ürün", "en": "Product"},
     "card.service": {"tr": "Hizmet", "en": "Service"},
     "card.discount_label": {"tr": "İndirim", "en": "Discount"},
+    "card.update_label": {"tr": "Güncelle", "en": "Update"},
+    "card.update_photo": {"tr": "fotoğrafı eklenecek 📷", "en": "photo will be set 📷"},
+    "card.update_name": {"tr": "yeni adı “{name}”", "en": "new name “{name}”"},
     "card.item_one": {"tr": "kalem", "en": "item"},
     "card.item_many": {"tr": "kalem", "en": "items"},
     "card.visual": {"tr": "Kampanya görseli üretilecek", "en": "Campaign visual will be generated"},
@@ -153,6 +157,9 @@ STRINGS: dict[str, dict[str, str]] = {
                             "en": "✅ {i}/{n} Item added: {name} — {price} ₺"},
     "progress.service_added": {"tr": "✅ {i}/{n} Hizmet eklendi: {name} — {price} ₺",
                                "en": "✅ {i}/{n} Service added: {name} — {price} ₺"},
+    "progress.item_updated": {"tr": "✅ {i}/{n} Güncellendi: {name}{what}",
+                              "en": "✅ {i}/{n} Updated: {name}{what}"},
+    "progress.what_photo": {"tr": " — fotoğraf eklendi", "en": " — photo added"},
     "progress.discount": {"tr": "✅ {i}/{n} İndirim planlandı: %{p}, {dates}",
                           "en": "✅ {i}/{n} Discount created: {p}%, {dates}"},
     "progress.visual": {"tr": "✅ {i}/{n} Kampanya görseli hazır",
@@ -183,6 +190,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "progress.failed_stop": {"tr": " — kalan adımları durdurdum",
                                  "en": " — I stopped the remaining steps"},
     "progress.fail.add_catalog_item": {"tr": "Kataloga eklenemedi", "en": "Couldn't add to catalog"},
+    "progress.fail.update_catalog_item": {"tr": "Katalog kalemi güncellenemedi",
+                                          "en": "Couldn't update the catalog item"},
     "progress.fail.create_discount": {"tr": "İndirim yapılamadı", "en": "Couldn't create the discount"},
     "progress.fail.generate_visual": {"tr": "Görsel üretilemedi", "en": "Couldn't generate the visual"},
     "progress.fail.send_campaign": {"tr": "Kampanya gönderilemedi", "en": "Couldn't send the campaign"},
@@ -431,6 +440,9 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
         key = "progress.service_added" if r.get("type") == "service" else "progress.item_added"
         return t(key, lang).format(**head, name=_clean(r.get("name"), _NAME_CHARS),
                                    price=_money(r.get("price")))
+    if kind == "update_catalog_item":
+        what = t("progress.what_photo", lang) if r.get("photo_saved") else ""
+        return t("progress.item_updated", lang).format(**head, name=_clean(r.get("name"), _NAME_CHARS), what=what)
     if kind == "create_discount":
         return t("progress.discount", lang).format(
             **head, p=r.get("percent"), dates=_date_range(r.get("starts"), r.get("ends"), lang))

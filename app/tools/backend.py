@@ -284,6 +284,8 @@ class Backend(Protocol):
     def add_catalog_item(self, item_type: str, name: str, price: float, category: str,
                          description: str, image_path: str = "",
                          duration_minutes: int | None = None) -> dict[str, Any]: ...
+    def update_catalog_item(self, item_id: str, name: str | None = None,
+                            image_path: str = "") -> dict[str, Any]: ...
     def create_discount(self, name: str, percent: int, item_ids: list[str],
                         starts: str, ends: str) -> dict[str, Any]: ...
     def send_campaign(self, name: str, segment_id: str, message: str = "",
@@ -965,6 +967,15 @@ class MockBackend:
                          description, image_path, duration_minutes=duration_minutes,
                          added=self.today.isoformat())
         self.items.append(it)
+        return asdict(it)
+
+    def update_catalog_item(self, item_id: str, name: str | None = None,
+                            image_path: str = "") -> dict[str, Any]:
+        it = self._item(item_id)                      # raises on unknown ids
+        if name:
+            it.name = name
+        if image_path:
+            it.image_path = image_path
         return asdict(it)
 
     def create_discount(self, name: str, percent: int, item_ids: list[str],
@@ -2007,15 +2018,38 @@ class KeddBackend:
                          description: str, image_path: str = "",
                          duration_minutes: int | None = None,
                          idempotency_key: str | None = None) -> dict[str, Any]:
-        # image_path has no gateway field; the item is created without the photo.
-        res = self._post("/agent/catalog", {"type": item_type, "name": name, "price": price,
-                                            "category": category, "description": description,
-                                            "duration_minutes": duration_minutes}, idempotency_key)
+        body: dict[str, Any] = {"type": item_type, "name": name, "price": price, "category": category,
+                                "description": description}
+        if duration_minutes is not None:
+            body["durationMinutes"] = duration_minutes   # the gateway's field name; snake_case was dropped
+        sent_image = self._attach_image(body, image_path)
+        res = self._post("/agent/catalog", body, idempotency_key)
         return {"id": res.get("id", ""), "type": res.get("type", item_type),
                 "name": res.get("name", name), "price": self._f(res.get("price", price)) or 0.0,
-                "currency": "TRY", "category": category, "description": description, "image_path": "",
+                "currency": "TRY", "category": category, "description": description,
+                "image_path": image_path if sent_image else "",
                 "duration_minutes": duration_minutes, "sale_price": None, "sale_starts": None,
                 "sale_ends": None, "active": True, "added": today_tr().isoformat()}
+
+    def _attach_image(self, body: dict[str, Any], image_path: str) -> bool:
+        """Gateway K17: the owner's photo travels with the write. The demo key may not upload."""
+        if not image_path or self._key_id == "demo" or not Path(image_path).exists():
+            return False
+        body["image_base64"] = base64.b64encode(_jpg_under_limit(Path(image_path).read_bytes())).decode()
+        body["image_mime"] = "image/jpeg"
+        return True
+
+    def update_catalog_item(self, item_id: str, name: str | None = None, image_path: str = "",
+                            idempotency_key: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"item_id": item_id}
+        if name:
+            body["name"] = name
+        sent_image = self._attach_image(body, image_path)
+        if len(body) == 1:
+            raise ValueError("Güncellenecek bir şey yok (demo işletmede görsel yüklenemez).")
+        res = self._post("/agent/catalog/update", body, idempotency_key)
+        return {"id": res.get("id", item_id), "name": res.get("name", name or ""),
+                "price": self._f(res.get("price")), "image_path": image_path if sent_image else ""}
 
     def create_discount(self, name: str, percent: int, item_ids: list[str],
                         starts: str, ends: str,

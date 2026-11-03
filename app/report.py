@@ -49,6 +49,11 @@ def _action_counts(report: dict[str, Any]) -> set[int]:
 
 def summarize_for_merchant(report: dict[str, Any], lang: str = "tr") -> str:
     """3-4 line WhatsApp message in the owner's language. Numbers must come from the report only."""
+    # Seen live on KEDD: the backend lists are empty there (the gateway has no session diff), and the model
+    # read that as "nothing changed" right after a step succeeded. The steps are what happened.
+    truth = ("The \"steps\" list is the source of truth: every step with status \"ok\" really happened "
+             "just now. The \"backend\" lists may be empty; that never means nothing was done. "
+             "Do not greet. ")
     if lang == "en":
         prompt = ("Write a short English WhatsApp message (max 4 lines, informal, one emoji max) telling a "
                   "small business owner what was done, using ONLY the numbers in this JSON (items added, "
@@ -61,4 +66,4 @@ def summarize_for_merchant(report: dict[str, Any], lang: str = "tr") -> str:
                   "(items added, discounts, campaigns). Mention only things that actually happened; skip "
                   "empty lists. If a campaign was sent and its engagement is marked simulated, say "
                   "'simülasyon' once. No markdown.\n\n")
-    return meta.chat(prompt + json.dumps(report, ensure_ascii=False), effort="minimal")
+    return meta.chat(truth + prompt + json.dumps(report, ensure_ascii=False), effort="minimal")
