@@ -105,6 +105,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "card.product": {"tr": "Ürün", "en": "Product"},
     "card.service": {"tr": "Hizmet", "en": "Service"},
     "card.discount_label": {"tr": "İndirim", "en": "Discount"},
+    "card.discount_temp": {"tr": " · geçici, liste fiyatı değişmez",
+                           "en": " · temporary, list price stays"},
     "card.update_label": {"tr": "Güncelle", "en": "Update"},
     "card.update_photo": {"tr": "fotoğrafı eklenecek 📷", "en": "photo will be set 📷"},
     "card.update_name": {"tr": "yeni adı “{name}”", "en": "new name “{name}”"},

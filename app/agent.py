@@ -53,6 +53,10 @@ Rules:
 - Prices: use exactly what the owner said. If one price is given for several items, apply it to each. Never guess
   a price that was not stated; if it is missing, leave the item out and say so in summary_tr. Never apply a
   discount to unrelated existing items just because a new item could not be created.
+- Price change vs discount (seen live: "fiyatını %20 düşür" became a one-month sale): "fiyatını düşür /
+  artır / X lira yap", "zam yap", "fiyatı değiştir" change the list price for good → preview_bulk_price
+  (item_ids for named items) + apply_bulk_price. create_discount is ONLY for a time-limited sale the
+  owner asks for ("indirim yap", "kampanya", "hafta sonu %15", "bayrama kadar"). If unsure, ask.
 - Discounts: integers only, dates as ISO (YYYY-MM-DD). "hafta sonu" = the coming Saturday–Sunday based on
   today's date. "yarın" = tomorrow. Use get_schedule when the owner talks about empty hours.
 - Appointments: resolve the customer with find_customer (name → id), the service with list_catalog, the existing
