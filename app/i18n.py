@@ -171,10 +171,9 @@ STRINGS: dict[str, dict[str, str]] = {
     "progress.campaign": {"tr": "✅ {i}/{n} Kampanya: {k} kişiye gitti",
                           "en": "✅ {i}/{n} Campaign: sent to {k} people"},
     "progress.campaign_sandbox": {
-        "tr": ("✅ {i}/{n} Kampanya: {k} demo müşterisi seçildi, gerçek mesaj gönderilmedi "
-               "(demo işletme) · {s} gitti"),
-        "en": ("✅ {i}/{n} Campaign: {k} demo customers reached, no real message sent "
-               "(demo business) · {s} sent")},
+        "tr": "✅ {i}/{n} Kampanya: {k} demo müşterisi seçildi, gerçek mesaj gönderilmedi (demo işletme)",
+        "en": "✅ {i}/{n} Campaign: {k} demo customers reached, no real message sent (demo business)"},
+    "progress.campaign_also_sent": {"tr": " · {s} kişiye gitti", "en": " · {s} sent"},
     "progress.post_scheduled": {"tr": "✅ {i}/{n} {plats}: {day} {hm}{suffix} yayında",
                                 "en": "✅ {i}/{n} {plats}: going live {day} at {hm}"},
     "progress.post_preview": {"tr": "✅ {i}/{n} {plats}: önizleme (demo sayfası) — sahibin WhatsApp'ında gerçek "
@@ -474,7 +473,9 @@ def render_progress(event: str, i: int, n: int, step: dict[str, Any] | None,
         return t("progress.visual", lang).format(**head)
     if kind == "send_campaign":
         if r.get("sandbox"):
-            return t("progress.campaign_sandbox", lang).format(**head, k=r["sandbox"], s=r.get("sent") or 0)
+            line = t("progress.campaign_sandbox", lang).format(**head, k=r["sandbox"])
+            sent = r.get("sent") or 0
+            return line + (t("progress.campaign_also_sent", lang).format(s=sent) if sent else "")
         k = r.get("sent", r.get("recipients"))
         return t("progress.campaign", lang).format(**head, k="?" if k is None else k)
     if kind == "publish_social_post":

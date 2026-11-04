@@ -142,7 +142,9 @@
   function addStatus(text) {
     if ((text || "").startsWith("✅")) sawWrite = true;
     const d = document.createElement("div");
-    d.className = "system";
+    // Step results read as events in the chat; waits and notices stay small and centred.
+    const kind = /^✅/.test(text) ? " step" : /^(⛔|⚠️|❌)/.test(text) ? " fail" : /^▶️/.test(text) ? " start" : "";
+    d.className = "status-line" + kind;
     d.textContent = text;
     chat.appendChild(d);
     scrollDown();
@@ -163,10 +165,11 @@
     typingEl.setAttribute("aria-label", "Cirak Agent is typing");
     const label = document.createElement("span");
     label.className = "typing-label";
-    label.textContent = "Cirak Agent is working…";
+    label.textContent = "Cirak Agent is working";
     const dots = document.createElement("span");
     dots.className = "dots";
-    dots.innerHTML = "<i></i><i></i><i></i>";
+    dots.setAttribute("aria-hidden", "true");
+    for (let k = 0; k < 3; k++) dots.appendChild(document.createElement("i"));
     typingEl.appendChild(label);
     typingEl.appendChild(dots);
     chat.appendChild(typingEl);

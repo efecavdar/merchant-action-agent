@@ -371,7 +371,8 @@ def render_card(proposal: dict[str, Any], ctx: MediaContext, segment_counts: dic
                 unit = i18n.t("card.item_one" if len(resolved) - 5 == 1 else "card.item_many", lang)
                 shown += f" +{len(resolved) - 5} {unit}"
             unit = i18n.t("card.item_one" if len(refs) == 1 else "card.item_many", lang)
-            lines.append(f"{ic} {i18n.t('card.discount_label', lang)}: %{a.get('percent')} "
+            pct = f"{a.get('percent')}%" if lang == i18n.EN else f"%{a.get('percent')}"
+            lines.append(f"{ic} {i18n.t('card.discount_label', lang)}: {pct} "
                          f"({a.get('starts')} → {a.get('ends')}) — {shown or f'{len(refs)} {unit}'}"
                          f"{i18n.t('card.discount_temp', lang)}")
         elif t == "generate_visual":
